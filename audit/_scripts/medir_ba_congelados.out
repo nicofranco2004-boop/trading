@@ -1,58 +1,58 @@
 Medido el 2026-11-06: 233 papeles en pesos de las listas de la app (racha = 5+ ruedas iguales sin volumen; lejos = más de 5 % de BYMA)
 
-Con serie en Yahoo: 223; sin serie en Yahoo: 10 ['AMC', 'BLK', 'DDOG', 'GME', 'NET', 'TTWO', 'CAPU', 'DYCA', 'IRCP', 'TGLT']
-Sin historia en data912: 77 ['AAL', 'ACWI', 'ALAB', 'ANET', 'ASML', 'ASTS', 'BAC', 'BAK', 'BMNR', 'CEG', 'COP', 'COPX', 'CRWD', 'CRWV', 'ETHA', 'EWY', 'FXI', 'GLD', 'HIMS', 'HOOD', 'IBIT', 'IREN', 'KEEL', 'LAC', 'LAR', 'MP', 'MRNA', 'MS', 'MUX', 'NBIS', 'NOW', 'NU', 'NVO', 'O', 'OKLO', 'ONDS', 'ORCL', 'PAGS', 'PANW', 'PATH', 'PDD', 'PEP', 'PINS', 'PLTR', 'RGTI', 'RIO', 'RIOT', 'RKLB', 'ROKU', 'RTX', 'SATL', 'SBUX', 'SE', 'SHOP', 'SID', 'SNAP', 'SNDK', 'SNOW', 'SPCE', 'SPCX', 'SPOT', 'STNE', 'TGT', 'TSM', 'TWLO', 'UBER', 'UNH', 'URA', 'VIG', 'VIST', 'VST', 'XLV', 'XYZ', 'ZM', 'A3', 'ECOG', 'INAG']
+Con serie en Yahoo: 204; sin serie en Yahoo: 29 ['AAL', 'AMC', 'AVGO', 'BAK', 'BIOX', 'BLK', 'COIN', 'DDOG', 'DOCU', 'GM', 'GME', 'GPRK', 'LAR', 'MA', 'META', 'NET', 'NIO', 'PBR', 'SE', 'SHOP', 'TTWO', 'UNH', 'VIST', 'XLV', 'XYZ', 'CAPU', 'DYCA', 'IRCP', 'TGLT']
+Sin historia en data912: 68 ['ACWI', 'ALAB', 'ANET', 'ASML', 'ASTS', 'BAC', 'BMNR', 'CEG', 'COP', 'COPX', 'CRWD', 'CRWV', 'ETHA', 'EWY', 'FXI', 'GLD', 'HIMS', 'HOOD', 'IBIT', 'IREN', 'KEEL', 'LAC', 'MP', 'MRNA', 'MS', 'MUX', 'NBIS', 'NOW', 'NU', 'NVO', 'O', 'OKLO', 'ONDS', 'ORCL', 'PAGS', 'PANW', 'PATH', 'PDD', 'PEP', 'PINS', 'PLTR', 'RGTI', 'RIO', 'RIOT', 'RKLB', 'ROKU', 'RTX', 'SATL', 'SBUX', 'SID', 'SNAP', 'SNDK', 'SNOW', 'SPCE', 'SPCX', 'SPOT', 'STNE', 'TGT', 'TSM', 'TWLO', 'UBER', 'URA', 'VIG', 'VST', 'ZM', 'A3', 'ECOG', 'INAG']
 
 Con alguna racha clavada de 5+ ruedas: 23
   · de esas, con días de la racha a más de 5 % de BYMA (dato muerto de Yahoo): 10
   · clavadas HOY (la última vela está en una racha): 3
 
 ## Papeles con rachas, de la más larga a la más corta
-  AZN     (cedears): 2 racha(s), 627 ruedas en racha; la más larga 621 ruedas (2021-11-05 → 2024-05-24) en 214.50; lejos de BYMA 1 días (0 dentro de rachas) de 235 · último 2026-11-05 Yahoo 78,300.00 BYMA 78,300.00
-  RTX     (cedears): 1 racha(s), 621 ruedas en racha; la más larga 621 ruedas (2021-11-05 → 2024-05-24) en 1,600.00; lejos de BYMA 0 días (0 dentro de rachas) de 0 · último 2026-11-05 Yahoo 64,225.00 BYMA —
-  A3      (stocks): 2 racha(s), 1032 ruedas en racha; la más larga 621 ruedas (2021-11-05 → 2024-05-24) en 148.73; lejos de BYMA 0 días (0 dentro de rachas) de 0 · CLAVADO HOY · último 2026-11-05 Yahoo 2,215.00 BYMA —
-  DISN    (cedears): 1 racha(s), 602 ruedas en racha; la más larga 602 ruedas (2024-05-24 → 2026-11-05) en 10,416.00; lejos de BYMA 500 días (500 dentro de rachas) de 1221 · CLAVADO HOY · último 2026-11-05 Yahoo 10,416.00 BYMA 16,100.00
-  V       (cedears): 8 racha(s), 593 ruedas en racha; la más larga 471 ruedas (2021-11-05 → 2023-10-09) en 7,350.00; lejos de BYMA 440 días (430 dentro de rachas) de 1215 · último 2026-11-05 Yahoo 39,240.00 BYMA 39,120.00
-  INAG    (stocks): 25 racha(s), 1211 ruedas en racha; la más larga 347 ruedas (2022-01-25 → 2023-06-29) en 300.00; lejos de BYMA 0 días (0 dentro de rachas) de 0 · CLAVADO HOY · último 2026-11-05 Yahoo 6,850.00 BYMA —
+  AZN     (cedears): 2 racha(s), 626 ruedas en racha; la más larga 620 ruedas (2021-11-08 → 2024-05-24) en 214.50; lejos de BYMA 1 días (0 dentro de rachas) de 235 · último 2026-11-05 Yahoo 78,300.00 BYMA 78,300.00
+  RTX     (cedears): 1 racha(s), 620 ruedas en racha; la más larga 620 ruedas (2021-11-08 → 2024-05-24) en 1,600.00; lejos de BYMA 0 días (0 dentro de rachas) de 0 · último 2026-11-05 Yahoo 64,225.00 BYMA —
+  A3      (stocks): 2 racha(s), 1031 ruedas en racha; la más larga 620 ruedas (2021-11-08 → 2024-05-24) en 148.73; lejos de BYMA 0 días (0 dentro de rachas) de 0 · CLAVADO HOY · último 2026-11-05 Yahoo 2,215.00 BYMA —
+  DISN    (cedears): 1 racha(s), 602 ruedas en racha; la más larga 602 ruedas (2024-05-24 → 2026-11-05) en 10,416.00; lejos de BYMA 500 días (500 dentro de rachas) de 1220 · CLAVADO HOY · último 2026-11-05 Yahoo 10,416.00 BYMA 16,100.00
+  V       (cedears): 8 racha(s), 592 ruedas en racha; la más larga 470 ruedas (2021-11-08 → 2023-10-09) en 7,350.00; lejos de BYMA 439 días (429 dentro de rachas) de 1214 · último 2026-11-05 Yahoo 39,240.00 BYMA 39,120.00
+  INAG    (stocks): 25 racha(s), 1210 ruedas en racha; la más larga 347 ruedas (2022-01-25 → 2023-06-29) en 300.00; lejos de BYMA 0 días (0 dentro de rachas) de 0 · CLAVADO HOY · último 2026-11-05 Yahoo 6,850.00 BYMA —
   CARC    (stocks): 1 racha(s), 265 ruedas en racha; la más larga 265 ruedas (2024-06-10 → 2025-07-11) en 1.07; lejos de BYMA 292 días (265 dentro de rachas) de 590 · último 2026-11-05 Yahoo 17.35 BYMA 17.35
   ABBV    (cedears): 7 racha(s), 471 ruedas en racha; la más larga 222 ruedas (2022-09-01 → 2023-07-31) en 4,040.50; lejos de BYMA 0 días (0 dentro de rachas) de 240 · último 2026-11-05 Yahoo 48,060.00 BYMA 48,060.00
   GLOB    (cedears): 29 racha(s), 428 ruedas en racha; la más larga 84 ruedas (2022-08-09 → 2022-12-13) en 11,035.00; lejos de BYMA 0 días (0 dentro de rachas) de 240 · último 2026-11-05 Yahoo 4,567.50 BYMA 4,580.00
-  HARG    (stocks): 34 racha(s), 579 ruedas en racha; la más larga 49 ruedas (2023-05-22 → 2023-08-02) en 284.00; lejos de BYMA 307 días (297 dentro de rachas) de 1221 · último 2026-11-05 Yahoo 1,025.00 BYMA 1,025.00
-  AMD     (cedears): 32 racha(s), 424 ruedas en racha; la más larga 40 ruedas (2022-01-19 → 2022-03-17) en 55,654.00; lejos de BYMA 295 días (238 dentro de rachas) de 1221 · último 2026-11-05 Yahoo 67,775.00 BYMA 67,800.00
+  HARG    (stocks): 34 racha(s), 578 ruedas en racha; la más larga 49 ruedas (2023-05-22 → 2023-08-02) en 284.00; lejos de BYMA 306 días (296 dentro de rachas) de 1220 · último 2026-11-05 Yahoo 1,025.00 BYMA 1,025.00
+  AMD     (cedears): 32 racha(s), 424 ruedas en racha; la más larga 40 ruedas (2022-01-19 → 2022-03-17) en 55,654.00; lejos de BYMA 294 días (238 dentro de rachas) de 1220 · último 2026-11-05 Yahoo 67,775.00 BYMA 67,800.00
   DOME    (stocks): 26 racha(s), 266 ruedas en racha; la más larga 30 ruedas (2022-05-11 → 2022-06-27) en 14.00; lejos de BYMA 6 días (5 dentro de rachas) de 220 · último 2026-11-05 Yahoo 87.60 BYMA 88.00
   RICH    (stocks): 9 racha(s), 72 ruedas en racha; la más larga 22 ruedas (2026-05-20 → 2026-06-22) en 1,600.00; lejos de BYMA 37 días (2 dentro de rachas) de 321 · último 2026-11-05 Yahoo 1,295.00 BYMA 1,300.00
-  POLL    (stocks): 75 racha(s), 529 ruedas en racha; la más larga 16 ruedas (2024-04-17 → 2024-05-09) en 460.00; lejos de BYMA 5 días (2 dentro de rachas) de 984 · último 2026-11-05 Yahoo 310.00 BYMA 310.00
-  GBAN    (stocks): 8 racha(s), 54 ruedas en racha; la más larga 13 ruedas (2022-05-03 → 2022-05-20) en 104.00; lejos de BYMA 6 días (0 dentro de rachas) de 1208 · último 2026-11-05 Yahoo 1,430.00 BYMA 1,440.00
-  ROSE    (stocks): 13 racha(s), 86 ruedas en racha; la más larga 12 ruedas (2022-05-04 → 2022-05-20) en 11.30; lejos de BYMA 5 días (0 dentro de rachas) de 1141 · último 2026-11-05 Yahoo 138.00 BYMA 137.00
-  GCDI    (stocks): 10 racha(s), 71 ruedas en racha; la más larga 11 ruedas (2022-12-27 → 2023-01-10) en 4.73; lejos de BYMA 114 días (48 dentro de rachas) de 1220 · último 2026-11-05 Yahoo 9.90 BYMA 9.90
+  POLL    (stocks): 75 racha(s), 529 ruedas en racha; la más larga 16 ruedas (2024-04-17 → 2024-05-09) en 460.00; lejos de BYMA 5 días (2 dentro de rachas) de 983 · último 2026-11-05 Yahoo 310.00 BYMA 310.00
+  GBAN    (stocks): 8 racha(s), 54 ruedas en racha; la más larga 13 ruedas (2022-05-03 → 2022-05-20) en 104.00; lejos de BYMA 6 días (0 dentro de rachas) de 1207 · último 2026-11-05 Yahoo 1,430.00 BYMA 1,440.00
+  ROSE    (stocks): 13 racha(s), 86 ruedas en racha; la más larga 12 ruedas (2022-05-04 → 2022-05-20) en 11.30; lejos de BYMA 5 días (0 dentro de rachas) de 1140 · último 2026-11-05 Yahoo 138.00 BYMA 137.00
+  GCDI    (stocks): 10 racha(s), 71 ruedas en racha; la más larga 11 ruedas (2022-12-27 → 2023-01-10) en 4.73; lejos de BYMA 113 días (48 dentro de rachas) de 1219 · último 2026-11-05 Yahoo 9.90 BYMA 9.90
   VALO    (stocks): 1 racha(s), 10 ruedas en racha; la más larga 10 ruedas (2021-12-23 → 2022-01-07) en 25.90; lejos de BYMA 0 días (0 dentro de rachas) de 240 · último 2026-11-05 Yahoo 519.50 BYMA 520.00
   HON     (cedears): 1 racha(s), 8 ruedas en racha; la más larga 8 ruedas (2026-06-26 → 2026-07-07) en 44,720.00; lejos de BYMA 0 días (0 dentro de rachas) de 233 · último 2026-11-05 Yahoo 44,960.00 BYMA 44,960.00
-  GARO    (stocks): 2 racha(s), 13 ruedas en racha; la más larga 7 ruedas (2024-05-24 → 2024-06-03) en 142.00; lejos de BYMA 12 días (2 dentro de rachas) de 1188 · último 2026-11-05 Yahoo 444.00 BYMA 444.00
+  GARO    (stocks): 2 racha(s), 13 ruedas en racha; la más larga 7 ruedas (2024-05-24 → 2024-06-03) en 142.00; lejos de BYMA 12 días (2 dentro de rachas) de 1187 · último 2026-11-05 Yahoo 444.00 BYMA 444.00
   TGT     (cedears): 1 racha(s), 6 ruedas en racha; la más larga 6 ruedas (2022-03-25 → 2022-04-01) en 10,945.00; lejos de BYMA 0 días (0 dentro de rachas) de 0 · último 2026-11-05 Yahoo 10,950.00 BYMA —
-  GRIM    (stocks): 2 racha(s), 11 ruedas en racha; la más larga 6 ruedas (2022-11-17 → 2022-11-25) en 213.75; lejos de BYMA 5 días (0 dentro de rachas) de 1150 · último 2026-11-05 Yahoo 2,095.00 BYMA 2,095.00
+  GRIM    (stocks): 2 racha(s), 11 ruedas en racha; la más larga 6 ruedas (2022-11-17 → 2022-11-25) en 213.75; lejos de BYMA 5 días (0 dentro de rachas) de 1149 · último 2026-11-05 Yahoo 2,095.00 BYMA 2,095.00
   NVS     (cedears): 1 racha(s), 5 ruedas en racha; la más larga 5 ruedas (2022-05-02 → 2022-05-06) en 4,502.87; lejos de BYMA 1 días (0 dentro de rachas) de 239 · último 2026-11-05 Yahoo 67,625.00 BYMA 67,625.00
 
 ## Sin rachas pero con días lejos de BYMA (más de 10 días)
   (No es un dato muerto: Yahoo y data912 ajustan distinto los cambios de ratio y los splits.
    La corrección no los toca: sólo cambia rachas clavadas.)
-  YPFD    (stocks): 1154 de 1221 días a más de 5 % de BYMA
-  NFLX    (cedears): 978 de 1215 días a más de 5 % de BYMA
-  SEMI    (stocks): 974 de 1221 días a más de 5 % de BYMA
-  MORI    (stocks): 935 de 1221 días a más de 5 % de BYMA
-  COME    (stocks): 918 de 1221 días a más de 5 % de BYMA
-  BYMA    (stocks): 865 de 1221 días a más de 5 % de BYMA
+  YPFD    (stocks): 1153 de 1220 días a más de 5 % de BYMA
+  NFLX    (cedears): 977 de 1214 días a más de 5 % de BYMA
+  SEMI    (stocks): 973 de 1220 días a más de 5 % de BYMA
+  MORI    (stocks): 934 de 1220 días a más de 5 % de BYMA
+  COME    (stocks): 917 de 1220 días a más de 5 % de BYMA
+  BYMA    (stocks): 864 de 1220 días a más de 5 % de BYMA
   SPY     (cedears): 806 de 917 días a más de 5 % de BYMA
-  FERR    (stocks): 750 de 1221 días a más de 5 % de BYMA
-  LONG    (stocks): 619 de 1221 días a más de 5 % de BYMA
-  AAPL    (cedears): 540 de 1221 días a más de 5 % de BYMA
-  PFE     (cedears): 535 de 1215 días a más de 5 % de BYMA
-  IBM     (cedears): 533 de 1216 días a más de 5 % de BYMA
-  MELI    (cedears): 533 de 1216 días a más de 5 % de BYMA
-  AGRO    (stocks): 489 de 1221 días a más de 5 % de BYMA
+  FERR    (stocks): 749 de 1220 días a más de 5 % de BYMA
+  LONG    (stocks): 618 de 1220 días a más de 5 % de BYMA
+  AAPL    (cedears): 539 de 1220 días a más de 5 % de BYMA
+  PFE     (cedears): 534 de 1214 días a más de 5 % de BYMA
+  IBM     (cedears): 532 de 1215 días a más de 5 % de BYMA
+  MELI    (cedears): 532 de 1215 días a más de 5 % de BYMA
+  AGRO    (stocks): 488 de 1220 días a más de 5 % de BYMA
   XOM     (cedears): 218 de 897 días a más de 5 % de BYMA
   HUT     (cedears): 129 de 240 días a más de 5 % de BYMA
-  BBD     (cedears): 108 de 1221 días a más de 5 % de BYMA
-  IRSA    (stocks): 44 de 1221 días a más de 5 % de BYMA
+  BBD     (cedears): 107 de 1220 días a más de 5 % de BYMA
+  IRSA    (stocks): 44 de 1220 días a más de 5 % de BYMA
   WMT     (cedears): 22 de 900 días a más de 5 % de BYMA
 
 ## Con el arreglo: la historia entera corregida con BYMA (`_corregir_con_byma`: sólo la racha que sigue clavada)

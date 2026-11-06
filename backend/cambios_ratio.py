@@ -361,13 +361,11 @@ def _historia_byma(papel: str) -> dict:
     misma fuente que ya da el precio en vivo). A diferencia de Yahoo, para los
     cambios recientes guarda el cierre como fue ese día: el escalón queda a la
     vista (SPY 56.000 → 18.760 el 29/05/2026; YPFD 83.000 → 8.105 el 03/08/2026).
-    Los viejos los corrige (AAPL en 2024). {} si no hay datos (DDD no tiene)."""
-    from pricing import data912
-    for tipo in ("cedears", "stocks"):
-        out = data912.cierres(tipo, papel, timeout=10)
-        if out:
-            return out
-    return {}
+    Los viejos los corrige (AAPL en 2024). {} si no hay datos (DDD no tiene). La
+    misma historia que usa la descarga de la noche para corregir un '.BA' que Yahoo
+    trae clavado (`velas_diarias._historia_de_byma`): una sola puerta a data912."""
+    import velas_diarias
+    return {d: v[3] for d, v in velas_diarias._historia_de_byma(papel, timeout=20).items()}
 
 
 def _le_falta_byma(filas: list) -> bool:
@@ -475,30 +473,18 @@ def recalcular(conn, papeles: list, *, pares: dict = None, splits=None, byma=Non
            "sin_yahoo": sorted(sin), "pedidos_a_yahoo": pedidos_a_yahoo}
     calculadas = []
     for c in papeles:
-        ba, ny = series[c]
-        if not ba:
+        try:
+            calculada = _calcular(conn, c, series[c], _tickers(c), sin, consulta, afuera, byma, soltar_la_base)
+        except Exception as ex:
+            # Un papel que revienta no frena a los demás: queda con lo que tenía y
+            # mañana se vuelve a intentar. Antes cortaba la lista entera, y un salto
+            # sin decidir de otro papel quedaba escondido en su gráfico sin límite
+            # (auditoría del 06/11).
+            log.error("cambios de ratio: %s falló, queda como estaba: %r", c, ex, exc_info=True)
+            res["con_error"] = res.get("con_error", []) + [c]
             continue
-        if any(t in sin for t in _tickers(c)):
-            # Yahoo no contestó: se conservan las filas que vinieron de Yahoo.
-            filas = [e for e in clasificar(ba, ny, [], [], []) if e["origen"].startswith(("cociente", "precio"))]
-            viejas = [dict(r) for r in conn.execute(
-                "SELECT * FROM cambios_ratio WHERE cedear=? AND origen LIKE 'yahoo%'", (c,)).fetchall()]
-            filas += [v for v in viejas
-                      if not any(_dias(v["fecha"], e["fecha"]) <= VENTANA_DIAS for e in filas)]
-        else:
-            sp = (consulta(f"{c}.BA"), consulta(f"{c}D.BA") if ny else [], consulta(afuera[c]) if ny else [])
-            filas = clasificar(ba, ny, *sp)
-            if _le_falta_byma(filas):
-                if soltar_la_base:
-                    pgsesion.soltar(conn)      # data912 puede tardar 20 s (`_historia_byma`)
-                try:
-                    historia = (byma or _historia_byma)(c)
-                except Exception as ex:      # data912 caído: queda como estaba, mañana se reintenta
-                    log.warning("cambios de ratio: historia de BYMA de %s falló: %r", c, ex)
-                    historia = {}
-                if historia:
-                    filas = clasificar(ba, ny, *sp, byma=historia)
-        calculadas.append((c, filas, min(ba)))
+        if calculada:
+            calculadas.append(calculada)
     # Recién ahora se escribe. Antes cada papel se guardaba al terminar el suyo y
     # el siguiente esperaba a data912 con esa escritura abierta (y la conexión
     # tomada), hasta 20 s por papel (auditoría del 05/11). El orden no cambia
@@ -508,6 +494,35 @@ def recalcular(conn, papeles: list, *, pares: dict = None, splits=None, byma=Non
             res[e["estado"]] = res.get(e["estado"], 0) + 1
     conn.commit()
     return res
+
+
+def _calcular(conn, c, serie, tickers, sin, consulta, afuera, byma, soltar_la_base):
+    """(papel, filas, primera vela) de un papel de `recalcular`, sin escribir
+    nada; None si no tiene serie en pesos."""
+    ba, ny = serie
+    if not ba:
+        return None
+    if any(t in sin for t in tickers):
+        # Yahoo no contestó: se conservan las filas que vinieron de Yahoo.
+        filas = [e for e in clasificar(ba, ny, [], [], []) if e["origen"].startswith(("cociente", "precio"))]
+        viejas = [dict(r) for r in conn.execute(
+            "SELECT * FROM cambios_ratio WHERE cedear=? AND origen LIKE 'yahoo%'", (c,)).fetchall()]
+        filas += [v for v in viejas
+                  if not any(_dias(v["fecha"], e["fecha"]) <= VENTANA_DIAS for e in filas)]
+        return c, filas, min(ba)
+    sp = (consulta(f"{c}.BA"), consulta(f"{c}D.BA") if ny else [], consulta(afuera[c]) if ny else [])
+    filas = clasificar(ba, ny, *sp)
+    if _le_falta_byma(filas):
+        if soltar_la_base:
+            pgsesion.soltar(conn)      # data912 puede tardar 20 s (`_historia_byma`)
+        try:
+            historia = (byma or _historia_byma)(c)
+        except Exception as ex:      # data912 caído: queda como estaba, mañana se reintenta
+            log.warning("cambios de ratio: historia de BYMA de %s falló: %r", c, ex)
+            historia = {}
+        if historia:
+            filas = clasificar(ba, ny, *sp, byma=historia)
+    return c, filas, min(ba)
 
 
 def _tickers_del_papel(c: str, afuera: dict, tiene_afuera: bool) -> tuple:

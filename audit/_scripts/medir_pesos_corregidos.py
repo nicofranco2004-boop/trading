@@ -3,9 +3,9 @@
 Corre la descarga de la noche DE VERDAD (`velas_diarias.actualizar`, con Yahoo y
 data912 reales) en una base SQLite aparte, dos veces, como va a pasar en producción
 las dos primeras noches después de publicar:
-  · «antes»: la noche sin la corrección (`_rachas_a_corregir` no devuelve nada) →
-    se guarda lo que da Yahoo, como hasta hoy (DISN.BA clavado en 10.416 desde el
-    24/05/2024);
+  · «antes»: la noche en que data912 no tiene la historia de DISN
+    (`_historia_de_byma` da {}) → se guarda lo que da Yahoo, como hasta hoy (DISN.BA
+    clavado en 10.416 desde el 24/05/2024);
   · «después»: la noche siguiente, con data912 → el último mes corregido no coincide
     con lo guardado (`_historia_reescrita`), se baja la historia entera y se corrige
     entera.
@@ -101,9 +101,9 @@ def main_():
               f"{_f(byma[max(byma)])} ({max(byma)}) · 1 año {_f(_rend(byma), 1)} % · "
               + " · ".join(f"{d} {_f(_en(byma, d))}" for d in FECHAS) + "\n")
 
-        with mock.patch("velas_diarias._rachas_a_corregir", lambda velas, guardado=None: []):
+        with mock.patch("velas_diarias._historia_de_byma", lambda papel, timeout=None: {}):
             r = velas_diarias.actualizar(conn, TICKERS, podar=False)
-        print("1.ª noche (sin la corrección, como el código de antes):", {k: r.get(k) for k in (
+        print("1.ª noche (data912 sin la historia de DISN, como hasta hoy):", {k: r.get(k) for k in (
             "completas", "incrementales", "corregidos_con_byma", "byma_sin_respuesta", "reescritas")})
         pasada(conn, "ANTES: lo que da Yahoo (como hoy en producción)")
 

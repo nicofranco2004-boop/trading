@@ -635,7 +635,8 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
         # y la serie parecía atrasada; a los `DIAS_ATRASO` días el gráfico pasaba a
         # la acción de afuera × el MEP, que es la acción ENTERA en pesos (el CEDEAR
         # × su ratio): una noche, diez veces más alto (06/11/2026).
-        if byma and afuera and _atrasada(velas_diarias.ultima_fecha(conn, simbolo_byma(a)), afuera):
+        if byma and afuera and _atrasada(velas_diarias.ultima_fecha(conn, simbolo_byma(a)) or byma[-1]["date"],
+                                         afuera):
             byma = []
         if byma:
             return {"velas": byma, "ticker": simbolo_byma(a), "convertida": None}

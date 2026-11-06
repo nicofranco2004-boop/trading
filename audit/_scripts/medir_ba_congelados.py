@@ -147,7 +147,7 @@ def con_el_arreglo(con_rachas: list, hoy: str):
     print("   «1 año» = el último año en pesos: Yahoo antes · después · BYMA")
     for f in sorted(con_rachas, key=lambda f: -f["dias_en_racha"]):
         yahoo, byma = f["yahoo"], f["byma_velas"]
-        nuevas, n = velas_diarias._corregir_con_byma(yahoo, byma) if byma else (yahoo, 0)
+        nuevas, n, _ = velas_diarias._corregir_con_byma(yahoo, byma) if byma else (yahoo, 0, False)
         rs = velas_diarias._rachas_clavadas(yahoo)
         corregidas = [r for r in rs if any(nuevas[d] != yahoo[d] for d in yahoo if r[0] <= d <= r[1])]
         hasta = max(yahoo)
