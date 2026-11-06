@@ -191,11 +191,25 @@ def _yahoo_de(asset: str, asset_type: str, en_pesos: bool, es_cripto,
 
 
 def ticker_de_afuera(a: str) -> str:
-    """El nombre con que Yahoo cotiza la acción de afuera: las acciones con
-    clase van con guión ('BRK.B' → 'BRK-B'). Con el punto, Yahoo no la encuentra
-    y la serie en dólares de Berkshire no se guardaba (auditoría 22/10). La usa
-    también `tecnico.serie` para leerla: un solo traductor."""
+    """El nombre con que Yahoo cotiza la acción de afuera. La usa también
+    `tecnico.serie` para leerla: un solo traductor.
+
+      · Un CEDEAR cuyo código de BYMA no es el de Nueva York va con el de allá
+        (DISN → DIS, BRKB → BRK-B, NOKA → NOK): la tabla de la pantalla,
+        `fuera_de_horario.CEDEAR_EN_EEUU`. Con el de BYMA Yahoo no la encuentra:
+        la noche pedía «DISN», que no existe, y la ficha de Disney en dólares
+        era el CEDEAR en pesos ÷ el MEP, con el DISN.BA de Yahoo días enteros
+        clavado en 10.416 (auditoría del backtesting, 05/11, H8). Esos códigos
+        existen sólo en BYMA: se traducen sin saber de qué broker es.
+      · Las acciones con clase van con guión ('BRK.B' → 'BRK-B'). Con el punto,
+        Yahoo no la encuentra y la serie en dólares de Berkshire no se guardaba
+        (auditoría 22/10).
+
+    El alias de especie (SI = SID, `CEDEAR_ESPECIE_ALIAS`) NO: «SI» en Nueva
+    York es otra empresa real, y acá no se sabe si el activo es un CEDEAR."""
+    from fuera_de_horario import CEDEAR_EN_EEUU
     a = (a or '').strip().upper()
+    a = CEDEAR_EN_EEUU.get(a, a)
     return a.replace('.', '-') if '.' in a and not a.endswith('.BA') else a
 
 

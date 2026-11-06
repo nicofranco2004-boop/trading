@@ -368,6 +368,30 @@ class FichaMovimientoTest(unittest.TestCase):
         evs = {e["fecha"]: e for e in self._get("/api/tecnico/AAPL/eventos?moneda=usd")["eventos"] if e["tipo"] == "balance"}
         self.assertEqual(evs[d1.isoformat()]["eps_declarado"], 1.65)
 
+    def test_disney_trae_los_balances_y_dividendos_de_disney(self):
+        # Disney es DISN en BYMA y DIS en Nueva York. La empresa se buscaba con el
+        # ticker de la serie en dólares, que era el CEDEAR en pesos ÷ el MEP
+        # (DISN.BA): ni un balance ni un dividendo de Disney (auditoría del
+        # backtesting, 05/11, H8).
+        self._posicion("IOL", "ARS", "DISN", "CEDEAR")
+        with main.db_abierta() as conn:
+            for k, d in enumerate(self.dias):
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
+                             (d.isoformat(), 1100.0, 1000.0))
+            conn.commit()
+        self.yahoo.precios["DIS"] = lambda i, d: 100.0 + i
+        self.yahoo.precios["DISN.BA"] = lambda i, d: 10416.0
+        main._run_velas_diarias_job()
+        d_bal, d_div = self.dias[-100], self.dias[-30]
+        self.balances["DIS"] = [pd.Timestamp(f"{d_bal.isoformat()} 16:30", tz="America/New_York")]
+        self.dividendos["DIS"] = [(d_div.isoformat(), 0.75)]
+        for moneda in ("usd", "ars"):
+            with self.subTest(moneda):
+                r = self._get(f"/api/tecnico/DISN/eventos?moneda={moneda}")
+                self.assertEqual(r["empresa"], "DIS")
+                self.assertEqual({(e["tipo"], e["fecha"]) for e in r["eventos"]},
+                                 {("balance", d_bal.isoformat()), ("dividendo", d_div.isoformat())})
+
     def test_cripto_no_tiene_eventos(self):
         self._posicion("Binance", "USD", "BTC", "CRYPTO")
         self.yahoo.precios["BTC-USD"] = lambda i, d: 60000.0 + i
