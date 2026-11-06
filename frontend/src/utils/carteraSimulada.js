@@ -262,14 +262,18 @@ function titulo(c, indices) {
 const dolares = (x) => `US$ ${Math.abs(x).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`
 
 /** Lo que dice debajo del título según con qué se arrancó. Con «Mi cartera de hoy»,
- *  que es tu cartera de hoy puesta en el pasado y no lo que ganaste: con los pesos
- *  de hoy desde el primer día sale igual o mejor de lo que fue (método 05/11, C1:
- *  hasta +10,7 puntos a 2 años). Con una armada, que elegir los porcentajes mirando
- *  el resultado es elegir con el diario del lunes (producto 05/11, A1). */
+ *  que es tu cartera de hoy puesta en el pasado y no lo que ganaste, y para qué lado
+ *  se equivoca: con los pesos de hoy desde el primer día sale igual o mejor de lo que
+ *  fue (método 05/11, C1: hasta +10,7 puntos a 2 años; método 06/11, H2: a 5 años
+ *  hasta +501 puntos, y 22 % de «le habría ido mejor que el S&P 500» sin haberle
+ *  ganado). La frase de «da de más» la aprobó Nico el 06/11. Con una armada, que
+ *  elegir los porcentajes mirando el resultado es elegir con el diario del lunes
+ *  (producto 05/11, A1). */
 export function aclaracionDeLaCartera(origen, cliente = null) {
   if (origen === 'hoy') {
     return `Es ${deQuien(cliente)} puesta en el pasado: con los pesos de hoy desde el primer día, con lo que `
-      + `${cliente ? 'compró' : 'compraste'} después y sin lo que ${cliente ? 'vendió' : 'vendiste'}. No es lo que `
+      + `${cliente ? 'compró' : 'compraste'} después y sin lo que ${cliente ? 'vendió' : 'vendiste'}. Por cómo se `
+      + 'arma, da de más: lo que hoy pesa más, en buena parte pesa más porque subió. No es lo que '
       + `${cliente ? 'ganó' : 'ganaste'}: eso está en Métricas.`
   }
   return 'Elegir los porcentajes mirando este resultado es elegir con el diario del lunes.'

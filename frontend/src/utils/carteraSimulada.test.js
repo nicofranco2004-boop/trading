@@ -203,8 +203,10 @@ describe('lo que dicen los números', () => {
     // +21,4 % contra +20,8 %: menos de un punto es «casi lo mismo» (método C9).
     expect(l.titulo).toBe('Habría dado casi lo mismo que el S&P 500, y el Nasdaq le habría ganado')
     // Con «Mi cartera de hoy», que es tu cartera de hoy puesta en el pasado y no lo que ganaste.
+    // Y para qué lado se equivoca: da de más (método 06/11, H2; Nico, 06/11: «Sí, agregala»).
     expect(l.aclaracion).toBe('Es tu cartera de hoy puesta en el pasado: con los pesos de hoy desde el primer día, con '
-      + 'lo que compraste después y sin lo que vendiste. No es lo que ganaste: eso está en Métricas.')
+      + 'lo que compraste después y sin lo que vendiste. Por cómo se arma, da de más: lo que hoy pesa más, en buena '
+      + 'parte pesa más porque subió. No es lo que ganaste: eso está en Métricas.')
     // Los aportes en dólares de cada US$ 100 (diseño M7) van con «Cada activo»; los «habrían
     // quedado en» no se repiten: están en el gráfico (diseño M10). La peor caída de la
     // cartera y la de los índices se ven juntas en la tabla de la respuesta: no van
