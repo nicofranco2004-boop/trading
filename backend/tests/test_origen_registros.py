@@ -199,6 +199,9 @@ class OrigenDeLosRegistros(unittest.TestCase):
                      for c, a in zip(despues[clave]["canales"], antes[clave]["canales"])}
             self.assertEqual(subio, {c: esperado.get(c, 0) for c in IDS}, clave)
             self.assertEqual([c["canal"] for c in despues[clave]["canales"]], IDS)
+            # «de N se sabe de dónde vinieron»: todos menos los que no traían nada.
+            self.assertEqual(despues[clave]["con_dato"] - antes[clave]["con_dato"],
+                             sum(1 for e in ESCENARIOS if e["codigo"]), clave)
         for e in ESCENARIOS:
             fila = self._fila(despues["7d"], e["codigo"])
             self.assertEqual(fila["canal"], e["canal"], e["caso"])
@@ -373,6 +376,15 @@ class ElCanalDeCadaOrigen(unittest.TestCase):
         self.assertEqual(canal_del_origen("chatgpt.com"), ("ia", "ChatGPT"))
         self.assertEqual(canal_del_origen("sitio/blog.ejemplo.com"), ("otro_sitio", None))
         self.assertEqual(canal_del_origen("x-20261019"), ("x", None))
+
+    def test_si_dos_sitios_coinciden_gana_el_mas_largo(self):
+        """Hoy ningún sitio de la tabla es subdominio de otro; el día que se
+        sume uno (`google.com` entero, por ejemplo), Gemini tiene que seguir
+        siendo IA y no Google."""
+        import canal_de_origen
+        with patch.dict(canal_de_origen._SITIOS, {"google.com": ("Google", "google")}):
+            self.assertEqual(canal_del_origen("sitio/gemini.google.com")[0], "ia")
+            self.assertEqual(canal_del_origen("sitio/accounts.google.com")[0], "google")
 
     def test_cada_canal_tiene_nombre_y_explicacion(self):
         self.assertEqual(len(IDS), len(set(IDS)))

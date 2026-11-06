@@ -155,6 +155,8 @@ describe('sin código en el link: la marca del clic y el sitio de donde venía',
     expect(origenParaElRegistro(AHORA)).toBe(null)
     expect(codigoDeLaVisita('', 'https://app.rendi.finance/x', 'rendi.finance')).toBe(null)
     expect(codigoDeLaVisita('', 'https://rendi-git-rama.vercel.app/', 'www.rendi-git-rama.vercel.app')).toBe(null)
+    // Rendi es Rendi aunque la página esté abierta en otro lado (una vista previa).
+    expect(codigoDeLaVisita('', 'https://rendi.finance/planes', 'rendi-git-rama.vercel.app')).toBe(null)
   })
 
   it('un sitio larguísimo se recorta por adelante: queda el sitio y entra en el servidor', () => {
