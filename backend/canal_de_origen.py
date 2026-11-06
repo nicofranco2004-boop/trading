@@ -43,9 +43,9 @@ import re
 CANALES = (
     ("ia", "IA", "ChatGPT, Perplexity, Gemini, Claude, Copilot, Grok, DeepSeek…"),
     ("x", "X", "Tus posts con código (x-…), links de X sin código y anuncios de X"),
-    ("meta_anuncios", "Meta · anuncios", "Anuncios cuyo link lleva el código meta-anuncios"),
-    ("meta_posts", "Meta · tus posts", "Tus posts de Instagram o Facebook con código (ig-…, fb-…)"),
-    ("meta_sin_saber", "Meta · sin saber si fue anuncio",
+    ("meta_anuncios", "Meta (anuncios)", "Anuncios cuyo link lleva el código meta-anuncios"),
+    ("meta_posts", "Meta (tus posts)", "Tus posts de Instagram o Facebook con código (ig-…, fb-…)"),
+    ("meta_sin_saber", "Meta (sin saber si fue anuncio)",
      "Facebook o Instagram sin código: un post, alguien que lo compartió o un anuncio sin el código"),
     ("google", "Google", "El buscador y los anuncios de Google"),
     ("otro_codigo", "Otro link con código", "Un código que no dice de qué red es (?d=mail-…)"),

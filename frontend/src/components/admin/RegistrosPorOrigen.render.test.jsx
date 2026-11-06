@@ -17,9 +17,9 @@ const VENTANA = {
   canales: [
     canal('ia', 'IA', 1, 1),
     canal('x', 'X', 2, 1, 1),
-    canal('meta_anuncios', 'Meta · anuncios', 0),
-    canal('meta_posts', 'Meta · tus posts', 0),
-    canal('meta_sin_saber', 'Meta · sin saber si fue anuncio', 3, 1),
+    canal('meta_anuncios', 'Meta (anuncios)', 0),
+    canal('meta_posts', 'Meta (tus posts)', 0),
+    canal('meta_sin_saber', 'Meta (sin saber si fue anuncio)', 3, 1),
     canal('google', 'Google', 0),
     canal('otro_codigo', 'Otro link con código', 0),
     canal('otro_sitio', 'Otro sitio o app', 1),
@@ -47,15 +47,15 @@ describe('el panel de registros por origen', () => {
     const donde = nombres.map(n => t.indexOf(` ${n} Qué entra en ${n} `))
     for (let i = 0; i < nombres.length; i++) expect(donde[i], nombres[i]).toBeGreaterThan(-1)
     expect([...donde].sort((a, b) => a - b)).toEqual(donde)
-    // «Meta · anuncios: 0» es un dato: se ve, con su cero.
-    expect(t).toContain('Meta · anuncios Qué entra en Meta · anuncios 0 0 0')
+    // «Meta (anuncios): 0» es un dato: se ve, con su cero.
+    expect(t).toContain('Meta (anuncios) Qué entra en Meta (anuncios) 0 0 0')
     // Y el resumen va antes que el detalle.
     expect(t.indexOf('Canal Registros')).toBeLessThan(t.indexOf('Código o sitio Registros'))
   })
 
   it('cada código dice de dónde es y en qué canal cayó, sin repetir', () => {
     const t = texto(VENTANA)
-    expect(t).toContain('sitio/l.instagram.com/fbclid Instagram · Meta · sin saber si fue anuncio 3 1 · 33%')
+    expect(t).toContain('sitio/l.instagram.com/fbclid Instagram · Meta (sin saber si fue anuncio) 3 1 · 33%')
     expect(t).toContain('chatgpt.com ChatGPT · IA')
     expect(t).toContain('app/com.google.android.gm Gmail · Otro sitio o app')
     expect(t).toContain('x-20261019 X 1 1 · 100% 1 · 100%')
