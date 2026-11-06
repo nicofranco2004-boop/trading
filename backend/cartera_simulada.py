@@ -5,7 +5,7 @@ QUÉ ES. «Una cartera», dentro de la pestaña Backtesting de Análisis técnic
 05/11/2026: «antes de publicar, agregá simular cartera contra el S&P 500 y el
 Nasdaq»; boceto aprobado, opción A: https://claude.ai/artifact/46cJx7aUeeH9CkVA7LAqX5).
 La persona arranca con su cartera de hoy o de cero, pone cada activo con su peso
-sobre 100 y elige de 1 a 4 años.
+sobre 100 y elige de 1 a 5 años.
 
 CÓMO SE SIMULA.
   · Todo se compra el primer día con esos pesos y no se toca más (comprar y
@@ -28,6 +28,9 @@ CUÁNDO ARRANCA. Los últimos `anios` años contados por calendario desde el úl
 precio, como el Backtesting de una regla. Si un activo cotiza desde después,
 arranca el día de ese activo y lo dice (`recorte_por`); hasta una semana después
 no es un recorte (`comparar.DIAS_MARGEN`: el borde de lo guardado, un feriado).
+Los índices, con la misma semana: con 5 años, lo que se pide es justo lo
+guardado, y si ese día cae un sábado el S&P 500 empieza el lunes. Se arranca el
+lunes, en vez de dejarlo afuera de la comparación.
 
 QUÉ NO HACE. No recomienda nada ni mira para adelante: dice qué habría pasado.
 """
@@ -44,9 +47,11 @@ from pesado import pesado
 
 # Cuántos activos entran en una cartera (la torta se lee hasta ahí).
 MAX_ACTIVOS = 10
-# Los períodos, los del Backtesting de una regla: los dos se eligen en la misma
-# pestaña y con el mismo selector.
-ANIOS = backtest.ANIOS
+# Los períodos: hasta todo lo que se guarda (`velas_diarias.ANIOS_GUARDADOS`). Eran
+# los del Backtesting de una regla, que llega a 4 porque la media de 200 necesita
+# casi un año ANTES del primer día; una cartera no necesita nada antes, y con 4 las
+# cuatro ventanas caían en la suba que siguió a 2022 (producto 05/11, A5).
+ANIOS = tuple(range(1, velas_diarias.ANIOS_GUARDADOS + 1))
 # Los porcentajes tienen que sumar 100, con esta tolerancia por los decimales.
 TOLERANCIA = 0.05
 # (clave, nombre, símbolo de Yahoo), en el orden en que se muestran.
@@ -102,6 +107,15 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
     ultimo_en_llegar = max(primeras, key=lambda s: (primeras[s], s))
     base = max(pedido, primeras[ultimo_en_llegar])
     recortado = comparar._dias(pedido, base) > comparar.DIAS_MARGEN
+    # Un índice que empieza a menos de una semana del pedido (con 5 años, el lunes
+    # después de un sábado) corre el primer día hasta él: sin esto quedaba afuera
+    # por un fin de semana. Uno que empieza mucho después (sin su historia) no
+    # corre nada: queda afuera, en `faltan`.
+    de_los_indices = {clave: _puntos(indices.get(clave) or []) for clave, _, _ in INDICES}
+    for p in de_los_indices.values():
+        if (p and comparar._dias(pedido, p[0][0]) <= comparar.DIAS_MARGEN
+                and comparar._dias(p[-1][0], hasta) <= comparar.DIAS_VIEJA):
+            base = max(base, p[0][0])
     fechas = sorted({base} | {d for p in puntos.values() for d, _ in p if base < d <= hasta})
     out.update({"pedido_desde": pedido, "recortado": recortado,
                 "recorte_por": ultimo_en_llegar if recortado else None})
@@ -118,7 +132,7 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
 
     resumen_indices, faltan, curvas = [], [], {}
     for clave, nombre, simbolo in INDICES:
-        p = _puntos(indices.get(clave) or [])
+        p = de_los_indices[clave]
         if not p or p[0][0] > base:
             faltan.append({"clave": clave, "motivo": "sin_datos"})
             continue

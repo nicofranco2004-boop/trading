@@ -66,6 +66,33 @@ def _indices(sp=None, nq=None):
             "nasdaq": nq if nq is not None else _habiles(800, lambda i: 12000 + 5 * i)}
 
 
+class YahooDeCincoAnios:
+    """Como Yahoo de verdad: «5y» es desde el mismo día de hace 5 años (aunque sea
+    un sábado) hasta ayer, y «1mo», el último mes. De lunes a viernes; una cripto
+    (-USD), todos los días. `precios[ticker](i, fecha)`: i, los días desde el
+    primero de los 5 años (el mismo día da el mismo precio en las dos bajadas)."""
+
+    def __init__(self, hoy, precios):
+        self.hoy, self.precios = hoy, precios
+        try:
+            self.origen = hoy.replace(year=hoy.year - 5)
+        except ValueError:      # un 29 de febrero
+            self.origen = hoy.replace(year=hoy.year - 5, day=28)
+
+    def __call__(self, ticker, period, interval, auto_adjust, timeout):
+        import pandas as pd
+        f = self.precios.get(ticker) or ((lambda i, d: 5000.0) if ticker in velas_diarias.INDICES else None)
+        if f is None:
+            return pd.DataFrame()
+        desde = self.origen if period == velas_diarias.PERIODO_COMPLETO else self.hoy - timedelta(days=31)
+        dias = [desde + timedelta(days=k) for k in range((self.hoy - desde).days)]
+        dias = [d for d in dias if ticker.endswith("-USD") or d.weekday() < 5]
+        c = [float(f((d - self.origen).days, d)) for d in dias]
+        return pd.DataFrame({"Open": c, "High": [x * 1.01 for x in c], "Low": [x * 0.99 for x in c],
+                             "Close": c, "Volume": [1000.0] * len(c)},
+                            index=pd.DatetimeIndex([pd.Timestamp(d) for d in dias]))
+
+
 class Cuentas(unittest.TestCase):
 
     def test_dos_activos_cada_uno_por_su_peso_y_sin_tocarla(self):
@@ -181,6 +208,32 @@ class Cuentas(unittest.TestCase):
         # Un índice que dejó de actualizarse no se muestra como si fuera hoy.
         r = cs.simular([_activo("A", 100, a)], _indices(nq=_habiles(800, lambda i: 1.0, fin=FIN - timedelta(days=20))), 1)
         self.assertEqual([f["motivo"] for f in r["faltan"]], ["vieja"])
+
+    def test_cinco_anios_con_el_primer_dia_en_un_fin_de_semana(self):
+        # Con 5 años lo que se pide es justo lo guardado. Si ese día cae un domingo,
+        # el S&P 500 y el Nasdaq empiezan el lunes, y quedaban afuera de la
+        # comparación («todavía no tenemos la historia»). Arranca el lunes, sin
+        # llamarlo recorte.
+        fin = date(2026, 11, 5)
+        pedido = (fin - timedelta(days=5 * tecnico.DIAS_ANIO - 1)).isoformat()
+        self.assertEqual(date.fromisoformat(pedido).weekday(), 6)       # domingo
+        sabado = (date.fromisoformat(pedido) - timedelta(days=1)).isoformat()
+        cripto = [v for v in _todos(2000, lambda i: 30000 + 10 * i, fin=fin) if v["date"] >= sabado]
+        idx = {c: [v for v in _habiles(1400, f, fin=fin) if v["date"] > pedido]
+               for c, f in (("sp500", lambda i: 4000 + i), ("nasdaq", lambda i: 12000 + 5 * i))}
+        lunes = idx["sp500"][0]["date"]
+        r = cs.simular([_activo("BTC", 100, cripto)], idx, 5)
+        self.assertTrue(r["disponible"], r)
+        self.assertEqual(r["faltan"], [])
+        self.assertEqual([x["clave"] for x in r["indices"]], ["sp500", "nasdaq"])
+        self.assertEqual((r["pedido_desde"], r["desde"], r["recortado"]), (pedido, lunes, False))
+        self.assertEqual(r["curva"][0], {"d": lunes, "cartera": 100.0, "sp500": 100.0, "nasdaq": 100.0})
+        # Uno que empieza más de una semana después (no se bajó su historia) sigue
+        # afuera y no corre el primer día de la cartera.
+        diez = (date.fromisoformat(pedido) + timedelta(days=10)).isoformat()
+        r = cs.simular([_activo("BTC", 100, cripto)], {**idx, "nasdaq": [v for v in idx["nasdaq"] if v["date"] > diez]}, 5)
+        self.assertEqual(r["faltan"], [{"clave": "nasdaq", "motivo": "sin_datos"}])
+        self.assertEqual((r["desde"], r["recortado"]), (lunes, False))
 
     def test_la_peor_caida_y_el_resultado_de_una_que_arranca_tarde(self):
         # Cotiza hace ~9 meses: la prueba de 1 año arranca en su primer día. (Contar la
@@ -509,6 +562,28 @@ class Ruta(unittest.TestCase):
                 self.assertEqual(self._get(f"activos=AAPL,MSFT&pesos={pesos}&anios=1").status_code, codigo)
         self.assertEqual(self._get("activos=AAPL&pesos=nan&anios=1").status_code, 400)
 
+    def test_cinco_anios_entran_en_lo_que_se_guarda(self):
+        # Por el camino de producción: la noche baja «5y» como Yahoo (desde el mismo
+        # día de hace 5 años) y poda lo de más de `DIAS_GUARDADOS`; BTC se baja en el
+        # momento. Con eso, 5 años se simulan enteros, al lado de los dos índices
+        # (producto 05/11, A5: «probarlo con lo guardado»).
+        self.yahoo.precios["BTC-USD"] = lambda i, d: 30000 + 10 * i
+        cinco = YahooDeCincoAnios(self.hoy, self.yahoo.precios)
+        with mock.patch("pricing.yahoo._historia", cinco):
+            with main.db_abierta() as conn:
+                conn.execute("DELETE FROM velas_diarias")
+                conn.execute("DELETE FROM velas_estado")
+                conn.commit()
+            main._run_velas_diarias_job()
+            r = self._get("activos=AAPL,MSFT,BTC&pesos=40,40,20&anios=5")
+        self.assertEqual(r.status_code, 200, r.text)
+        res = r.json()
+        self.assertTrue(res["disponible"], res)
+        self.assertEqual((res["recortado"], res["faltan"]), (False, []))
+        self.assertEqual([x["clave"] for x in res["indices"]], ["sp500", "nasdaq"])
+        self.assertLessEqual(comparar._dias(res["pedido_desde"], res["desde"]), comparar.DIAS_MARGEN)
+        self.assertEqual(r.json()["anios"], 5)
+
     def test_simula_sobre_las_series_de_la_ficha_y_los_indices_de_cada_noche(self):
         r = self._get("activos=AAPL,MSFT&pesos=60,40&anios=2")
         self.assertEqual(r.status_code, 200, r.text)
@@ -557,7 +632,7 @@ class Ruta(unittest.TestCase):
     def test_lo_que_no_se_ofrece_da_400(self):
         for q in ("activos=&pesos=", "activos=AAPL&pesos=60", "activos=AAPL,AAPL&pesos=50,50",
                   "activos=AAPL,MSFT&pesos=50", "activos=AAPL,MSFT&pesos=70,40", "activos=AAPL,MSFT&pesos=0,100",
-                  "activos=AAPL,MSFT&pesos=50,x", "activos=AAPL&pesos=100&anios=5", "activos=AAPL&pesos=100&anios=0",
+                  "activos=AAPL,MSFT&pesos=50,x", "activos=AAPL&pesos=100&anios=6", "activos=AAPL&pesos=100&anios=0",
                   "activos=A%20B&pesos=100", "activos=AAPL&pesos=100&local=A%20B",
                   "activos=" + ",".join(f"T{i}" for i in range(cs.MAX_ACTIVOS + 1))
                   + "&pesos=" + ",".join(["10"] * (cs.MAX_ACTIVOS + 1))):
