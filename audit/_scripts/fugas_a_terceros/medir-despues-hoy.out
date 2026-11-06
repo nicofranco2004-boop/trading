@@ -1,0 +1,215 @@
+# Sin aplicar la política de seguridad de la página
+# Propiedad de Google como está hoy (con «cambios de página por el historial del navegador» PRENDIDO)
+
+### A · Abrir (o recargar) una dirección con datos de la persona en los parámetros
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&anios=2
+       título: Rendi
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&anios=2
+       título: Rendi
+
+### B · Entrar limpio, ir dentro de la app a esa dirección, cambiar un porcentaje, mandar un evento
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/analisis-tecnico?tab=grafico
+       título: Rendi
+     fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws [fetch] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no  cuerpo: {"event_name":"PageView","event_id":"ob3_plugin-set_6c987ab2f818046e1706951ab8c2be133f165d03387297c2a7255a8ba1b091a7","fb.pixel_id":"1281911210681122","website_context":{"location":"https://rendi.fina
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis?tab=resumen
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=grafico
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis?tab=resumen
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=grafico
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&anios=2
+       de dónde venía: https://rendi.finance/analisis?tab=resumen
+       título: Rendi
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&activos=ZZPRIVADO,GGAL&pesos=73,27&anios=2
+       de dónde venía: https://rendi.finance/analisis?tab=resumen
+       título: Rendi
+       lleva: ZZPRIVADO, 73,27
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&activos=ZZPRIVADO,GGAL&pesos=74,26&anios=2
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&activos=ZZPRIVADO,GGAL&pesos=73,27&anios=2
+       título: Rendi
+       lleva: ZZPRIVADO, 73,27
+     fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws [fetch] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no  cuerpo: {"event_name":"PageView","event_id":"ob3_plugin-set_e626a96dab3f8f6efd5f9c961ff7f714e1c4877b6d4fd4dcff618e38ef0980bf","fb.pixel_id":"1281911210681122","website_context":{"location":"https://rendi.fina
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     Google Analytics [fetch] ai_chat_sent
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&anios=2
+       de dónde venía: https://rendi.finance/analisis?tab=resumen
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/cartera?tab=resumen
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&anios=2
+       título: Rendi
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/cartera?tab=resumen
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&activos=ZZPRIVADO,GGAL&pesos=74,26&anios=2
+       título: Rendi
+       lleva: ZZPRIVADO
+
+### C · Recarga entera hacia una página limpia desde /login?email=… (la página anterior como la manda HOY el navegador)
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/
+       de dónde venía: https://rendi.finance/login
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/
+       de dónde venía: https://rendi.finance/login
+       título: Rendi
+
+### C2 · Lo mismo, con Referrer-Policy: strict-origin (el navegador dice sólo https://rendi.finance/)
+     fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws [fetch] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no  cuerpo: {"event_name":"PageView","event_id":"ob3_plugin-set_0261a26d88ef6a9cfc6455aef8afe830872633353d95c80f5a95b75bfa4599f0","fb.pixel_id":"1281911210681122","website_context":{"location":"https://rendi.fina
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+       de dónde venía: https://rendi.finance
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/
+       de dónde venía: https://rendi.finance/
+       título: Rendi
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/
+       de dónde venía: https://rendi.finance/
+       título: Rendi
+
+### D · El informe público de un cliente (/i/<token>; el título nombra al cliente)
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/i/
+       título: Rendi
+
+### F · Registro: /login?mode=register → /verify-email?email=… → código → /onboarding
+     fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws [fetch] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no  cuerpo: {"event_name":"PageView","event_id":"ob3_plugin-set_ac2a1a31a1e0a102a2a9ba7443b05762002b3080ed9e5d8c9ed7ded765ccd616","fb.pixel_id":"1281911210681122","website_context":{"location":"https://rendi.fina
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/login?mode=register
+       título: Rendi
+     fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws [fetch] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no  cuerpo: {"event_name":"Lead","event_id":"ob3_plugin-set_9d224564a8e79f6aa8653c587da6155aa5a3e7b612de237aaed2520d6a0f98d8","fb.pixel_id":"1281911210681122","website_context":{"location":"https://rendi.finance/
+     Meta (facebook.com/tr) [imagen] Lead
+       dirección: https://rendi.finance
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/login?mode=register
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/verify-email?email=(redacted)
+       de dónde venía: https://rendi.finance/login?mode=register
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/verify-email
+       de dónde venía: https://rendi.finance/verify-email?email=(redacted)
+       título: Rendi
+     fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws [fetch] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no  cuerpo: {"event_name":"PageView","event_id":"ob3_plugin-set_047e7d06fcb5e1d90238d86e3db51d5645bb8696dcb1585004cc0bc6696fbf85","fb.pixel_id":"1281911210681122","website_context":{"location":"https://rendi.fina
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws [fetch] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no  cuerpo: {"event_name":"CompleteRegistration","event_id":"ob3_plugin-set_b00fc8463818ea8d1119edaf6d01f371e17f79e88ee139e7b9e0449f0dd0db9f","fb.pixel_id":"1281911210681122","website_context":{"location":"https:
+     Meta (facebook.com/tr) [imagen] CompleteRegistration
+       dirección: https://rendi.finance
+     Google Analytics [fetch] sign_up
+       dirección: https://rendi.finance/verify-email
+       de dónde venía: https://rendi.finance/login?mode=register
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/onboarding
+       de dónde venía: https://rendi.finance/verify-email
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/onboarding
+       de dónde venía: https://rendi.finance/verify-email
+       título: Rendi
+
+### G · Entrar por una dirección con datos (?activo=…) y pasar a una limpia
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/analisis-tecnico?tab=grafico
+       título: Rendi
+     fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws [fetch] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no  cuerpo: {"event_name":"PageView","event_id":"ob3_plugin-set_57056521db1617eafefe37090c0d43d9864a3cdc0ef3562807f2c3aae9c131de","fb.pixel_id":"1281911210681122","website_context":{"location":"https://rendi.fina
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=grafico
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/cartera?tab=resumen
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=grafico
+       título: Rendi
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/cartera?tab=resumen
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=grafico&activo=ZZPRIVADO
+       título: Rendi
+       lleva: ZZPRIVADO
+       cookie _fbc (el clic del anuncio de Meta, para atribuir la conversión): fb.1.1793930962793.IwAR0prueba
+
+### H · Llegar desde un anuncio (utm + fbclid + gclid): la atribución tiene que seguir llegando
+     fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws [fetch] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no  cuerpo: {"event_name":"PageView","event_id":"ob3_plugin-set_232629a7ca6caf141be76bf2304d71f8e2ad0cfeb80fa7d0dfe3f0fe89b80b98","fb.pixel_id":"1281911210681122","website_context":{"location":"https://rendi.fina
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/?utm_source=instagram&utm_medium=paid&utm_campaign=lanzamiento&fbclid=IwAR0prueba&gclid=Cj0prueba
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/?utm_source=instagram&utm_medium=paid&utm_campaign=lanzamiento&fbclid=IwAR0prueba&gclid=Cj0prueba
+       título: Rendi
+
+### I · Ir a una dirección con datos, salir a otro sitio y volver con «Atrás» (página restaurada)
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis?tab=resumen
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&anios=2
+       de dónde venía: https://rendi.finance/analisis?tab=resumen
+       título: Rendi
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&activos=ZZPRIVADO,GGAL&pesos=73,27&anios=2
+       de dónde venía: https://rendi.finance/analisis?tab=resumen
+       título: Rendi
+       lleva: ZZPRIVADO, 73,27
+     fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws [fetch] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no  cuerpo: {"event_name":"PageView","event_id":"ob3_plugin-set_7e4d2825c0dbe1009b1c31d2ba39d6341d51a40947f5eae2075903b42fca68b8","fb.pixel_id":"1281911210681122","website_context":{"location":"https://rendi.fina
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws [fetch] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no  cuerpo: {"event_name":"PageView","event_id":"ob3_plugin-set_a8405429509c0256a5ac3d71591ba32a2c0188ccfc873df56739ab82db3e7804","fb.pixel_id":"1281911210681122","website_context":{"location":"https://rendi.fina
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/cartera?tab=resumen
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&anios=2
+       título: Rendi
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/cartera?tab=resumen
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&activos=ZZPRIVADO,GGAL&pesos=73,27&anios=2
+       título: Rendi
+       lleva: ZZPRIVADO, 73,27
+
+### J · Llegar desde la app de Gmail en Android: Google tiene que seguir viendo de qué app vino
+     fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws [fetch] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no  cuerpo: {"event_name":"PageView","event_id":"ob3_plugin-set_34028bc52fc7b2fb4596ffca8dab9e8c4dd260280dfa1b2077a222966a607ff8","fb.pixel_id":"1281911210681122","website_context":{"location":"https://rendi.fina
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+       de dónde venía: null
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/?utm_source=mail&utm_campaign=bienvenida
+       de dónde venía: android-app://com.google.android.gm/
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/?utm_source=mail&utm_campaign=bienvenida
+       de dónde venía: android-app://com.google.android.gm/
+       título: Rendi
+
+Envíos con algo que no tenía que salir, por situación: A=0 · B=3 · C=0 · C2=0 · D=0 · F=0 · G=1 · H=0 · I=2 · J=0
+Intentos de salir a internet: 0

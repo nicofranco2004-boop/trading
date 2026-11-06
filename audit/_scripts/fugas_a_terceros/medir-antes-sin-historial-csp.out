@@ -1,0 +1,241 @@
+# Con la política de seguridad de la página (vercel.json) aplicada como el navegador
+# Propiedad de Google con «cambios de página por el historial del navegador» APAGADO
+
+### A · Abrir (o recargar) una dirección con datos de la persona en los parámetros
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&activos=ZZPRIVADO%2CGGAL&pesos=73%2C27&anios=2
+       título: Rendi
+       lleva: ZZPRIVADO, 73,27, 73%2C27
+  ❌ Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&activos=ZZPRIVADO,GGAL&pesos=73,27&anios=2
+       título: Rendi
+       lleva: ZZPRIVADO, 73,27
+
+### B · Entrar limpio, ir dentro de la app a esa dirección, cambiar un porcentaje, mandar un evento
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/analisis-tecnico?tab=grafico
+       título: Rendi
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis?tab=resumen
+       título: Rendi
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&activos=ZZPRIVADO%2CGGAL&pesos=73%2C27&anios=2
+       título: Rendi
+       lleva: ZZPRIVADO, 73,27, 73%2C27
+  ❌ Google Analytics [fetch] ai_chat_sent
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&activos=ZZPRIVADO,GGAL&pesos=74,26&anios=2
+       título: Rendi
+       lleva: ZZPRIVADO
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/cartera?tab=resumen
+       título: Rendi
+
+### C · Recarga entera hacia una página limpia desde /login?email=… (la página anterior como la manda HOY el navegador)
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+       de dónde venía: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/
+       de dónde venía: https://rendi.finance/login?email=(redacted)&next=%2Fcartera
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/
+       de dónde venía: https://rendi.finance/login?email=(redacted)&next=%2Fcartera
+       título: Rendi
+
+### C2 · Lo mismo, con Referrer-Policy: strict-origin (el navegador dice sólo https://rendi.finance/)
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+       de dónde venía: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/
+       de dónde venía: https://rendi.finance/
+       título: Rendi
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/
+       de dónde venía: https://rendi.finance/
+       título: Rendi
+
+### D · El informe público de un cliente (/i/<token>; el título nombra al cliente)
+  ❌ Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/i/TOKENSECRETO123
+       título: Informe de cartera — Cliente Secreta
+       lleva: TOKENSECRETO, Cliente Secreta
+
+### F · Registro: /login?mode=register → /verify-email?email=… → código → /onboarding
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/login?mode=register
+       título: Rendi
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] Lead
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] CompleteRegistration
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/login?mode=register
+       título: Rendi
+     Google Analytics [fetch] sign_up
+       dirección: https://rendi.finance/verify-email
+       título: Rendi
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/onboarding
+       título: Rendi
+
+### G · Entrar por una dirección con datos (?activo=…) y pasar a una limpia
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+  ❌ Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/analisis-tecnico?tab=grafico&activo=ZZPRIVADO
+       título: Rendi
+       lleva: ZZPRIVADO
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=grafico&activo=ZZPRIVADO
+       título: Rendi
+       lleva: ZZPRIVADO
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/cartera?tab=resumen
+       título: Rendi
+       cookie _fbc (el clic del anuncio de Meta, para atribuir la conversión): fb.1.1793931115245.IwAR0prueba
+
+### H · Llegar desde un anuncio (utm + fbclid + gclid): la atribución tiene que seguir llegando
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/?utm_source=instagram&utm_medium=paid&utm_campaign=lanzamiento&fbclid=IwAR0prueba&gclid=Cj0prueba
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/?utm_source=instagram&utm_medium=paid&utm_campaign=lanzamiento&fbclid=IwAR0prueba&gclid=Cj0prueba
+       título: Rendi
+
+### I · Ir a una dirección con datos, salir a otro sitio y volver con «Atrás» (página restaurada)
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis?tab=resumen
+       título: Rendi
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&activos=ZZPRIVADO%2CGGAL&pesos=73%2C27&anios=2
+       título: Rendi
+       lleva: ZZPRIVADO, 73,27, 73%2C27
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/cartera?tab=resumen
+       título: Rendi
+
+### J · Llegar desde la app de Gmail en Android: Google tiene que seguir viendo de qué app vino
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://fh-118116076e9a4c2a96a99fbb70bea2a0.ecs.us-west-2.on.aws/events?cee=no
+     Meta (facebook.com/tr) [imagen] PageView
+       dirección: https://rendi.finance
+       de dónde venía: null
+     NO SALE: bloqueado por la CSP (fetch) [bloqueado por la CSP (fetch)] —
+       https://demo-1.conversionsapigateway.com/events?cee=no
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/?utm_source=mail&utm_campaign=bienvenida
+       de dónde venía: android-app://com.google.android.gm/
+       título: Rendi
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/?utm_source=mail&utm_campaign=bienvenida
+       de dónde venía: android-app://com.google.android.gm/
+       título: Rendi
+
+Envíos con algo que no tenía que salir, por situación: A=2 · B=2 · C=0 · C2=0 · D=1 · F=0 · G=2 · H=0 · I=1 · J=0
+Intentos de salir a internet: 0

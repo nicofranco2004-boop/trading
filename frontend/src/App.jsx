@@ -33,8 +33,8 @@ import SupportWhatsAppFab from './components/SupportWhatsAppFab'
 import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
 import { registrarPantalla } from './utils/uso'
-import { trackPageView } from './utils/analytics'
-import { trackMetaPageView } from './utils/metaPixel'
+import { actualizarDireccionParaGoogle, trackPageView } from './utils/analytics'
+import { sincronizarPixelConLaDireccion, trackMetaPageView } from './utils/metaPixel'
 import { useAutoUpdate } from './utils/autoUpdate'
 // Las páginas públicas salen de una sola lista (ver paginasPublicas.js): la
 // misma que se publica ya escrita para los buscadores y las IA.
@@ -155,7 +155,7 @@ function PageFallback() {
   return <PageSkeleton />
 }
 
-function RouteTracker() {
+export function RouteTracker() {
   // Trackea cambios de ruta automáticamente. Vive adentro del <BrowserRouter>
   // implícito de App.jsx (asume que react-router-dom está montado por encima).
   // Manda el route change a 2 destinos:
@@ -184,6 +184,14 @@ function RouteTracker() {
       prev.current = location.pathname
     }
   }, [location.pathname])
+  // También cuando sólo cambian los parámetros (una pestaña, un porcentaje):
+  // lo que gtag.js manda solo (scroll, tiempo en la página) lleva la última
+  // dirección que se le dio, y tiene que ser la limpia de ahora; y el píxel de
+  // Meta se calla en una dirección que no es limpia (utils/metaPixel.js).
+  useEffect(() => {
+    actualizarDireccionParaGoogle()
+    sincronizarPixelConLaDireccion()
+  }, [location.pathname, location.search])
   return null
 }
 
