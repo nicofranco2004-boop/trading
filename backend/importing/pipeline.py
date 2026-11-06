@@ -293,6 +293,40 @@ def drop_saldo_anterior_ya_contado(conn, uid: int, txs: list) -> list:
     return [t for t in txs if id(t) not in fuera]
 
 
+def interpretar_filas(conn, uid: int, raw_rows: List[RawRow]
+                      ) -> Tuple[List[NormalizedTx], List[RowError]]:
+    """Las filas crudas de un lote → las operaciones que se validan. Es TODO lo
+    que se les hace antes de validar que no depende del momento (los brokers sí:
+    la vista previa los crea y la confirmación los traduce al nombre de hoy).
+
+    Lo llaman los dos caminos que leen filas crudas: la vista previa y la
+    confirmación con «Estado inicial» (`load_session_with_seed_revalidate`),
+    que vuelve a leerlas en vez de usar lo que guardó la vista previa. Hasta el
+    06/11/2026 los pasos de abajo vivían sólo en la vista previa, y confirmar con
+    «Estado inicial» guardaba otra cosa que lo que la persona había visto: el
+    fondo escrito por nombre volvía al nombre crudo (y el fondo sembrado no
+    registraba su venta), y el «Saldo anterior» ya contado volvía a sumarse
+    (tests/test_estado_inicial_lee_igual.py). Un paso nuevo va ACÁ, no en uno de
+    los dos."""
+    normalized, errores = normalize_rows(raw_rows)
+
+    # Saldo de apertura ya contado (historia partida en varios archivos) → fuera.
+    normalized = drop_saldo_anterior_ya_contado(conn, uid, normalized)
+
+    # FCI escrito por NOMBRE (plantilla manual): el normalizer resuelve tickers de
+    # broker contra un mapa curado, pero no tiene DB para mirar el catálogo. Acá sí
+    # hay conn, así que traducimos "Ualintec Renta Dolares - Clase A" al símbolo
+    # (FCI:UALINTEC-RENTA-DOLARES-A) ANTES de la preview: el usuario ve el símbolo
+    # bueno y la posición valúa con el VCP del día en vez de quedar al costo.
+    # Sin match (o ambiguo) no se toca — mismo criterio que el mapa curado.
+    for tx in normalized:
+        _sym = resolve_fci_by_name(conn, getattr(tx, "asset_symbol", None))
+        if _sym:
+            tx.asset_symbol = _sym
+            tx.asset_type = "FUND"
+    return normalized, errores
+
+
 def confirmed_fingerprint_counts(conn, uid: int, *, exclude_session: str = None,
                                  broker: str = None) -> "Counter":
     """CUÁNTAS veces existe cada huella en los batches confirmados del usuario.
@@ -1089,23 +1123,8 @@ def _run_preview_una_vez(
     # preview. Ver `importing/movimientos_internos.py`.
     parse_result.raw_rows = _movimientos_internos.neutralizar(parse_result.raw_rows)
 
-    # Normalizar
-    normalized, norm_errors = normalize_rows(parse_result.raw_rows)
-
-    # Saldo de apertura ya contado (historia partida en varios archivos) → fuera.
-    normalized = drop_saldo_anterior_ya_contado(conn, uid, normalized)
-
-    # FCI escrito por NOMBRE (plantilla manual): el normalizer resuelve tickers de
-    # broker contra un mapa curado, pero no tiene DB para mirar el catálogo. Acá sí
-    # hay conn, así que traducimos "Ualintec Renta Dolares - Clase A" al símbolo
-    # (FCI:UALINTEC-RENTA-DOLARES-A) ANTES de la preview: el usuario ve el símbolo
-    # bueno y la posición valúa con el VCP del día en vez de quedar al costo.
-    # Sin match (o ambiguo) no se toca — mismo criterio que el mapa curado.
-    for tx in normalized:
-        _sym = resolve_fci_by_name(conn, getattr(tx, "asset_symbol", None))
-        if _sym:
-            tx.asset_symbol = _sym
-            tx.asset_type = "FUND"
+    # Normalizar (lo mismo que hace la confirmación con «Estado inicial»)
+    normalized, norm_errors = interpretar_filas(conn, uid, parse_result.raw_rows)
 
     # Normalizar nombres de broker: case-insensitive + trim. Evita que
     # "Cocos capital" y "Cocos Capital" (o "  cocos capital  ") se traten
@@ -1818,12 +1837,9 @@ def load_session_with_seed_revalidate(
             data = {}
         raw_rows.append(RawRow(row_index=r["row_index"], data=data))
 
-    # Re-normalizar
-    normalized, _ = normalize_rows(raw_rows)
-    # El saldo de apertura que la vista previa sacó por ya estar contado vuelve
-    # en las filas crudas: se saca con la MISMA regla. Sin esto, confirmar con
-    # «Estado inicial» lo traía de vuelta (2ª pasada de la revisión, 06/11/2026).
-    normalized = drop_saldo_anterior_ya_contado(conn, uid, normalized)
+    # Re-normalizar, con los mismos pasos que la vista previa: lo que se guarda
+    # tiene que ser lo que la persona vio.
+    normalized, _ = interpretar_filas(conn, uid, raw_rows)
 
     # El broker de cada fila, como se llama HOY. El archivo crudo dice el nombre
     # que tenía al subirlo; si se renombró entre la vista previa y la
