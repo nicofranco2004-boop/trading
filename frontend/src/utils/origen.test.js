@@ -2,14 +2,16 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import {
   anotarOrigen, origenParaElRegistro, olvidarOrigen, normalizarCodigo,
-  codigoDeLaDireccion, ORIGEN_KEY, ORIGEN_DURA_MS,
+  codigoDeLaDireccion, codigoDeLaVisita, MARCAS_DE_CLIC, ORIGEN_KEY, ORIGEN_DURA_MS,
 } from './origen'
+import { escenarios } from './origen.escenarios.json'
 
 afterEach(() => { vi.unstubAllGlobals() })
 
 // Un navegador de mentira con lo que usa origen.js: la dirección, el historial
-// (replaceState cambia la dirección de verdad) y un localStorage en memoria.
-function navegador(href, guardado = {}) {
+// (replaceState cambia la dirección de verdad), la página de donde venía
+// (document.referrer) y un localStorage en memoria.
+function navegador(href, guardado = {}, referrer = '') {
   const store = new Map(Object.entries(guardado))
   const win = {
     location: new URL(href),
@@ -19,6 +21,7 @@ function navegador(href, guardado = {}) {
     },
   }
   vi.stubGlobal('window', win)
+  vi.stubGlobal('document', { referrer })
   vi.stubGlobal('localStorage', {
     getItem: k => (store.has(k) ? store.get(k) : null),
     setItem: (k, v) => store.set(k, String(v)),
@@ -102,6 +105,89 @@ describe('manda el primero', () => {
     anotarOrigen(AHORA)
     olvidarOrigen()
     expect(origenParaElRegistro(AHORA)).toBe(null)
+  })
+})
+
+// Las mismas visitas que recorre backend/tests/test_origen_registros.py desde
+// el registro hasta el canal del panel: acá, de la visita al código que viaja.
+describe('sin código en el link: la marca del clic y el sitio de donde venía', () => {
+  it.each(escenarios.map(e => [e.caso, e]))('%s', (_caso, e) => {
+    const n = navegador(e.direccion, {}, e.referrer)
+    anotarOrigen(AHORA)
+    expect(origenParaElRegistro(AHORA)?.origen ?? null).toBe(e.codigo)
+    // Lo que viaja ya está limpio: el servidor lo guarda tal cual.
+    if (e.codigo) expect(normalizarCodigo(e.codigo)).toBe(e.codigo)
+    // La marca y los utm se quedan en la dirección (los leen Google y Meta).
+    for (const m of MARCAS_DE_CLIC) {
+      expect(n.win.location.searchParams.get(m)).toBe(new URL(e.direccion).searchParams.get(m))
+    }
+  })
+
+  it('de la página de donde venía se guarda SÓLO el sitio: ni la ruta ni lo que se buscó', () => {
+    const n = navegador('https://rendi.finance/', {},
+      'https://www.google.com/search?q=rendi+juan.perez%40mail.com&hl=es#arriba')
+    anotarOrigen(AHORA)
+    const guardado = JSON.stringify(n.guardado())
+    expect(n.guardado().codigo).toBe('sitio/google.com')
+    for (const pedazo of ['search', 'juan', 'perez', 'mail', 'q=', 'hl', 'arriba']) {
+      expect(guardado).not.toContain(pedazo)
+    }
+  })
+
+  it('de la marca se guarda el nombre, nunca el valor (identifica el clic)', () => {
+    const n = navegador('https://rendi.finance/?fbclid=IwAR0SecretoDelClic', {}, 'https://l.facebook.com/')
+    anotarOrigen(AHORA)
+    expect(n.guardado().codigo).toBe('sitio/l.facebook.com/fbclid')
+    expect(JSON.stringify(n.guardado())).not.toMatch(/secreto/i)
+  })
+
+  it('si vienen dos marcas se anota la primera de la lista', () => {
+    expect(codigoDeLaVisita('?gclid=a&fbclid=b', '')).toBe('clic/fbclid')
+    expect(codigoDeLaVisita('?msclkid=a&gclid=b', '')).toBe('clic/gclid')
+    // Una marca vacía no es una marca.
+    expect(codigoDeLaVisita('?fbclid=&gclid=b', '')).toBe('clic/gclid')
+    expect(codigoDeLaVisita('?fbclid=', '')).toBe(null)
+  })
+
+  it('el sitio donde está abierta la página tampoco cuenta (servidor local, vista previa)', () => {
+    navegador('http://localhost:5173/', {}, 'http://localhost:5173/login')
+    anotarOrigen(AHORA)
+    expect(origenParaElRegistro(AHORA)).toBe(null)
+    expect(codigoDeLaVisita('', 'https://app.rendi.finance/x', 'rendi.finance')).toBe(null)
+    expect(codigoDeLaVisita('', 'https://rendi-git-rama.vercel.app/', 'www.rendi-git-rama.vercel.app')).toBe(null)
+  })
+
+  it('un sitio larguísimo se recorta por adelante: queda el sitio y entra en el servidor', () => {
+    const largo = `${'muy-largo.'.repeat(8)}foro.ejemplo.com.ar`
+    const codigo = codigoDeLaVisita('?fbclid=x', `https://${largo}/hilo/1`)
+    expect(codigo.length).toBeLessThanOrEqual(60)
+    expect(codigo).toMatch(/^sitio\/.*\.foro\.ejemplo\.com\.ar\/fbclid$/)
+    expect(normalizarCodigo(codigo)).toBe(codigo)
+  })
+
+  it('una página de donde venía rara se ignora sin romper', () => {
+    for (const raro of ['::::', 'javascript:alert(1)', 'file:///etc/passwd', 'android-app://', 'https://', 'about:blank']) {
+      expect(() => codigoDeLaVisita('', raro)).not.toThrow()
+      expect(codigoDeLaVisita('', raro)).toBe(null)
+    }
+    // Sin document (el arranque en un lugar sin navegador) tampoco rompe.
+    navegador('https://rendi.finance/?fbclid=x')
+    vi.stubGlobal('document', undefined)
+    expect(() => anotarOrigen(AHORA)).not.toThrow()
+    expect(origenParaElRegistro(AHORA).origen).toBe('clic/fbclid')
+  })
+
+  it('manda el primero también con el sitio: el post que vino después no lo pisa', () => {
+    const n = navegador('https://rendi.finance/', {}, 'https://t.co/')
+    anotarOrigen(AHORA)
+    n.win.location = new URL('https://rendi.finance/?d=x-1022')
+    vi.stubGlobal('document', { referrer: '' })
+    anotarOrigen(AHORA + 864e5)
+    expect(n.guardado().codigo).toBe('sitio/t.co')
+    // Y una visita sin nada que reconocer no anota nada.
+    const m = navegador('https://rendi.finance/', {}, '')
+    anotarOrigen(AHORA)
+    expect(m.guardado()).toBe(null)
   })
 })
 

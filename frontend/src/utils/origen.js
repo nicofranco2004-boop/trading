@@ -1,19 +1,36 @@
 import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
-// origen — de dónde vino quien se registra (qué post, qué campaña).
+// origen — de dónde vino quien se registra (qué post, qué campaña, qué red).
 // ═══════════════════════════════════════════════════════════════════════════
 // El link de cada post lleva un código: `rendi.finance/?d=x-20261019`. También
 // se aceptan los `utm_source` / `utm_campaign` de siempre. Al abrir la página
 // se anota ese código en el navegador, y al crear la cuenta viaja con el
 // registro y queda escrito en la fila del usuario (`users.origen`). El panel de
-// /admin cuenta los registros por código.
+// /admin cuenta los registros por código y por canal (IA, X, Meta, Google…).
+//
+// Si el link no trae código, se anota lo que se pueda reconocer solo:
+//   · la MARCA que la red le agrega al link (`?fbclid=…` en Facebook e
+//     Instagram, `gclid` en los anuncios de Google): `clic/fbclid`;
+//   · el SITIO de donde venía (document.referrer): `sitio/t.co`,
+//     `sitio/perplexity.ai`, o una app de Android: `app/com.google.android.gm`.
+//     Si vinieron los dos, van juntos: `sitio/l.instagram.com/fbclid`.
+// Se guarda SÓLO el nombre del sitio, de la app o de la marca: nunca la
+// dirección de donde venía (la de un buscador trae lo que se buscó) ni el valor
+// de la marca (identifica el clic). Qué canal es cada uno no se decide acá: lo
+// decide el servidor (backend/canal_de_origen.py), así un sitio que se suma a
+// su tabla cuenta bien también para los registros que ya lo traían.
 //
 // Reglas:
 //   · MANDA EL PRIMERO. Quien entró por el post del lunes y volvió el jueves
-//     por otro, se cuenta para el del lunes: ése es el que lo trajo.
+//     por otro, se cuenta para el del lunes: ése es el que lo trajo. Vale igual
+//     para el sitio: quien llegó primero desde Google se cuenta para Google.
 //   · VENCE A LOS 30 DÍAS. Pasado ese tiempo el primer contacto ya no explica
 //     nada, y un código nuevo lo reemplaza.
-//   · `d` le gana a los `utm_*` si vienen los dos: es el nuestro.
+//   · `d` le gana a los `utm_*` si vienen los dos: es el nuestro. Y un código le
+//     gana a la marca y al sitio de esa misma visita.
+//   · Las apps de Instagram, Facebook o X a veces abren el link sin decir de
+//     dónde venía: sin código ni marca, esa visita no anota nada (en el panel,
+//     «Sin dato»).
 //
 // ⚠️ Se lee en `main.jsx`, ANTES de montar la app, y no en un componente: el
 // demo (`?demo=1`, AuthContext) borra TODO lo que viene después del `?` al
@@ -50,6 +67,74 @@ export function codigoDeLaDireccion(search) {
   return fuente || campana || null
 }
 
+// Las marcas que cada red le agrega a sus links, en el orden en que se buscan
+// (si vienen dos, se anota la primera). Tiene que ser la misma lista que MARCAS
+// en backend/canal_de_origen.py, que dice de quién es cada una: lo verifica
+// test_origen_registros.py.
+export const MARCAS_DE_CLIC = ['fbclid', 'twclid', 'gclid', 'gbraid', 'wbraid', 'ttclid', 'msclkid']
+
+/** El nombre de la marca de clic que trae una dirección (`fbclid`…), o null. Nunca su valor. */
+export function marcaDeClic(search) {
+  let params
+  try { params = new URLSearchParams(search || '') } catch { return null }
+  return MARCAS_DE_CLIC.find(m => (params.get(m) || '').trim() !== '') || null
+}
+
+const esDeRendi = (host, propio) =>
+  host === 'rendi.finance' || host.endsWith('.rendi.finance') || host === propio
+
+/**
+ * De dónde venía la persona: `{ tipo: 'sitio', nombre: 't.co' }` para una
+ * página web (sin `www.`), `{ tipo: 'app', nombre: 'com.google.android.gm' }`
+ * para una app de Android. SÓLO el nombre. null si no hay, si es Rendi mismo
+ * (una recarga, o `propio`: el sitio donde está abierta la página) o si no se
+ * entiende.
+ */
+export function lugarDeDondeVenia(referrer, propio = '') {
+  if (!referrer) return null
+  let u
+  try { u = new URL(referrer) } catch { return null }
+  const sinWww = h => h.toLowerCase().replace(/\.$/, '').replace(/^www\./, '')
+  if (u.protocol === 'http:' || u.protocol === 'https:') {
+    const host = sinWww(u.hostname)
+    if (!host || esDeRendi(host, sinWww(propio || ''))) return null
+    return { tipo: 'sitio', nombre: host }
+  }
+  // new URL('android-app://com.google.android.gm/').origin es "null": el nombre
+  // de la app es el host.
+  if (u.protocol === 'android-app:' && u.host) return { tipo: 'app', nombre: u.host.toLowerCase() }
+  return null
+}
+
+/** `sitio/<sitio>[/<marca>]` o `app/<app>[/<marca>]`, en el largo que acepta el servidor. */
+function codigoDelLugar(lugar, marca) {
+  const sufijo = marca ? `/${marca}` : ''
+  const cabe = LARGO_MAX - lugar.tipo.length - 1 - sufijo.length
+  // La misma limpieza que normalizarCodigo, sin `/` y sin cortar todavía: el
+  // corte de normalizarCodigo es por atrás y se llevaría el sitio.
+  let nombre = String(lugar.nombre).toLowerCase().replace(/[^a-z0-9._-]/g, '')
+  if (!nombre) return marca ? `clic/${marca}` : null
+  // Un sitio que no entra se recorta por adelante: se pierden subdominios y
+  // queda el sitio (`l.facebook.com`), que es lo que dice de dónde venía.
+  if (lugar.tipo === 'sitio') {
+    while (nombre.length > cabe && nombre.includes('.')) nombre = nombre.slice(nombre.indexOf('.') + 1)
+  }
+  return `${lugar.tipo}/${nombre.slice(0, cabe)}${sufijo}`
+}
+
+/**
+ * Lo que se anota de una visita: el código del link (`d` o utm); si no trae,
+ * el sitio de donde venía y la marca de clic; si no, null.
+ */
+export function codigoDeLaVisita(search, referrer, propio = '') {
+  const codigo = codigoDeLaDireccion(search)
+  if (codigo) return codigo
+  const marca = marcaDeClic(search)
+  const lugar = lugarDeDondeVenia(referrer, propio)
+  if (lugar) return codigoDelLugar(lugar, marca)
+  return marca ? `clic/${marca}` : null
+}
+
 function leerGuardado() {
   try {
     const raw = leerDelAlmacen(CATALOGO.origen)
@@ -67,14 +152,17 @@ function vencido(o, ahora) {
 }
 
 /**
- * Al abrir la página: si la dirección trae un código y no hay uno vigente
- * guardado, se guarda. Después se saca `d` de la dirección. Nunca tira: el
- * navegador puede tener el almacenamiento bloqueado.
+ * Al abrir la página: si la visita trae un código (o se reconoce de dónde
+ * venía) y no hay uno vigente guardado, se guarda. Después se saca `d` de la
+ * dirección. Nunca tira: el navegador puede tener el almacenamiento bloqueado.
  */
 export function anotarOrigen(ahora = Date.now()) {
   if (typeof window === 'undefined') return null
   let codigo = null
-  try { codigo = codigoDeLaDireccion(window.location.search) } catch { return null }
+  try {
+    const referrer = typeof document !== 'undefined' ? document.referrer : ''
+    codigo = codigoDeLaVisita(window.location.search, referrer, window.location.hostname)
+  } catch { return null }
   if (codigo) {
     try {
       const previo = leerGuardado()
