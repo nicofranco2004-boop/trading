@@ -53,7 +53,9 @@ export default function TickerSearch({
 }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
-  const [highlight, setHighlight] = useState(0)
+  // -1: ninguna. Sin escribir ni navegar no se resalta nada: se veía elegida (y el
+  // lector la anunciaba) una opción que Enter no elegía (verificación 05/11, V9).
+  const [highlight, setHighlight] = useState(-1)
   // ¿Se movió con las flechas desde lo último que se escribió?
   const [navego, setNavego] = useState(false)
   const lista = useId()
@@ -108,7 +110,7 @@ export default function TickerSearch({
   }, [])
 
   // Reset highlight cuando cambian resultados
-  useEffect(() => { setHighlight(0); setNavego(false) }, [query])
+  useEffect(() => { setHighlight(query.trim() ? 0 : -1); setNavego(false) }, [query])
 
   function choose(symbol, opcion) {
     setOpen(false)
@@ -181,7 +183,7 @@ export default function TickerSearch({
       </div>
 
       {open && results.length > 0 && (
-        <div id={lista} role="listbox" aria-label={etiqueta}
+        <div id={lista} role="listbox" aria-label="Sugerencias"
           className="absolute z-30 left-0 right-0 mt-1.5 bg-bg-raised border border-line rounded-lg overflow-hidden">
           {results.map((t, i) => (
             <button

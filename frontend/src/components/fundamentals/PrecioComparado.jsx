@@ -235,7 +235,7 @@ export default function PrecioComparado({ tickers }) {
         <Panel padding="lg">
           <EmptyState icon={<IconoLinea size={20} strokeWidth={1.75} />} eyebrow="Precio"
             title="No hay precios para comparar"
-            description="Probá con otro activo: acciones, CEDEARs, ETFs y cripto tienen precio de todos los días." />
+            description="Probá con otro activo: de acciones, CEDEARs, ETFs y cripto tenemos los precios de cada día." />
         </Panel>
       )}
 

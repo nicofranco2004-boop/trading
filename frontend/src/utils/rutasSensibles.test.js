@@ -18,6 +18,10 @@ describe('urlTieneDatosSensibles (RENDI-09)', () => {
     expect(urlTieneDatosSensibles('/otra', '?token=x')).toBe(true)
     expect(urlTieneDatosSensibles('/x', '?code=123456')).toBe(true)
   })
+  it('una cartera con sus porcentajes en la dirección no se reporta (puede ser la tuya, escrita a mano)', () => {
+    expect(urlTieneDatosSensibles('/analisis-tecnico', '?tab=backtesting&activos=AAPL,GGAL&pesos=60,40')).toBe(true)
+    expect(urlTieneDatosSensibles('/analisis-tecnico', '?tab=backtesting&modo=cartera&origen=hoy')).toBe(false)
+  })
   it('deja pasar las rutas públicas sin datos sensibles', () => {
     expect(urlTieneDatosSensibles('/', '')).toBe(false)
     expect(urlTieneDatosSensibles('/planes', '')).toBe(false)

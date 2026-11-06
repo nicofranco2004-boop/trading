@@ -19,11 +19,11 @@ const DE_PRUEBA = ['localhost', '127.0.0.1', '192.168.0.23', '[::1]', 'rendi-git
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules() })
 
 // Un navegador de mentira: registra cada <script> que la página intenta cargar.
-function navegador(hostname, pathname = '/') {
+function navegador(hostname, pathname = '/', search = '') {
   const cargados = []
   const script = () => ({})
   const win = {
-    location: { hostname, pathname, href: `https://${hostname}${pathname}`, origin: `https://${hostname}` },
+    location: { hostname, pathname, search, href: `https://${hostname}${pathname}${search}`, origin: `https://${hostname}` },
     addEventListener() {},
   }
   const doc = {
@@ -50,11 +50,11 @@ async function arrancarApp(hostname) {
 // El bloque del píxel de index.html, ejecutado con el `window` de mentira.
 // `with` hace que `fbq`, `location` y `document` sueltos lean ese objeto,
 // igual que en el navegador leen el `window` de verdad.
-function correrSnippetDelHtml(hostname, pathname = '/') {
+function correrSnippetDelHtml(hostname, pathname = '/', search = '') {
   const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8')
   const bloque = html.match(/<!-- Meta Pixel -->[\s\S]*?<script>([\s\S]*?)<\/script>/)
   expect(bloque, 'no encontré el bloque del píxel en index.html').not.toBeNull()
-  const nav = navegador(hostname, pathname)
+  const nav = navegador(hostname, pathname, search)
   // eslint-disable-next-line no-new-func
   new Function('win', `with (win) {\n${bloque[1]}\n}`)(nav.win)
   return nav
@@ -111,5 +111,15 @@ describe('el píxel de index.html (corre antes que la app) respeta la misma list
   it('en rendi.finance/claim sigue sin mandar el PageView (la URL lleva un secreto)', () => {
     const { win } = correrSnippetDelHtml('rendi.finance', '/claim/abc')
     expect(win.fbq.queue).toHaveLength(0)
+  })
+
+  it('una cartera armada con sus porcentajes en la dirección no se le manda a Meta', () => {
+    // «Una cartera» del Backtesting: una armada a mano puede ser la tuya escrita a mano
+    // (auditoría de seguridad 05/11, hallazgo 1). Sin `pesos`, la misma página sí.
+    const conPesos = correrSnippetDelHtml('rendi.finance', '/analisis-tecnico',
+      '?tab=backtesting&modo=cartera&activos=AAPL,GGAL&pesos=60,40')
+    expect(conPesos.win.fbq.queue).toHaveLength(0)
+    const sinPesos = correrSnippetDelHtml('rendi.finance', '/analisis-tecnico', '?tab=backtesting&modo=cartera')
+    expect(sinPesos.win.fbq.queue.map(a => [...a])).toContainEqual(['track', 'PageView'])
   })
 })

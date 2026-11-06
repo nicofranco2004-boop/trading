@@ -39,8 +39,9 @@
 //
 // Nota de tema: el tooltip NO hardcodea colores (el pie "Por broker" de
 // Insights sí lo hace — `background:'#1e293b'`). Acá todo sale de los tokens
-// del design system. La app es dark-only por decisión de producto
-// (ThemeContext.LIGHT_MODE_LOCKED), así que usamos los tokens V2 planos.
+// del design system, que son variables CSS y siguen al tema claro y al oscuro
+// (frontend/CLAUDE.md, R8). Para el lector de pantalla la torta no existe: lo
+// que dice cada porción lo dice la leyenda (diseño 05/11, M9).
 
 import { useState, useMemo } from 'react'
 import { PieChart, Pie, Cell, Sector, Tooltip, ResponsiveContainer } from 'recharts'
@@ -242,6 +243,7 @@ export default function CompositionDonut({
         <>
           <div
             ref={refTorta}
+            aria-hidden="true"
             className={`relative ${tortaVista ? '' : 'opacity-0'}`}
             style={{ height }}
             onMouseLeave={() => setActive(null)}
