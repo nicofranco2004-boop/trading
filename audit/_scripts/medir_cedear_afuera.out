@@ -1,0 +1,99 @@
+Medido el 2026-11-05 sobre medir.db (aparte)
+
+MEP de argentinadatos: 2930 días, del 2018-10-29 al 2026-11-05
+Lo bajado de Yahoo: {'pedidos': 10, 'completas': 7, 'sin_datos': ['BRKB', 'DISN', 'NOKA'], 'filas': 8673}
+  DIS        1253 velas  2021-11-08 → 2026-11-04
+  DISN.BA    1221 velas  2021-11-05 → 2026-11-04
+  DISN          0 velas             → 
+  BRK-B      1253 velas  2021-11-08 → 2026-11-04
+  BRKB.BA    1221 velas  2021-11-05 → 2026-11-04
+  BRKB          0 velas             → 
+  NOK        1253 velas  2021-11-08 → 2026-11-04
+  NOKA.BA    1219 velas  2021-11-05 → 2026-11-04
+  NOKA          0 velas             → 
+  ^GSPC      1253 velas  2021-11-08 → 2026-11-04
+
+## El CEDEAR en pesos de Yahoo contra el cierre de BYMA (data912)
+  DISN.BA: 1220 días con los dos; 499 a más de 5 % de BYMA (40,9 %); racha más larga clavado con volumen 0: 600 días (hasta el 2026-11-04)
+    peor día: 2026-11-04 Yahoo 10.416 vs BYMA 16.200; últimos: 2026-10-29, 2026-10-30, 2026-11-02, 2026-11-03, 2026-11-04
+    último día con los dos (2026-11-04): Yahoo 10.416 vs BYMA 16.200
+  BRKB.BA: 239 días con los dos; 0 a más de 5 % de BYMA (0,0 %); racha más larga clavado con volumen 0: 1 días (hasta el 2026-07-06)
+    último día con los dos (2026-11-04): Yahoo 44.300 vs BYMA 44.260
+  NOKA.BA: 1212 días con los dos; 1 a más de 5 % de BYMA (0,1 %); racha más larga clavado con volumen 0: 0 días (hasta el None)
+    peor día: 2023-08-03 Yahoo 2.240 vs BYMA 1.776; últimos: 2023-08-03
+    último día con los dos (2026-11-04): Yahoo 13.890 vs BYMA 13.890
+
+## ANTES (traductor viejo)
+  Pares de la noche (papel → acción de afuera): {'DISN': 'DISN', 'BRKB': 'BRKB', 'NOKA': 'NOKA'}
+  Cambios de ratio: {'papeles': 3, 'confirmado': 0, 'sin_confirmar': 0, 'dudoso': 0, 'descartado': 1, 'pedidos_a_yahoo': 3} sin respuesta de Yahoo: []
+## DESPUÉS (traductor nuevo)
+  Pares de la noche (papel → acción de afuera): {'DISN': 'DIS', 'BRKB': 'BRK-B', 'NOKA': 'NOK'}
+  Cambios de ratio: {'papeles': 3, 'confirmado': 0, 'sin_confirmar': 0, 'dudoso': 1, 'descartado': 0, 'pedidos_a_yahoo': 6} sin respuesta de Yahoo: []
+
+## La ficha, antes → después
+  DISN en dólares
+    antes   : serie DISN.BA ÷ MEP · último 6,60 (2026-11-04) · 1 año -5,6 % · tendencia bajista · vs media 200 -6,3 % · RSI 35 · día normal ±0,5 % · debajo del máximo del año -11,7 %
+    después : serie DIS · último 118,95 (2026-11-04) · 1 año 6,7 % · tendencia alcista · vs media 200 14,9 % · RSI 75 · día normal ±1,7 % · debajo del máximo del año 0,0 %
+  DISN en pesos
+    antes   : serie DISN.BA · último 10.416,00 (2026-11-04) · 1 año 0,0 % · tendencia alcista · vs media 200 0,0 % · RSI 57 · día normal ±0,0 % · debajo del máximo del año 0,0 %
+    después : serie DISN.BA · último 10.416,00 (2026-11-04) · 1 año 0,0 % · tendencia alcista · vs media 200 0,0 % · RSI 57 · día normal ±0,0 % · debajo del máximo del año 0,0 %
+    balances y dividendos de: DISN.BA → DIS
+  BRKB en dólares
+    antes   : serie BRKB.BA ÷ MEP · último 28,07 (2026-11-04) · 1 año 24,3 % · tendencia alcista · vs media 200 19,6 % · RSI 77 · día normal ±1,0 % · debajo del máximo del año 0,0 %
+    después : serie BRK-B · último 579,09 (2026-11-04) · 1 año 18,7 % · tendencia alcista · vs media 200 16,6 % · RSI 83 · día normal ±1,0 % · debajo del máximo del año 0,0 %
+  BRKB en pesos  (igual)
+    antes   : serie BRKB.BA · último 44.300,00 (2026-11-04) · 1 año 31,6 % · tendencia alcista · vs media 200 27,3 % · RSI 83 · día normal ±1,1 % · debajo del máximo del año 0,0 %
+    después : serie BRKB.BA · último 44.300,00 (2026-11-04) · 1 año 31,6 % · tendencia alcista · vs media 200 27,3 % · RSI 83 · día normal ±1,1 % · debajo del máximo del año 0,0 %
+    balances y dividendos de: BRKB.BA → BRK-B
+  NOKA en dólares
+    antes   : serie NOKA.BA ÷ MEP · último 8,80 (2026-11-04) · 1 año 27,4 % · tendencia bajista · vs media 200 -17,2 % · RSI 41 · día normal ±3,9 % · debajo del máximo del año -49,6 %
+    después : serie NOK · último 8,26 (2026-11-04) · 1 año 21,3 % · tendencia bajista · vs media 200 -20,1 % · RSI 39 · día normal ±3,8 % · debajo del máximo del año -51,0 %
+  NOKA en pesos  (igual)
+    antes   : serie NOKA.BA · último 13.890,00 (2026-11-04) · 1 año 34,9 % · tendencia bajista · vs media 200 -11,8 % · RSI 42 · día normal ±3,9 % · debajo del máximo del año -45,2 %
+    después : serie NOKA.BA · último 13.890,00 (2026-11-04) · 1 año 34,9 % · tendencia bajista · vs media 200 -11,8 % · RSI 42 · día normal ±3,9 % · debajo del máximo del año -45,2 %
+    balances y dividendos de: NOKA.BA → NOK
+  BRK-B en dólares  (igual)
+    antes   : serie BRK-B · último 579,09 (2026-11-04) · 1 año 18,7 % · tendencia alcista · vs media 200 16,6 % · RSI 83 · día normal ±1,0 % · debajo del máximo del año 0,0 %
+    después : serie BRK-B · último 579,09 (2026-11-04) · 1 año 18,7 % · tendencia alcista · vs media 200 16,6 % · RSI 83 · día normal ±1,0 % · debajo del máximo del año 0,0 %
+  BRK-B en pesos  (igual)
+    antes   : serie BRKB.BA · último 44.300,00 (2026-11-04) · 1 año 31,6 % · tendencia alcista · vs media 200 27,3 % · RSI 83 · día normal ±1,1 % · debajo del máximo del año 0,0 %
+    después : serie BRKB.BA · último 44.300,00 (2026-11-04) · 1 año 31,6 % · tendencia alcista · vs media 200 27,3 % · RSI 83 · día normal ±1,1 % · debajo del máximo del año 0,0 %
+    balances y dividendos de: BRK-B → BRK-B
+
+## Cambios de ratio (lo que usa el gráfico en pesos y el aviso «Ajustar»)
+  BRKB  (igual)
+    antes   : «Ajustar» ofrece nada; el gráfico empalma nada, saca nada, esconde desde nada
+    después : «Ajustar» ofrece nada; el gráfico empalma nada, saca nada, esconde desde nada
+  DISN
+    antes   : «Ajustar» ofrece nada; el gráfico empalma nada, saca nada, esconde desde nada
+              ('2022-11-17', 'sin_explicar', 'descartado', None, 2.9807, 0, 'precio')
+    después : «Ajustar» ofrece nada; el gráfico empalma [('2022-11-17', 2.8274)], saca nada, esconde desde nada
+              ('2022-11-17', 'ratio', 'dudoso', None, 2.8274, 1, 'cociente')
+  NOKA  (igual)
+    antes   : «Ajustar» ofrece nada; el gráfico empalma nada, saca nada, esconde desde nada
+    después : «Ajustar» ofrece nada; el gráfico empalma nada, saca nada, esconde desde nada
+
+## Si el DISN.BA de Yahoo deja de estar clavado (simulado: 7 ruedas a $16.200 de BYMA)
+  De referencia, BYMA (data912): 1 año en pesos 15,0 %; 30/06/2023 $3.814
+  Después de guardar la rueda del 2026-11-05 (1.ª fuera de 10.416):
+    antes   : serie DISN.BA · último dibujado 2026-11-05 $16.200 · 1 año 55,5 % · 30/06/2023 dibujado $3.814 · empalma nada · esconde desde nada · «Ajustar» nada
+    después : serie DISN.BA · último dibujado 2026-11-04 $10.416 · 1 año 0,0 % · 30/06/2023 dibujado $3.814 · empalma [('2022-11-17', 2.83)] · esconde desde ['2026-11-05'] · «Ajustar» nada
+  Después de guardar la rueda del 2026-11-06 (2.ª fuera de 10.416):
+    antes   : serie DISN.BA · último dibujado 2026-11-06 $16.200 · 1 año 55,5 % · 30/06/2023 dibujado $3.814 · empalma nada · esconde desde nada · «Ajustar» nada
+    después : serie DISN.BA · último dibujado 2026-11-04 $10.416 · 1 año 0,0 % · 30/06/2023 dibujado $3.814 · empalma [('2022-11-17', 2.83)] · esconde desde ['2026-11-05'] · «Ajustar» nada
+  Después de guardar la rueda del 2026-11-09 (3.ª fuera de 10.416):
+    antes   : serie DISN.BA · último dibujado 2026-11-09 $16.200 · 1 año 55,5 % · 30/06/2023 dibujado $3.814 · empalma nada · esconde desde nada · «Ajustar» nada
+    después : serie DISN.BA · último dibujado 2026-11-04 $10.416 · 1 año 0,0 % · 30/06/2023 dibujado $3.814 · empalma [('2022-11-17', 2.83)] · esconde desde ['2026-11-05'] · «Ajustar» nada
+  Después de guardar la rueda del 2026-11-10 (4.ª fuera de 10.416):
+    antes   : serie DISN.BA · último dibujado 2026-11-10 $16.200 · 1 año 55,5 % · 30/06/2023 dibujado $3.814 · empalma nada · esconde desde nada · «Ajustar» nada
+    después : serie DIS × MEP · último dibujado 2026-11-10 $188.964 · 1 año 15,5 % · 30/06/2023 dibujado $43.273 · empalma [('2022-11-17', 2.83)] · esconde desde ['2026-11-05'] · «Ajustar» nada
+  Después de guardar la rueda del 2026-11-11 (5.ª fuera de 10.416):
+    antes   : serie DISN.BA · último dibujado 2026-11-11 $16.200 · 1 año 55,5 % · 30/06/2023 dibujado $3.814 · empalma nada · esconde desde nada · «Ajustar» nada
+    después : serie DISN.BA · último dibujado 2026-11-11 $16.200 · 1 año 5,2 % · 30/06/2023 dibujado $5.641 · empalma [('2022-11-17', 2.83), ('2026-11-05', 0.68)] · esconde desde nada · «Ajustar» nada
+  Después de guardar la rueda del 2026-11-12 (6.ª fuera de 10.416):
+    antes   : serie DISN.BA · último dibujado 2026-11-12 $16.200 · 1 año 55,5 % · 30/06/2023 dibujado $3.814 · empalma nada · esconde desde nada · «Ajustar» nada
+    después : serie DISN.BA · último dibujado 2026-11-12 $16.200 · 1 año 5,2 % · 30/06/2023 dibujado $5.641 · empalma [('2022-11-17', 2.83), ('2026-11-05', 0.68)] · esconde desde nada · «Ajustar» nada
+  Después de guardar la rueda del 2026-11-13 (7.ª fuera de 10.416):
+    antes   : serie DISN.BA · último dibujado 2026-11-13 $16.200 · 1 año 55,5 % · 30/06/2023 dibujado $3.814 · empalma nada · esconde desde nada · «Ajustar» nada
+    después : serie DISN.BA · último dibujado 2026-11-13 $16.200 · 1 año 5,2 % · 30/06/2023 dibujado $5.641 · empalma [('2022-11-17', 2.83), ('2026-11-05', 0.68)] · esconde desde nada · «Ajustar» nada
+

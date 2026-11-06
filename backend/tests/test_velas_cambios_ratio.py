@@ -210,6 +210,29 @@ class GraficoTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_el_par_de_un_cedear_con_otro_codigo_en_nueva_york(self):
+        # Disney es DISN en BYMA y DIS en Nueva York; Berkshire, cargado con su
+        # código de BYMA, BRKB y BRK-B. El par sale de la tabla de la pantalla
+        # (`fuera_de_horario.CEDEAR_EN_EEUU`): con «DISN» o «BRKB», que Yahoo no
+        # tiene, el CEDEAR se leía como una acción argentina, sin cociente, y un
+        # cambio de ratio de verdad no se empalmaba (auditoría del backtesting,
+        # 05/11, H8).
+        dias = [d.isoformat() for d in _ruedas(hoy_art_date(), 120)]
+        self._broker("IOL", "ARS")
+        for byma, ny in (("DISN", "DIS"), ("BRKB", "BRK-B")):
+            self.series[f"{byma}.BA"] = {d: (40000.0 if i < 60 else 20000.0) for i, d in enumerate(dias)}
+            self.series[ny] = {d: 500.0 for d in dias}
+            self._posicion("IOL", byma, "CEDEAR")
+        main._run_velas_diarias_job()
+        conn = main.get_db()
+        try:
+            for byma in ("DISN", "BRKB"):
+                with self.subTest(byma):
+                    self.assertEqual(cambios_ratio.para_el_grafico(conn, byma)["escalones"], [(dias[60], 2.0)])
+                    self.assertEqual({v["close"] for v in velas_diarias.serie(conn, f"{byma}.BA")}, {20000.0})
+        finally:
+            conn.close()
+
     def test_a_yahoo_se_le_piden_los_splits_una_vez_por_semana(self):
         # Eran 3 pedidos por CEDEAR cada noche (~860 el 30/10) y Yahoo corta a los
         # ~700-950 (auditoría de capacidad). Ahora cada ticker se pregunta el día

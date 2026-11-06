@@ -871,6 +871,43 @@ class FichaTest(unittest.TestCase):
         self.assertTrue(f["disponible"])
         self.assertEqual(f["ticker"], "BRK-B")
 
+    # Disney es DISN en BYMA y DIS en Nueva York; Berkshire, BRKB y BRK-B; Nokia,
+    # NOKA y NOK. Con el código de BYMA Yahoo no tiene la acción de afuera: la
+    # noche pedía «DISN», que no existe, y la ficha en dólares era el CEDEAR en
+    # pesos ÷ el MEP, con el DISN.BA de Yahoo días enteros clavado en 10.416
+    # (auditoría del backtesting, 05/11, H8).
+    CODIGO_DE_BYMA = (("DISN", "DIS"), ("BRKB", "BRK-B"), ("NOKA", "NOK"))
+
+    def test_cedear_con_otro_codigo_en_nueva_york(self):
+        self._broker("IOL", "ARS")
+        self._mep(lambda i: 1000.0)
+        for byma, ny in self.CODIGO_DE_BYMA:
+            self._posicion("IOL", byma, "CEDEAR")
+            self.yahoo.precios[ny] = lambda i, d: 100 + i * 0.1
+            self.yahoo.precios[f"{byma}.BA"] = lambda i, d: 10416.0
+        main._run_velas_diarias_job()
+        for byma, ny in self.CODIGO_DE_BYMA:
+            with self.subTest(byma):
+                self.assertEqual(self._pedidos(byma), [], "a Yahoo no se le pide un código que no tiene")
+                self.assertIn((ny, PERIODO_COMPLETO, False), self._pedidos(ny))
+                usd = self._ficha(byma, "usd")
+                self.assertEqual((usd["ticker"], usd["convertida"]), (ny, None))
+                self.assertEqual(usd["puntos"][-1]["c"], 175.9, "la acción de Nueva York, no 10.416 ÷ el MEP")
+                ars = self._ficha(byma, "ars")
+                self.assertEqual((ars["ticker"], ars["convertida"]), (f"{byma}.BA", None))
+
+    def test_cedear_con_otro_codigo_a_pedido(self):
+        # Nadie tiene Nokia: la ficha la baja en el momento, como NOK.
+        self.yahoo.precios["NOK"] = lambda i, d: 4 + i * 0.001
+        main._run_velas_diarias_job()
+        for asset in ("NOKA", "NOKA.BA"):
+            with self.subTest(asset):
+                f = self._ficha(asset)
+                self.assertTrue(f["disponible"])
+                self.assertEqual(f["ticker"], "NOK")
+        self.assertEqual(self._pedidos("NOKA"), [])
+        self.assertEqual(self._pedidos("NOK"), [("NOK", PERIODO_COMPLETO, False)])
+
     def test_watchlist_acepta_acciones_con_clase(self):
         # El mapa del S&P manda BRK-B; la estrella de su ficha fallaba siempre
         # porque la watchlist sólo aceptaba letras con '.BA' o '-USD'.

@@ -141,7 +141,9 @@ POPULARES = [
 # COPIA de las dos tablas de frontend/src/utils/tickers.js (CEDEAR_EN_EEUU,
 # CEDEAR_ESPECIE_ALIAS y ADR_DE_ACCION_AR): la pantalla y el chat tienen que
 # traducir igual. tests/test_fuera_de_horario.py compara las dos copias —si
-# cambiás una sin la otra, falla.
+# cambiás una sin la otra, falla. CEDEAR_EN_EEUU la usa también el traductor de
+# las velas (`velas_diarias.ticker_de_afuera`): qué baja la noche y qué serie
+# dibuja la ficha en dólares (DISN → DIS; auditoría del backtesting, 05/11, H8).
 CEDEAR_EN_EEUU = {"DISN": "DIS", "BRKB": "BRK-B", "NOKA": "NOK"}
 CEDEAR_ESPECIE_ALIAS = {"SI": "SID"}
 # La lista de CEDEARs de la PANTALLA (CEDEARS_LIST de utils/tickers.js). Antes

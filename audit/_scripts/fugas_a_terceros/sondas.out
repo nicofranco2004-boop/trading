@@ -1,0 +1,59 @@
+
+### F · set al arrancar (sin tocar nada más)
+     Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/LIMPIO-1
+       de dónde venía: https://rendi.finance/REF-LIMPIO
+       título: TITULO-LIMPIO
+     Google Analytics [fetch] ai_chat_sent
+       dirección: https://rendi.finance/LIMPIO-1
+       de dónde venía: https://rendi.finance/REF-LIMPIO
+       título: TITULO-LIMPIO
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/LIMPIO-1
+       de dónde venía: https://rendi.finance/REF-LIMPIO
+       título: TITULO-LIMPIO
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&activos=ZZPRIVADO&pesos=74,26
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=backtesting&activos=ZZPRIVADO&pesos=73,27
+       título: TITULO-LIMPIO
+       lleva: ZZPRIVADO, 73,27
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&activos=ZZPRIVADO&pesos=73,27
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=backtesting&activos=ZZPRIVADO&pesos=74,26
+       título: TITULO-LIMPIO
+       lleva: ZZPRIVADO, 73,27
+
+### F2 · set en cada cambio de dirección, desde un envoltorio puesto antes de gtag.js
+     Google Analytics [fetch] scroll
+       dirección: https://rendi.finance/LIMPIO-arranque
+       título: Rendi
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&activos=ZZPRIVADO&pesos=74,26
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=backtesting&activos=ZZPRIVADO&pesos=73,27
+       título: Rendi
+       lleva: ZZPRIVADO, 73,27
+  ❌ Google Analytics [fetch] page_view
+       dirección: https://rendi.finance/analisis-tecnico?tab=backtesting&activos=ZZPRIVADO&pesos=73,27
+       de dónde venía: https://rendi.finance/analisis-tecnico?tab=backtesting&activos=ZZPRIVADO&pesos=74,26
+       título: Rendi
+       lleva: ZZPRIVADO, 73,27
+
+### G · page_title: fijo y después undefined / null / vacío
+     Google Analytics [fetch] evento_1
+       dirección: https://rendi.finance/cartera
+       título: TITULO-FIJO
+     Google Analytics [fetch] evento_2_tras_undefined
+       dirección: https://rendi.finance/cartera
+       título: Titulo vivo 2
+     Google Analytics [fetch] evento_3_tras_null
+       dirección: https://rendi.finance/cartera
+     Google Analytics [fetch] evento_4_tras_vacio
+       dirección: https://rendi.finance/cartera
+
+### H · Meta con disablePushState: cambios de dirección después de entrar limpio
+  (no salió nada)
+
+### H0 · control: Meta como está hoy, mismos cambios de dirección
+  (no salió nada)
+
+Intentos de salir a internet: 0

@@ -254,17 +254,51 @@
     t.src=v;s=b.getElementsByTagName(e)[0];
     s.parentNode.insertBefore(t,s)}(window, document,'script',
     'https://connect.facebook.net/en_US/fbevents.js');
-    // Mismo criterio que src/utils/rutasSensibles.js (acá va inline porque corre
-    // antes del bundle): no reportar rutas con secreto/PII ni ninguna URL con
-    // token/email/code/pesos en la query — fbevents manda la location completa a Meta.
-    var _p = location.pathname, _q = location.search || '';
-    var _sensible = ['/i/', '/claim', '/acceso', '/reset-password', '/verify-email']
-        .some(function (r) { return _p.indexOf(r) === 0; })
-      || /[?&](token|email|code|pesos)=/.test(_q);
-    if (!_sensible) {
-      fbq('init', '1281911210681122');
-      fbq('track', 'PageView');
-    }
+    // fbevents lee la dirección y la página anterior por su cuenta, y la copia
+    // que manda al servidor de Meta en Amazon las lleva completas (hoy la frena
+    // la política de seguridad de vercel.json: ver src/utils/metaPixel.js).
+    // Por eso el píxel no manda vistas solas cuando cambia la dirección
+    // (disablePushState: las manda metaPixel.js, que mira antes;
+    // allowDuplicatePageViews hace que fbevents no las descarte por venir en la
+    // misma carga) ni eventos automáticos (autoConfig), y se inicia sólo si se
+    // entra por una dirección limpia. Si no, queda 'esperando' y lo inicia
+    // metaPixel.js en la primera.
+    // «Limpia» = el criterio de src/utils/rutasSensibles.js (rutas sensibles +
+    // lista de PERMITIDOS), copiado acá porque esto corre antes que la app.
+    // Se cambian juntas: medicion.test.js corre este bloque y lo compara.
+    fbq.disablePushState = true;
+    fbq.allowDuplicatePageViews = true;
+    fbq('set', 'autoConfig', false, '1281911210681122');
+    (function () {
+      var rutas = ['/i/', '/claim', '/acceso', '/reset-password', '/verify-email'];
+      var permitidos = [
+        'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'utm_id',
+        'utm_source_platform', 'utm_creative_format', 'utm_marketing_tactic',
+        'gclid', 'gbraid', 'wbraid', 'gad_source', 'gad_campaignid', 'dclid', 'srsltid', '_gl',
+        'fbclid', 'brid', 'waaem', 'igshid', 'msclkid', 'ttclid', 'twclid', 'li_fat_id',
+        'd',
+        'tab', 'sub', 'vista', 'modo', 'origen', 'anios', 'reglas', 'moneda', 'periodo',
+        'mode', 'demo', 'plan', 'period', 'step', 'from', 'action', 'nueva', 'provider',
+        '_t', '_v'];
+      var sitios = ['rendi.finance', 'www.rendi.finance'];
+      function limpia(u) {
+        var p = u.pathname.toLowerCase(), ok = true;
+        if (rutas.some(function (r) { return p.indexOf(r) === 0; })) return false;
+        u.searchParams.forEach(function (v, k) { if (permitidos.indexOf(k) === -1) ok = false; });
+        return ok;
+      }
+      var entra = false;
+      try {
+        var ref = document.referrer ? new URL(document.referrer) : null;
+        entra = limpia(new URL(location.href))
+          && (!ref || sitios.indexOf(ref.hostname) === -1 || limpia(ref));
+      } catch (e) { entra = false; }
+      window.__rendiPixel = entra ? 'iniciado' : 'esperando';
+      if (entra) {
+        fbq('init', '1281911210681122');
+        fbq('track', 'PageView');
+      }
+    })();
     }
     </script>
     <!-- End Meta Pixel -->

@@ -28,11 +28,13 @@
 //     wrapped_viewed      — abrió Wrapped anual
 //
 // Privacy: anonymize_ip=true. No mandamos email, name ni amount_usd en
-// los params — solo IDs/categorías. user_id se setea como uid hasheado.
+// los params — solo IDs/categorías. Tampoco el número de cuenta (setUserId).
+// La dirección que lleva CADA envío la decide rutasSensibles.js (ver
+// actualizarDireccionParaGoogle).
 
 import { seMideAca } from './medicion'
 import { registrarUsoGA } from './uso'
-import { urlTieneDatosSensibles } from './rutasSensibles'
+import { direccionParaTerceros, referenteParaTerceros, rutaSensible } from './rutasSensibles'
 
 // GA4 Measurement ID — hardcoded porque Vercel no inyectaba el env var
 // correctamente (problema con flag VITE_ exposed). El ID es público por
@@ -82,36 +84,67 @@ export function initAnalytics() {
   })
 
   initialized = true
+  // Antes del primer envío: gtag.js todavía no cargó y esto queda en la cola.
+  actualizarDireccionParaGoogle()
   if (DEBUG) {
     // eslint-disable-next-line no-console
     console.log('[analytics] GA4 inicializado:', GA_ID)
   }
 }
 
+// La dirección que lleva CADA envío a Google. gtag.js no la toma de nuestro
+// page_view: la lee él mismo de la barra de direcciones en todo lo que manda
+// solo —el scroll, los clics a otros sitios, el tiempo en la página— y en cada
+// evento. Por eso filtrar sólo el page_view no alcanzaba: la cartera de «Una
+// cartera» y el token del informe público (/i/<token>, con el nombre del
+// cliente en el título) le llegaban igual. Con `set`, todo lo que sale después
+// lleva ESTA dirección, la limpia (rutasSensibles.js). Verificado con el
+// gtag.js real de la propiedad: audit/_scripts/fugas_a_terceros/.
+//
+// ⚠️ Lo único que no respeta el `set`: las vistas automáticas «por cambios en
+// el historial del navegador» de la medición mejorada, que toman la dirección
+// real y la anterior. Esa opción tiene que estar APAGADA en la propiedad
+// (Admin → Flujos de datos → Web → Medición mejorada → Vistas de página →
+// Mostrar configuración avanzada); las vistas de página las manda trackPageView.
+let ultimaDireccion = null
+
+/**
+ * Le dice a Google la dirección limpia de AHORA. Llamar en cada cambio de
+ * dirección, también cuando sólo cambian los parámetros (RouteTracker).
+ */
+export function actualizarDireccionParaGoogle() {
+  if (!initialized || !window.gtag) return
+  const direccion = direccionParaTerceros(window.location.href)
+  if (direccion === ultimaDireccion) return
+  window.gtag('set', {
+    page_location: direccion,
+    // De dónde venía: la dirección limpia anterior o, al entrar, la de afuera
+    // (sin sus parámetros: la atribución usa el sitio o la app, no la query).
+    page_referrer: ultimaDireccion ?? referenteParaTerceros(document.referrer),
+    // El título también viaja en cada envío, y el del informe público nombra
+    // al cliente. `undefined` vuelve al título real de la página (verificado).
+    page_title: rutaSensible(window.location.pathname) ? 'Rendi' : undefined,
+  })
+  ultimaDireccion = direccion
+}
+
 /**
  * Trackea un page view. Llamar en cada route change.
  * RouteTracker en App.jsx ya lo hace automático.
  */
-// Rutas con un SECRETO o PII en la URL (token de claim/reset = takeover de la
-// cuenta; token del informe = la cartera del cliente; email en /verify-email).
-// NUNCA se reportan a analytics: GA guardaba la URL completa y cualquiera con
-// acceso a la propiedad (o Google mismo) la leía. Criterio único y que falla
-// cerrado en rutasSensibles.js (audit RENDI-09).
+// Las rutas con el SECRETO en la ruta misma (el token del informe = la cartera
+// del cliente, el del claim = tomar la cuenta) no mandan vista de página: los
+// demás envíos llevan sólo su comienzo (/i/), sin el token (audit RENDI-09).
+// Las demás se mandan con sólo los parámetros permitidos.
 
 export function trackPageView(path, title) {
   if (!initialized || !window.gtag) return
-  if (urlTieneDatosSensibles(path || window.location.pathname, window.location.search)) return
-  // page_location sin params sensibles (defensa extra si algún flujo los agrega)
-  let loc = window.location.href
-  try {
-    const u = new URL(loc)
-    for (const k of ['token', 'email', 'code', 'pesos']) u.searchParams.delete(k)
-    loc = u.toString()
-  } catch { /* URL rara — mandamos origin+path pelado */ loc = window.location.origin + path }
+  actualizarDireccionParaGoogle()
+  if (rutaSensible(path || window.location.pathname)) return
   window.gtag('event', 'page_view', {
     page_path: path,
     page_title: title || document.title,
-    page_location: loc,
+    page_location: direccionParaTerceros(window.location.href),
   })
   if (DEBUG) console.log('[analytics] page_view', path)
 }
@@ -137,20 +170,20 @@ export function trackEvent(name, params = {}) {
 }
 
 /**
- * Setea el user_id en GA4 (hasheado). Llamar tras login exitoso.
- * Permite trackear el embudo cross-device (mismo user en mobile + desktop).
+ * El número de cuenta NO se le manda a Google. AuthContext la llama al entrar
+ * y al salir; queda acá como el único lugar donde se decide.
+ *
+ * Hasta el 2026-11-05 hacía gtag('config', GA_ID, { user_id: String(uid) }) y
+ * el comentario decía «hasheado»: no lo estaba, pero tampoco llegaba. La
+ * propiedad tiene prendido «ignorar las configuraciones repetidas», así que
+ * Google descartaba esa segunda llamada entera (verificado con su gtag.js
+ * real: ningún envío llevaba `uid`). Y si alguien apagaba esa opción, la misma
+ * llamada mandaba además una vista de página con la dirección completa, sin
+ * pasar por rutasSensibles.js. Si algún día se quiere unir a la misma persona
+ * entre el celular y la compu: un seudónimo que arme el servidor, mandado con
+ * gtag('set', { user_id }) — nunca otro 'config'.
  */
-export function setUserId(uid) {
-  if (!initialized || !window.gtag) return
-  if (!uid) {
-    window.gtag('set', 'user_properties', { user_id: null })
-    return
-  }
-  window.gtag('config', GA_ID, {
-    user_id: String(uid),
-  })
-  if (DEBUG) console.log('[analytics] user_id set', uid)
-}
+export function setUserId() {}
 
 /**
  * Setea propiedades del user para segmentación (tier, has_broker, etc).
