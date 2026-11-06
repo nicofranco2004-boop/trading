@@ -7,7 +7,7 @@
 // /api/backtest/cartera), y «Mi cartera de hoy» también la arma él (GET
 // /api/backtest/cartera/hoy), con LA regla de qué activos tienen precio de todos
 // los días. Acá: lo que se puede escribir en cada porcentaje, cuánto falta para
-// 100, la torta, la dirección y las palabras de lo que volvió.
+// 100, la barra del 100 %, la dirección y las palabras de lo que volvió.
 //
 // NUNCA PROMETE, como el Backtesting de una regla (utils/backtesting.js): todo en
 // pasado, siempre al lado del S&P 500 y del Nasdaq, sin «la mejor cartera». Lo que
@@ -21,7 +21,6 @@
 //
 // `cliente`: el asesor adentro de la cuenta de un cliente (`nombreDelCliente`).
 // Ahí no es «tu cartera»: es la de él (M11).
-import { porcionColor } from './chartTheme'
 import { fechaCorta } from './cuantoSeMueve'
 import { comoSeVe, porcentaje } from './backtesting'
 
@@ -29,9 +28,6 @@ import { comoSeVe, porcentaje } from './backtesting'
 // qué tolerancia los porcentajes «suman 100».
 export const MAX_ACTIVOS = 10
 export const TOLERANCIA = 0.05
-
-// Lo que falta para 100 en la torta: el fondo, como un hueco por llenar.
-const SIN_REPARTIR = 'rgb(var(--bg-3))'
 
 /** Las dos maneras de arrancar, en el selector. */
 export const origenes = (cliente = null) => [['hoy', cliente ? 'Su cartera de hoy' : 'Mi cartera de hoy'], ['cero', 'Armar de cero']]
@@ -176,25 +172,22 @@ export function consultaDe(filas, anios) {
   return `activos=${d.activos}&pesos=${d.pesos}${d.local ? `&local=${d.local}` : ''}&anios=${anios}`
 }
 
-/** Las porciones de la torta (components/CompositionDonut, `montos={false}`): una
- *  por activo con porcentaje, de la que más pesa a la que menos, con LA rampa de
- *  las tortas de composición (`porcionColor`: el color dice cuánto pesa, no quién
- *  es); lo que falta para 100, al final. La leyenda dice lo ESCRITO: pasado de
- *  100, el dibujo reparte la vuelta entre todos, pero los números son los de la
- *  izquierda (con GGAL 150 → 100 y AAPL 33,5, decía 74,9 % y 25,1 %; auditoría
- *  05/11, M9). */
-export function porcionesDeLaTorta(filas) {
-  const con = filas.map(f => ({ asset: f.asset, p: numeroDe(f.txt) })).filter(x => x.p > 0)
-    .sort((a, b) => b.p - a.p || a.asset.localeCompare(b.asset))
-  // Sin ningún porcentaje, nada: así se ve «Sumá un activo…» y no un anillo gris que
-  // dice «Falta repartir 100%» (diseño 05/11, M3).
-  if (!con.length) return []
-  const total = con.reduce((s, x) => s + x.p, 0)
-  const items = con.map((x, i) => ({ key: x.asset, label: x.asset, value: x.p, pct: x.p, color: porcionColor(i) }))
-  // El hueco, sólo si de verdad falta: con 33,33 × 3 decía «Falta repartir 0,0%» al
-  // lado de «Suma 100%» (verificación 05/11, V6).
-  if (100 - total > TOLERANCIA) items.push({ key: 'sin_dato', label: 'Falta repartir', value: 100 - total, pct: 100 - total, color: SIN_REPARTIR })
-  return items
+/** La barra del 100 % debajo de la tabla (pages/SimularCartera.jsx): un tramo por
+ *  activo con porcentaje, EN EL ORDEN DE LA TABLA, y lo que falta para 100. Era una
+ *  torta (Nico, 06/11; diseño 05/11, M1 y M3): repetía la tabla, ocupaba el lugar
+ *  de la respuesta y sus colores decían cuánto pesa cada porción, no quién es, así
+ *  que cambiaban de activo mientras escribías. Pasada de 100, los tramos se
+ *  reparten la barra entera y `sobra` lo dice; cada tramo dice lo ESCRITO (con
+ *  GGAL 100 y AAPL 33,5, «100%» y «33,5%», no 74,9 y 25,1; M9). */
+export function tramosDeLaBarra(filas) {
+  const total = totalDe(filas)
+  return {
+    tramos: filas.map(f => ({ asset: f.asset, peso: numeroDe(f.txt) })).filter(t => t.peso > 0),
+    // El hueco, sólo si de verdad falta: con 33,33 × 3 decía «Falta repartir 0,0%» al
+    // lado de «Suma 100%» (verificación 05/11, V6).
+    falta: 100 - total > TOLERANCIA ? Math.round((100 - total) * 100) / 100 : 0,
+    sobra: total - 100 > TOLERANCIA,
+  }
 }
 
 /** «Mi cartera de hoy» (GET /backtest/cartera/hoy) como filas para editar. */
@@ -266,44 +259,33 @@ export function aclaracionDeLaCartera(origen, cliente = null) {
   return 'Elegir los porcentajes mirando este resultado es elegir con el diario del lunes.'
 }
 
-// La peor caída como se ve en las tarjetas (sin decimales, más si redondea a 0),
-// sin el signo.
-const caida = (x) => porcentaje(x, 0).replace(/^[−+-]/, '')
-
-/** «La peor caída de la cartera habría sido de 27%, contra…». De quién: después de
- *  la frase de un activo, «Su peor caída» se leía como la de ese activo (auditoría
- *  05/11, M2). Qué es «peor caída» se dice una vez, debajo de las tarjetas. */
-function fraseDeLaCaida(c, idx) {
-  const lasOtras = idx.map(i => `${caida(i.peor_caida)} del ${i.nombre}`)
-  if (caida(c.peor_caida) === '0%') {
-    const otras = idx.length ? ` En el mismo período, el ${idx.map(i => `${i.nombre} llegó a caer ${caida(i.peor_caida)}`).join(' y el ')}.` : ''
-    return `La cartera no habría llegado a bajar desde su mejor momento.${otras}`
-  }
-  return `La peor caída de la cartera habría sido de ${caida(c.peor_caida)}`
-    + `${lasOtras.length ? `, contra ${enLista(lasOtras)}` : ''}.`
-}
-
-/** Lo que dicen los números, en palabras: {titulo, aclaracion, frases}. En
- *  condicional: qué habría pasado, nunca qué va a pasar ni cuál cartera es mejor.
- *  Los tres «US$ 100 habrían quedado en» no se repiten: están en las tarjetas y en
- *  el gráfico (diseño 05/11, M10). `origen`: 'hoy' o 'cero'. */
+/** Lo que dicen los números, en palabras, en condicional: qué habría pasado, nunca
+ *  qué va a pasar ni cuál cartera es mejor. `origen`: 'hoy' o 'cero'.
+ *  {titulo, aclaracion, avisos, deLosActivos}:
+ *    · `titulo`, `aclaracion` y `avisos` (desde cuándo arranca, qué índice falta)
+ *      van en la respuesta, al lado de la tabla, con los números de la cartera y
+ *      de los índices; ahí se ve la peor caída de los tres juntos, así que ya no
+ *      va también en una frase (era para juntar las de tres tarjetas, M2);
+ *    · `deLosActivos` (cuánto sumó o restó cada uno, cuál cambió de peso) va con
+ *      «Cada activo», al lado de sus números.
+ *  Los «US$ 100 habrían quedado en» no se repiten: están en el gráfico (M10). */
 export function lecturaCartera(res, { origen = 'cero', cliente = null } = {}) {
   if (!res?.disponible) return null
   const c = res.cartera
   const idx = res.indices || []
   const xs = res.activos || []
-  const frases = []
+  const deLosActivos = []
   if (xs.length > 1) {
     const orden = [...xs].sort((a, b) => b.aporte - a.aporte)
     const [mas, menos] = [orden[0], orden.at(-1)]
     if (mas.aporte > 0 && menos.aporte < 0) {
-      frases.push(`De cada US$ 100, ${mas.asset} habría sumado ${dolares(mas.aporte)} y ${menos.asset} habría restado `
-        + `${dolares(menos.aporte)}: entre todos, la cartera habría dado ${porcentaje(c.resultado)}.`)
+      deLosActivos.push(`De cada US$ 100, ${mas.asset} habría sumado ${dolares(mas.aporte)} y ${menos.asset} habría `
+        + `restado ${dolares(menos.aporte)}: entre todos, la cartera habría dado ${porcentaje(c.resultado)}.`)
     } else if (mas.aporte > 0) {
-      frases.push(`De cada US$ 100, el que más habría sumado es ${mas.asset}: ${dolares(mas.aporte)} de los `
+      deLosActivos.push(`De cada US$ 100, el que más habría sumado es ${mas.asset}: ${dolares(mas.aporte)} de los `
         + `${dolares(c.resultado)} que habría ganado la cartera.`)
     } else if (menos.aporte < 0) {
-      frases.push(`De cada US$ 100, el que más habría restado es ${menos.asset}: ${dolares(menos.aporte)} de los `
+      deLosActivos.push(`De cada US$ 100, el que más habría restado es ${menos.asset}: ${dolares(menos.aporte)} de los `
         + `${dolares(c.resultado)} que habría perdido la cartera.`)
     }
     // El que más cambió de peso sin tocar la cartera (el mayor, no un orden: la
@@ -311,23 +293,29 @@ export function lecturaCartera(res, { origen = 'cero', cliente = null } = {}) {
     const corrida = (x) => Math.abs(x.peso_final - x.peso)
     const cambio = xs.reduce((m, x) => (corrida(x) > corrida(m) ? x : m))
     if (corrida(cambio) >= 1) {
-      frases.push(`Sin tocarla, ${cambio.asset} habría pasado de ${pesoTxt(cambio.peso)} a ${pesoTxt(cambio.peso_final)} de la cartera.`)
+      deLosActivos.push(`Sin tocarla, ${cambio.asset} habría pasado de ${pesoTxt(cambio.peso)} a `
+        + `${pesoTxt(cambio.peso_final)} de la cartera.`)
     }
   }
-  frases.push(fraseDeLaCaida(c, idx))
+  const avisos = []
   if (res.recortado && res.recorte_por) {
     const primera = xs.find(a => a.asset === res.recorte_por)?.primera_vela || res.desde
-    frases.push(`Tenemos precios de ${res.recorte_por} desde el ${fechaCorta(primera)}: la simulación arranca ese día.`)
+    avisos.push(`Tenemos precios de ${res.recorte_por} desde el ${fechaCorta(primera)}: la simulación arranca ese día.`)
   }
   for (const f of res.faltan || []) {
     const nombre = NOMBRE_INDICE[f.clave]
     if (!nombre) continue
-    frases.push(f.motivo === 'vieja'
+    avisos.push(f.motivo === 'vieja'
       ? `No tenemos precios del ${nombre} desde el ${fechaCorta(f.hasta)}: quedó afuera.`
       : `Todavía no tenemos la historia del ${nombre} para compararla.`)
   }
-  return { titulo: titulo(c, idx), aclaracion: aclaracionDeLaCartera(origen, cliente), frases }
+  return { titulo: titulo(c, idx), aclaracion: aclaracionDeLaCartera(origen, cliente), avisos, deLosActivos }
 }
+
+/** Debajo de los números de la respuesta: de cuándo a cuándo, y que los índices
+ *  van sin dividendos, como la cartera (lo decía cada tarjeta de un índice). */
+export const notaDelResumen = (res) => `Del ${fechaCorta(res.desde)} al ${fechaCorta(res.hasta)}, en dólares. `
+  + 'Los índices, sin dividendos, como la cartera.'
 
 /** Por qué no se pudo simular, en una oración entera. `cuantos`: los activos de
  *  la cartera (con uno solo no hay «resto» que simular). */

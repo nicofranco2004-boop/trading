@@ -1,8 +1,10 @@
 // Piezas de la pestaña «Backtesting» que usan sus dos modos: «Una regla»
 // (pages/Backtesting.jsx) y «Una cartera» (pages/SimularCartera.jsx). Un solo
-// gráfico de «Cómo habrían ido US$ 100», una sola tarjeta de resultado, un solo
-// aviso, los mismos trazos y un solo pedido al servidor (`usePedidoDePrueba`):
-// los dos modos se ven y se comportan igual porque son lo mismo, no dos copias.
+// gráfico de «Cómo habrían ido US$ 100», un solo aviso, los mismos trazos y un
+// solo pedido al servidor (`usePedidoDePrueba`): los dos modos se ven y se
+// comportan igual porque son lo mismo, no dos copias. La tarjeta de resultado es
+// de «Una regla»; «Una cartera» pone sus tres números en una tabla al lado de la
+// suya, para que se vean mientras escribís (Nico, 06/11; diseño 05/11, M1).
 import { useEffect, useRef, useState } from 'react'
 import { AlertCircle } from 'lucide-react'
 import {
@@ -149,17 +151,18 @@ export function Dato({ etiqueta, children }) {
   )
 }
 
-// Lo que es «peor caída», una sola vez debajo de las tarjetas, en los dos modos
-// (diseño 05/11, M7: la tarjeta lo decía sin explicarlo).
+// Lo que es «peor caída», una sola vez: debajo de las tarjetas de «Una regla» y de
+// la tabla de «Una cartera» (diseño 05/11, M7: la tarjeta lo decía sin explicarlo).
 export const QUE_ES_LA_PEOR_CAIDA = 'Peor caída: lo más que llegó a bajar desde su mejor momento.'
 
 /**
- * La tarjeta de un resultado, LA MISMA en los dos modos. Eran dos copias con dos
- * reglas de columnas: el arreglo de una no llegó a la otra y el número grande
- * pisaba al de al lado («−32,6%43%»: el «−» de la caída desaparecía; diseño
- * 05/11, A1). El número grande va solo en su renglón; los datos chicos, debajo,
- * en dos columnas. En condicional: es lo que habría dado, no lo que pasó
- * (producto y método 05/11, A1 y C2). `datos`: [{etiqueta, valor, detalle?}].
+ * La tarjeta de un resultado de «Una regla» (la de cada regla y la de comprar y
+ * mantener). Eran dos copias, una por modo, con dos reglas de columnas: el arreglo
+ * de una no llegó a la otra y el número grande pisaba al de al lado («−32,6%43%»:
+ * el «−» de la caída desaparecía; diseño 05/11, A1). El número grande va solo en
+ * su renglón; los datos chicos, debajo, en dos columnas. En condicional: es lo que
+ * habría dado, no lo que pasó (producto y método 05/11, A1 y C2). `datos`:
+ * [{etiqueta, valor, detalle?}].
  */
 export function TarjetaDeResultado({ nombre, subtitulo = null, trazo = null, resultado, datos, resaltada = false }) {
   return (

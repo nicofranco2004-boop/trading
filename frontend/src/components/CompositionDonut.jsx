@@ -27,11 +27,6 @@
 //     asesor no lo pasa: son datos de clientes, no del usuario.
 //     Con `compartirConDetalle` la imagen es la de composición (la torta y,
 //     abajo, los activos de cada porción): la usa la torta por tipo.
-//   • `montos={false}`: la torta es sólo de porcentajes (una cartera que se
-//     arma, «Simular una cartera» de Backtesting): la leyenda, el globo, la fila
-//     desplegada, el resultado de una porción y la imagen para compartir dicen el
-//     % y no la plata, y no hay plata que tapar con el ojito. Antes tapaba en 2 de
-//     esos 5 lugares (auditoría de regresiones 05/11, B2).
 //
 // La torta no es una parada del tabulador (`rootTabIndex={-1}`): recharts la hace
 // enfocable y no dice nada; lo que dice cada porción está en la leyenda, que sí
@@ -178,7 +173,6 @@ export default function CompositionDonut({
   // por porción con sus activos) en vez de la de distribución. La usa la
   // torta por TIPO, que así reemplaza a la imagen por activo.
   compartirConDetalle = false,
-  montos = true,
   className = '',
 }) {
   const [active, setActive] = useState(null)
@@ -229,7 +223,7 @@ export default function CompositionDonut({
                 etiqueta={`Compartir ${title.toLowerCase()}`}
                 filename={`rendi-${nombreDeArchivo(title)}.png`}
                 buildSpec={({ mostrarMontos, nombre }) => (compartirConDetalle ? specDeComposicion : specDeDistribucion)({
-                  titulo: title, porciones: slices, fmt, mostrarMontos: montos && mostrarMontos, nombre,
+                  titulo: title, porciones: slices, fmt, mostrarMontos, nombre,
                 })}
               />
             )}
@@ -283,7 +277,7 @@ export default function CompositionDonut({
                 <Tooltip
                   cursor={false}
                   wrapperStyle={{ outline: 'none' }}
-                  content={<DonutTooltip fmt={fmtVer} montos={montos} />}
+                  content={<DonutTooltip fmt={fmtVer} />}
                 />
               </PieChart>
             </ResponsiveContainer>
@@ -304,7 +298,6 @@ export default function CompositionDonut({
                 key={s.key}
                 slice={s}
                 fmt={fmtVer}
-                montos={montos}
                 oculto={oculto}
                 highlighted={active === i}
                 expanded={open.has(s.key)}
@@ -330,7 +323,7 @@ export default function CompositionDonut({
 // Una fila de la leyenda. Desplegable solo si tiene detalle — las porciones
 // sintéticas (plazo fijo, que no viene de `positions`) no tienen qué mostrar,
 // y darles un chevron que no hace nada es peor que no tenerlo.
-function LegendRow({ slice, fmt, montos = true, oculto = false, highlighted, expanded, onHover, onLeave, onToggle, onAssetClick }) {
+function LegendRow({ slice, fmt, oculto = false, highlighted, expanded, onHover, onLeave, onToggle, onAssetClick }) {
   // Se despliega si hay algo que mostrar: activos, o al menos el resultado
   // (el plazo fijo no tiene activos pero sí interés devengado).
   const canExpand = slice.detail?.length > 0 || Boolean(slice.pnl)
@@ -355,7 +348,7 @@ function LegendRow({ slice, fmt, montos = true, oculto = false, highlighted, exp
         <span className="text-ink-1 truncate">{slice.label}</span>
       </div>
       <div className="flex items-baseline gap-2 flex-shrink-0">
-        {montos && <span className="text-ink-3 tabular text-[11px]">{fmt(slice.value)}</span>}
+        <span className="text-ink-3 tabular text-[11px]">{fmt(slice.value)}</span>
         <span className="text-ink-0 tabular font-medium min-w-[42px] text-right">
           {slice.pct.toFixed(1).replace('.', ',')}%
         </span>
@@ -398,11 +391,9 @@ function LegendRow({ slice, fmt, montos = true, oculto = false, highlighted, exp
             <div className="flex items-baseline justify-between gap-3 text-[11px] pb-1.5 mb-1 border-b border-line/40">
               <span className="text-ink-2">Resultado</span>
               <div className="flex items-baseline gap-2 flex-shrink-0">
-                {montos && (
-                  <span className={`tabular font-medium ${toneOf(slice.pnl.total)}`}>
-                    {oculto ? OCULTO : <>{signed(slice.pnl.total)}{fmt(Math.abs(slice.pnl.total))}</>}
-                  </span>
-                )}
+                <span className={`tabular font-medium ${toneOf(slice.pnl.total)}`}>
+                  {oculto ? OCULTO : <>{signed(slice.pnl.total)}{fmt(Math.abs(slice.pnl.total))}</>}
+                </span>
                 {slice.pnl.pct != null && (
                   <span className={`tabular font-medium min-w-[46px] text-right ${toneOf(slice.pnl.total)}`}>
                     {signed(slice.pnl.pct)}{Math.abs(slice.pnl.pct).toFixed(1).replace('.', ',')}%
@@ -430,7 +421,7 @@ function LegendRow({ slice, fmt, montos = true, oculto = false, highlighted, exp
             <div className="flex items-baseline justify-between gap-3 text-[11px]">
               <span className="text-ink-1 font-mono font-medium truncate">{d.label}</span>
               <div className="flex items-baseline gap-2 flex-shrink-0">
-                {montos && <span className="text-ink-2 tabular">{fmt(d.value)}</span>}
+                <span className="text-ink-2 tabular">{fmt(d.value)}</span>
                 <span className="text-ink-0 tabular font-medium min-w-[38px] text-right">
                   {d.pct.toFixed(1).replace('.', ',')}%
                 </span>
@@ -480,7 +471,7 @@ function LegendRow({ slice, fmt, montos = true, oculto = false, highlighted, exp
 
 // Tooltip propio: recharts pinta el default con estilos inline claros que en
 // dark mode quedan ilegibles. Este usa los tokens del design system.
-function DonutTooltip({ active, payload, fmt, montos = true }) {
+function DonutTooltip({ active, payload, fmt }) {
   if (!active || !payload?.length) return null
   const d = payload[0]?.payload
   if (!d) return null
@@ -494,7 +485,7 @@ function DonutTooltip({ active, payload, fmt, montos = true }) {
         <span className="text-xs font-medium text-ink-0">{d.label}</span>
       </div>
       <div className="text-[11px] text-ink-2 tabular mt-1 pl-4">
-        {montos && <>{fmt(d.value)} · </>}<span className="text-ink-0 font-medium">{d.pct.toFixed(1).replace('.', ',')}%</span>
+        {fmt(d.value)} · <span className="text-ink-0 font-medium">{d.pct.toFixed(1).replace('.', ',')}%</span>
       </div>
       {d.detail?.length > 0 && (
         <div className="text-[10px] text-ink-3 mt-1 pl-4">

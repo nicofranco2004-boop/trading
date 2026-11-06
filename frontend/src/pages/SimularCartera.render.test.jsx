@@ -6,9 +6,10 @@
 // Lo que importa:
 //   · «Una regla | Una cartera» arriba; la cartera arranca con la tuya de hoy
 //     (la arma el servidor) o de cero, y las dos se editan;
-//   · cada activo con su porcentaje, la torta se arma mientras tanto y lo que
-//     falta para 100 se dice; sólo con 100 se pide la simulación;
-//   · el resultado: la cartera, el S&P 500 y el Nasdaq, lado a lado;
+//   · cada activo con su porcentaje, la barra del 100 % se llena mientras tanto y
+//     lo que falta para 100 se dice; sólo con 100 se pide la simulación;
+//   · la respuesta, al lado de la tabla: la cartera, el S&P 500 y el Nasdaq, lado
+//     a lado; abajo, el gráfico y «Cada activo»; de 1 a 5 años;
 //   · con «Ocultar saldos» prendido, tu cartera de hoy no se trae ni se ve;
 //   · la armada de cero queda en la dirección; la de hoy NUNCA (ni cambiada):
 //     dice qué tenés, y la dirección se ve con el ojito y viaja en los links;
@@ -38,9 +39,6 @@ vi.mock('../contexts/PrivacyContext', () => ({
   usePrivacy: () => ({ hidden: ojito.hidden, toggle: () => {} }),
   OCULTO: '•••',
 }))
-// La torta (components/CompositionDonut): se anota lo que recibe.
-const torta = vi.hoisted(() => ({ ultima: null }))
-vi.mock('../components/CompositionDonut', () => ({ default: (p) => { torta.ultima = p; return null } }))
 const dibujado = vi.hoisted(() => ({ lineas: [] }))
 vi.mock('recharts', () => {
   const nada = () => null
@@ -131,6 +129,13 @@ async function entrar(contenedor, nodo) {
 }
 const porcentajes = (c) => todos(c, n => /^Porcentaje de /.test(n.atributos?.['aria-label'] || ''))
   .map(n => [n.atributos['aria-label'].replace('Porcentaje de ', '').replace(' en la cartera', ''), n.value])
+// La barra del 100 %: cada tramo con lo que dice al pasar el mouse, cuánto ocupa y su color.
+function barra(c) {
+  const b = todos(c, n => n.atributos?.['data-barra'] != null)[0]
+  return b ? b.childNodes.map(n => [n.atributos.title, Number(n.style.flexGrow), n.atributos.class]) : null
+}
+// La tarjeta de arriba (la de la tabla), donde ahora va también la respuesta.
+const laTarjeta = (c) => todos(c, n => n.atributos?.['aria-labelledby'] === 'sc-titulo')[0]
 
 beforeAll(async () => {
   instalarNavegadorMinimo()
@@ -142,7 +147,6 @@ beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
   dibujado.lineas.length = 0
-  torta.ultima = null
   ojito.hidden = false
   asesor.clientCtx = null
   simulacion = delServidor
@@ -164,14 +168,15 @@ describe('Backtesting → Una cartera', () => {
     await esperar()
     expect(deLaDireccion(montado.donde, 'modo')).toBe('cartera')
     const t = montado.t()
+    expect(t).toContain('¿Qué querés probar?')   // el rótulo, a la vista (producto 05/11, A6)
     expect(t).toContain('Simulá una cartera con el pasado')
     expect(t).not.toContain('Probá una regla con el pasado')
     // Tu cartera de hoy, la del servidor, y lo que quedó afuera.
     expect(porcentajes(montado.contenedor)).toEqual([['AAPL', '50'], ['GGAL', '30'], ['BTC', '20']])
     expect(t).toContain('Quedó afuera AL30: no tenemos sus precios de cada día.')
     expect(t).toContain('Suma 100%')
-    expect(torta.ultima.montos).toBe(false)
-    expect(torta.ultima.items.map(i => [i.key, i.value])).toEqual([['AAPL', 50], ['GGAL', 30], ['BTC', 20]])
+    expect(barra(montado.contenedor)).toEqual([['AAPL 50%', 50, 'bg-data-violet'], ['GGAL 30%', 30, 'bg-data-violet'],
+      ['BTC 20%', 20, 'bg-data-violet']])
     // La simulación, con la marca de BYMA de GGAL, y lo que dicen los números.
     expect(simulaciones()).toEqual(['GET /backtest/cartera?activos=AAPL,GGAL,BTC&pesos=50,30,20&local=GGAL&anios=2'])
     const r = montado.t()
@@ -180,11 +185,17 @@ describe('Backtesting → Una cartera', () => {
       'Habría dado casi lo mismo que el S&P 500, y el Nasdaq le habría ganado',
       'Es tu cartera de hoy puesta en el pasado', 'No es lo que ganaste: eso está en Métricas.', 'Ver Métricas',
       'De cada US$ 100, AAPL habría sumado US$ 17,8', 'Sin tocarla, GGAL habría pasado de 30% a 19,7% de la cartera.',
-      'Sin dividendos, como la cartera', 'Peor caída: lo más que llegó a bajar desde su mejor momento.',
+      'Los índices, sin dividendos, como la cartera.', 'Peor caída: lo más que llegó a bajar desde su mejor momento.',
       'Cada activo', 'Cómo habrían ido US$ 100', 'no es una recomendación']) {
       expect(r, parte).toContain(parte)
     }
     expect(new Set(dibujado.lineas)).toEqual(new Set(['cartera', 'sp500', 'nasdaq']))
+    // La respuesta va al lado de la tabla, en la misma tarjeta, y se ve mientras escribís;
+    // el gráfico y «Cada activo», abajo (Nico 06/11; diseño 05/11, M1).
+    const arriba = texto(laTarjeta(montado.contenedor))
+    for (const parte of ['Habría dado casi lo mismo que el S&P 500, y el Nasdaq le habría ganado', 'Habría dado',
+      'Peor caída', 'Esta cartera+21,4%']) expect(arriba, parte).toContain(parte)
+    for (const parte of ['Cómo habrían ido US$ 100', 'Cada activo', 'De cada US$ 100']) expect(arriba, parte).not.toContain(parte)
     // Tu cartera de hoy NO queda en la dirección: dice qué tenés y cuánto pesa cada
     // cosa, y la dirección se ve con el ojito, queda en el historial y viaja en cada
     // link (auditorías 05/11, A2 y A3). Tampoco cambiada, ni al volver a «Una regla».
@@ -199,13 +210,14 @@ describe('Backtesting → Una cartera', () => {
     expect(deLaCartera()).toEqual([null, null, null])
   })
 
-  it('cambiar un porcentaje arma la torta y dice cuánto falta; repartir vuelve a 100 y pide de nuevo', async () => {
+  it('cambiar un porcentaje llena la barra y dice cuánto falta; repartir vuelve a 100 y pide de nuevo', async () => {
     montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera')
     await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '40')
     await esperar()
     expect(montado.t()).toContain('Total 90% · Faltan 10%')
     expect(montado.t()).toContain('Para ver cómo le habría ido, los porcentajes tienen que sumar 100%: falta repartir 10%.')
-    expect(torta.ultima.items.at(-1)).toMatchObject({ key: 'sin_dato', value: 10, label: 'Falta repartir' })
+    expect(barra(montado.contenedor)).toEqual([['AAPL 40%', 40, 'bg-data-violet'], ['GGAL 30%', 30, 'bg-data-violet'],
+      ['BTC 20%', 20, 'bg-data-violet'], ['Falta repartir 10%', 10, 'bg-data-amber/30']])
     await pasaLaPausa()
     expect(simulaciones()).toHaveLength(1)   // con 90 % no se pide
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Repartir en partes iguales'))
@@ -463,11 +475,27 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
     expect(montado.t()).toContain('Suma 100%')
   })
 
-  // M9: con más de 100, la leyenda decía porcentajes que nadie escribió.
-  it('pasada de 100, la torta dice lo que escribiste', async () => {
+  // M9: con más de 100, la torta decía porcentajes que nadie escribió.
+  it('pasada de 100, la barra dice lo que escribiste, toda en ámbar', async () => {
     montado = await abrir(`${DE_CERO}&activos=GGAL,AAPL&pesos=100,33.5`)
     expect(montado.t()).toContain('Total 133,5% · Sobran 33,5%')
-    expect(torta.ultima.items.map(i => [i.key, i.pct])).toEqual([['GGAL', 100], ['AAPL', 33.5]])
+    expect(barra(montado.contenedor)).toEqual([['GGAL 100%', 100, 'bg-data-amber'], ['AAPL 33,5%', 33.5, 'bg-data-amber']])
+  })
+
+  // A5: de 1 a 5 años, y el período lo comparten los dos modos.
+  it('«Una cartera» llega a 5 años; en «Una regla» el mismo link abre 4', async () => {
+    montado = await abrir(`${DE_CERO}&activos=KO&pesos=100`)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, '5 años'))
+    await pasaLaPausa()
+    expect(simulaciones().at(-1)).toBe('GET /backtest/cartera?activos=KO&pesos=100&anios=5')
+    expect(deLaDireccion(montado.donde, 'anios')).toBe('5')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Una regla'))
+    await esperar()
+    const periodo = porEtiqueta(montado.contenedor, 'Período')
+    const elegido = todos(periodo, n => n.nodeName === 'BUTTON' && n.atributos['aria-pressed'] === 'true')
+    expect(elegido.map(b => texto(b))).toEqual(['4 años'])
+    expect(texto(periodo)).not.toContain('5 años')
+    expect(pedidos.filter(x => /\/backtest\?reglas=/.test(x)).at(-1)).toMatch(/&anios=4/)
   })
 
   // M11: el asesor adentro de un cliente leía «Mi cartera de hoy» y «Con tus activos».
@@ -507,20 +535,21 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
     expect(simulaciones().at(-1)).toBe('GET /backtest/cartera?activos=AAPL,GGAL,BTC&pesos=49.96,30,20&local=GGAL&anios=2')
   })
 
-  // F8 y M1: la peor caída y la plata de las frases son las de cada tarjeta, como se ven.
-  it('la peor caída y la plata que dicen las frases son las de las tarjetas', async () => {
-    simulacion = () => ({ ...CASOS.recortada, curva: [] })
+  // F8 y M1: la tabla de la respuesta dice lo de cada línea como se ve; la plata, el gráfico.
+  it('la tabla de al lado dice el resultado y la peor caída de cada uno, y la plata va en el gráfico', async () => {
+    const r = CASOS.recortada
+    simulacion = () => ({ ...r, curva: [] })
     montado = await abrir(CARTERA)
-    // La tarjeta: la caja del título con ese nombre (ya no son «regiones», M9).
-    const tarjeta = (nombre) => texto(todos(montado.contenedor, x => x.nodeName === 'H3' && texto(x) === nombre)[0].parentNode.parentNode)
-    const caidaDe = (nombre) => tarjeta(nombre).match(/Peor caída([−+]?[\d.,]+%)/)[1].replace(/^[−+]/, '')
-    const plataDe = (nombre) => tarjeta(nombre).match(/Habría terminado en(US\$ [\d.,]+)/)[1]
-    const [c, s, n] = ['Esta cartera', 'S&P 500', 'Nasdaq'].map(caidaDe)
-    expect(montado.t()).toContain(`La peor caída de la cartera habría sido de ${c}, contra ${s} del S&P 500 y ${n} del Nasdaq.`)
-    // La plata de las tarjetas es la de la leyenda del gráfico, con un decimal.
-    const [pc, ps, pn] = ['Esta cartera', 'S&P 500', 'Nasdaq'].map(plataDe)
-    expect(montado.t()).toContain(`Esta cartera${pc}S&P 500${ps}Nasdaq${pn}`)
-    expect(pc).toMatch(/,\d$/)
+    const renglon = (nombre) => texto(todos(laTarjeta(montado.contenedor), x => x.nodeName === 'TH' && texto(x) === nombre)[0].parentNode)
+    for (const [nombre, x] of [['Esta cartera', r.cartera], ['S&P 500', r.indices[0]], ['Nasdaq', r.indices[1]]]) {
+      expect(renglon(nombre), nombre).toBe(`${nombre}${porcentaje(x.resultado)}${porcentaje(x.peor_caida, 0)}`)
+    }
+    // Una caída que redondea a 0 se ve con su decimal: «−0,3%», no «0%» (auditoría de las pruebas, F8).
+    expect(renglon('Esta cartera')).toContain('−0,3%')
+    // Desde cuándo arranca, al lado de los números que cambia.
+    expect(texto(laTarjeta(montado.contenedor))).toContain('Tenemos precios de NUEVA desde el 26/01/26: la simulación arranca ese día.')
+    // La plata de la leyenda del gráfico, con un decimal.
+    expect(montado.t()).toMatch(/Esta carteraUS\$ [\d.]+,\dS&P 500US\$ [\d.]+,\dNasdaqUS\$ [\d.]+,\d/)
   })
 
   // F9: si todos restaron, la frase nombra al que más restó (del servidor).

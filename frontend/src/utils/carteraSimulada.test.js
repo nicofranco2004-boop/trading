@@ -6,10 +6,10 @@
 //     (backend/tests/fixtures/cartera_simulada.json, que test_cartera_simulada.py
 //     compara contra cartera_simulada.simular), no de un caso armado a mano;
 //   · cada porcentaje acepta coma, hasta 100; cuánto falta o sobra se dice;
-//   · la torta va de la porción más grande a la más chica, con la rampa de las
-//     tortas de composición, y lo que falta para 100 al final;
-//   · cada número de una frase es el de su tarjeta (el formateador de la tarjeta,
-//     no una cuenta de la prueba);
+//   · la barra del 100 % va en el orden de la tabla, con lo que falta al final, y
+//     dice lo escrito aunque pase de 100;
+//   · cada número de una frase es el que se ve (el formateador de la pantalla, no
+//     una cuenta de la prueba);
 //   · habla de lo que tenemos («no tenemos los precios de AL30»), y con el asesor
 //     adentro de un cliente, de la cartera de él;
 //   · nunca promete ni dice cuál cartera es «mejor».
@@ -20,11 +20,10 @@ import { describe, it, expect } from 'vitest'
 import {
   COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, TOLERANCIA,
   aLaDireccion, aclaracionDeLaCartera, carteraDe, consultaDe, errorDeHoy, estadoDeLaCartera, filasDeHoy, lecturaCartera,
-  limpiar, loQueFalta, motivoCartera, notaDeHoy, notaDeLosQueSobran, notaHoy, notaOjito, notaSinActivos, numeroDe, origenDe,
-  origenes, porcionesDeLaTorta, repartirIgual, sobranDe, textoDe, totalDe, trayendoHoy,
+  limpiar, loQueFalta, motivoCartera, notaDeHoy, notaDeLosQueSobran, notaDelResumen, notaHoy, notaOjito, notaSinActivos,
+  numeroDe, origenDe, origenes, repartirIgual, sobranDe, textoDe, totalDe, tramosDeLaBarra, trayendoHoy,
 } from './carteraSimulada'
 import { modoDe, porcentaje } from './backtesting'
-import { porcionColor } from './chartTheme'
 
 const AQUI = dirname(fileURLToPath(import.meta.url))
 const CASOS = JSON.parse(readFileSync(resolve(AQUI, '../../../backend/tests/fixtures/cartera_simulada.json'), 'utf8'))
@@ -114,21 +113,21 @@ describe('la dirección y el pedido', () => {
   })
 })
 
-describe('la torta', () => {
-  it('de la más grande a la más chica, con la rampa de composición, y lo que falta al final', () => {
-    const p = porcionesDeLaTorta([fila('KO', '10'), fila('AAPL', '50'), fila('GGAL', '25'), fila('X', '')])
-    expect(p.map(x => [x.key, x.value, x.pct, x.color])).toEqual([
-      ['AAPL', 50, 50, porcionColor(0)], ['GGAL', 25, 25, porcionColor(1)], ['KO', 10, 10, porcionColor(2)],
-      ['sin_dato', 15, 15, 'rgb(var(--bg-3))'],
-    ])
-    expect(p.at(-1).label).toBe('Falta repartir')
+describe('la barra del 100 %', () => {
+  it('en el orden de la tabla (no de mayor a menor), sin los que no tienen porcentaje, y lo que falta al final', () => {
+    // Era una torta de mayor a menor: la leyenda iba en otro orden que la tabla y los
+    // colores cambiaban de activo mientras escribías (diseño 05/11, M3).
+    const b = tramosDeLaBarra([fila('KO', '10'), fila('AAPL', '50'), fila('GGAL', '25'), fila('X', '')])
+    expect(b).toEqual({ tramos: [{ asset: 'KO', peso: 10 }, { asset: 'AAPL', peso: 50 }, { asset: 'GGAL', peso: 25 }],
+      falta: 15, sobra: false })
+    expect(tramosDeLaBarra([fila('A', '33,33'), fila('B', '33,33'), fila('C', '33,33')]).falta).toBe(0)   // V6
+    expect(tramosDeLaBarra([]).tramos).toEqual([])
   })
 
-  it('pasada de 100, la leyenda dice lo escrito y no hay hueco', () => {
-    // El dibujo reparte la vuelta entre todos (por `value`); la leyenda, los mismos
-    // números que la izquierda: con 80 y 40 decía 66,7 % y 33,3 % (M9).
-    const p = porcionesDeLaTorta([fila('A', '80'), fila('B', '40')])
-    expect(p.map(x => [x.key, x.value, x.pct])).toEqual([['A', 80, 80], ['B', 40, 40]])
+  it('pasada de 100, cada tramo dice lo escrito y la barra lo marca', () => {
+    // Con 80 y 40 la torta decía 66,7 % y 33,3 %: números que nadie escribió (M9).
+    expect(tramosDeLaBarra([fila('A', '80'), fila('B', '40')]))
+      .toEqual({ tramos: [{ asset: 'A', peso: 80 }, { asset: 'B', peso: 40 }], falta: 0, sobra: true })
   })
 })
 
@@ -184,15 +183,18 @@ describe('lo que dicen los números', () => {
     // Con «Mi cartera de hoy», que es tu cartera de hoy puesta en el pasado y no lo que ganaste.
     expect(l.aclaracion).toBe('Es tu cartera de hoy puesta en el pasado: con los pesos de hoy desde el primer día, con '
       + 'lo que compraste después y sin lo que vendiste. No es lo que ganaste: eso está en Métricas.')
-    // Los aportes en dólares de cada US$ 100 (diseño M7); los «habrían quedado en» no se repiten:
-    // están en las tarjetas y en el gráfico (diseño M10).
-    expect(l.frases).toEqual([
+    // Los aportes en dólares de cada US$ 100 (diseño M7) van con «Cada activo»; los «habrían
+    // quedado en» no se repiten: están en el gráfico (diseño M10). La peor caída de la
+    // cartera y la de los índices se ven juntas en la tabla de la respuesta: no van
+    // también en una frase.
+    expect(l.deLosActivos).toEqual([
       'De cada US$ 100, AAPL habría sumado US$ 17,8 y GGAL habría restado US$ 6,0: entre todos, la cartera habría dado +21,4%.',
       'Sin tocarla, GGAL habría pasado de 30% a 19,7% de la cartera.',
-      `La peor caída de la cartera habría sido de ${CAIDA(CASOS.tres.cartera)}, `
-        + `contra ${CAIDA(CASOS.tres.indices[0])} del S&P 500 y ${CAIDA(CASOS.tres.indices[1])} del Nasdaq.`,
     ])
-    expect(CAIDA(CASOS.tres.cartera)).toBe('20%')
+    expect(l.avisos).toEqual([])
+    expect([l.titulo, l.aclaracion, ...l.deLosActivos].join(' ')).not.toMatch(/peor caída/i)
+    // Debajo de la tabla: de cuándo a cuándo, y los índices sin dividendos como la cartera.
+    expect(notaDelResumen(CASOS.tres)).toBe('Del 31/10/24 al 30/10/26, en dólares. Los índices, sin dividendos, como la cartera.')
     // Armada de cero: el diario del lunes.
     expect(lecturaCartera(CASOS.tres, { origen: 'cero' }).aclaracion)
       .toBe('Elegir los porcentajes mirando este resultado es elegir con el diario del lunes.')
@@ -201,30 +203,20 @@ describe('lo que dicen los números', () => {
   it('sin el Nasdaq lo dice, y compara con el que hay', () => {
     const l = lecturaCartera(CASOS.sin_nasdaq)
     expect(l.titulo).toBe('Habría dado casi lo mismo que el S&P 500')
-    expect(l.frases.at(-1)).toBe('Todavía no tenemos la historia del Nasdaq para compararla.')
+    expect(l.avisos).toEqual(['Todavía no tenemos la historia del Nasdaq para compararla.'])
   })
 
   it('si un activo cotiza desde después, dice desde cuándo', () => {
     const l = lecturaCartera(CASOS.recortada)
-    expect(l.frases).toContain('Tenemos precios de NUEVA desde el 26/01/26: la simulación arranca ese día.')
-    // Las caídas de la frase son las de las tarjetas, también las que redondean a 0
-    // («0,3 %», no «0 %»; auditoría de las pruebas, F8).
-    const deLaFrase = l.frases.find(f => f.startsWith('La peor caída'))
-    for (const x of [CASOS.recortada.cartera, ...CASOS.recortada.indices]) expect(deLaFrase).toContain(CAIDA(x))
+    expect(l.avisos).toEqual(['Tenemos precios de NUEVA desde el 26/01/26: la simulación arranca ese día.'])
   })
 
   it('si todos restaron, nombra al que MÁS restó', () => {
     const l = lecturaCartera(CASOS.todos_restan)
     const [baja1, baja2] = CASOS.todos_restan.activos
     expect(baja2.aporte).toBeLessThan(baja1.aporte)
-    expect(l.frases).toContain(`De cada US$ 100, el que más habría restado es BAJA2: ${dolares(baja2.aporte)} de los `
+    expect(l.deLosActivos).toContain(`De cada US$ 100, el que más habría restado es BAJA2: ${dolares(baja2.aporte)} de los `
       + `${dolares(CASOS.todos_restan.cartera.resultado)} que habría perdido la cartera.`)
-  })
-
-  it('una cartera que no llegó a bajar no dice «su peor caída fue de 0 %»', () => {
-    const l = lecturaCartera({ ...CASOS.tres, cartera: { ...CASOS.tres.cartera, peor_caida: 0 } })
-    expect(l.frases).toContain(`La cartera no habría llegado a bajar desde su mejor momento. En el mismo período, el S&P 500 `
-      + `llegó a caer ${CAIDA(CASOS.tres.indices[0])} y el Nasdaq llegó a caer ${CAIDA(CASOS.tres.indices[1])}.`)
   })
 
   it('la nota de «Cada activo» dice la regla que cumplen los números del servidor', () => {
@@ -297,7 +289,10 @@ describe('en el modo demo', () => {
 describe('nunca promete', () => {
   it('ni «suele», ni «conviene», ni «la mejor cartera», ni consejos', () => {
     const textos = [
-      ...Object.values(CASOS).flatMap(r => { const l = lecturaCartera(r); return l ? [l.titulo, ...l.frases] : [motivoCartera(r)] }),
+      ...Object.values(CASOS).flatMap(r => {
+        const l = lecturaCartera(r)
+        return l ? [l.titulo, l.aclaracion, ...l.avisos, ...l.deLosActivos, notaDelResumen(r)] : [motivoCartera(r)]
+      }),
       QUE_SE_SIMULA, notaHoy(), notaHoy('Ana', true), notaOjito(), notaSinActivos('Ana'), NOTA_CADA_ACTIVO,
       COMO_SE_SIMULA_CARTERA, ...['sin_serie', 'vieja', 'poca_historia', 'tope', 'bajando', 'demo', 'otro']
         .map(m => motivoCartera({ motivo: m, faltan: [{ asset: 'X', hasta: '2026-01-02' }] }, 1)),
@@ -305,13 +300,6 @@ describe('nunca promete', () => {
     expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|conviene|deber[íi]as|mejor cartera|la mejor\b|te recomend|ayuda|muchas veces|garantiz/i)
   })
 })
-
-// La caída como la escribe la TARJETA (`porcentaje(x, 0)`, sin el signo), no con
-// una cuenta propia: con `Math.round` daba «0 %» donde la tarjeta dice «−0,3 %», y
-// la prueba no lo veía (auditoría de las pruebas 05/11, F8).
-function CAIDA(x) {
-  return porcentaje(x.peor_caida, 0).replace(/^[−+-]/, '')
-}
 
 // Dólares de cada US$ 100 como los escribe la frase (sin signo, un decimal).
 function dolares(x) {

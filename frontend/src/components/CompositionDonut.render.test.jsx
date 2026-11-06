@@ -1,7 +1,6 @@
-// La torta de composición (components/CompositionDonut) montada: con plata (la
-// de tu cartera) cada renglón dice el monto y el %; con `montos={false}` (la
-// cartera que se arma en «Simular una cartera») sólo el %, y el ojito no tiene
-// plata que tapar.
+// La torta de composición (components/CompositionDonut) montada: cada renglón dice
+// el monto y el %, y con el ojito prendido el monto se tapa; el globo y la fila
+// desplegada, igual. La torta no es una parada del teclado.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, clic, buscarBoton } from '../testing/navegadorMinimo'
@@ -48,45 +47,24 @@ describe('la torta de composición', () => {
     expect(texto(montado.contenedor)).toContain('•••')
   })
 
-  it('sólo porcentajes: ni monto ni puntos de tapado', async () => {
-    const { default: CompositionDonut } = await import('./CompositionDonut')
-    ojito.hidden = true
-    montado = await montar(h(CompositionDonut, { title: 'La torta', items: ITEMS, montos: false }))
-    const t = texto(montado.contenedor)
-    expect(t).toContain('60,0%')
-    expect(t).toContain('40,0%')
-    expect(t).not.toContain('US$')
-    expect(t).not.toContain('•••')
-  })
-
-  it('el globo, con plata dice el monto; con montos={false}, sólo el %', async () => {
+  it('el globo dice el monto y el %', async () => {
     const { default: CompositionDonut } = await import('./CompositionDonut')
     encima.porcion = ITEMS[0]
     montado = await montar(h(CompositionDonut, { title: 'Por activo', items: ITEMS }))
     expect(texto(montado.contenedor)).toContain('US$ 600 · ')       // el globo se dibuja
-    await montado.desmontar()
-    montado = await montar(h(CompositionDonut, { title: 'La torta', items: ITEMS, montos: false }))
     expect(texto(montado.contenedor)).toContain('60,0%')
-    expect(texto(montado.contenedor)).not.toContain('US$')
   })
 
-  it('con montos={false} tampoco hay plata en la fila desplegada ni en su resultado', async () => {
-    // Antes tapaba sólo la leyenda y el globo: la fila desplegada y el «Resultado»
-    // de la porción decían la plata (auditoría de regresiones 05/11, B2).
+  it('la fila desplegada dice la plata de cada activo y el resultado de la porción', async () => {
     const { default: CompositionDonut } = await import('./CompositionDonut')
     const conActivos = [{ ...ITEMS[0], key: 'acciones', label: 'Acciones', pnl: { total: 2442, pct: 12.5 },
       assets: [{ asset: 'AAPL', value: 3442, pct: 60, pnl: { total: 2442, pct: 12.5 } }] }, ITEMS[1]]
-    for (const montos of [true, false]) {
-      montado = await montar(h(CompositionDonut, { title: 'La torta', items: conActivos, montos }))
-      await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Acciones'))
-      const t = texto(montado.contenedor)
-      expect(t, `montos=${montos}`).toContain('Resultado')
-      expect(t, `montos=${montos}`).toContain('+12,5%')
-      if (montos) expect(t).toContain('US$ 3.442')
-      else expect(t).not.toContain('US$')
-      await montado.desmontar()
-      montado = null
-    }
+    montado = await montar(h(CompositionDonut, { title: 'Por activo', items: conActivos }))
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Acciones'))
+    const t = texto(montado.contenedor)
+    expect(t).toContain('Resultado')
+    expect(t).toContain('+12,5%')
+    expect(t).toContain('US$ 3.442')
   })
 
   it('la torta no es una parada del teclado (lo que dice cada porción está en la leyenda)', async () => {

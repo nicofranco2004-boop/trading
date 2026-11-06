@@ -3,18 +3,23 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Nico, 05/11/2026; boceto aprobado (opción A, dentro de Backtesting):
 // https://claude.ai/artifact/46cJx7aUeeH9CkVA7LAqX5.
-// Arrancás con tu cartera de hoy o de cero, ponés cada activo y cuánto de la
-// cartera va en él (sobre 100) y la torta se arma mientras escribís. Con 100 %
-// repartido se ve qué habría pasado con US$ 100 comprados así el primer día y
-// sin tocar, al lado del S&P 500 y del Nasdaq: las tarjetas, qué quiere decir,
-// el gráfico y qué hizo cada activo.
+// Arrancás con tu cartera de hoy o de cero y ponés cada activo y cuánto de la
+// cartera va en él (sobre 100); la barra de abajo de la tabla se llena mientras
+// escribís. Con 100 % repartido se ve qué habría pasado con US$ 100 comprados así
+// el primer día y sin tocar, al lado del S&P 500 y del Nasdaq, de 1 a 5 años.
+//
+// LA RESPUESTA VA AL LADO DE LA TABLA (Nico, 06/11: «primero las mejoras»; diseño
+// 05/11, M1). En la compu, donde estaba la torta van qué habría pasado y los
+// números de la cartera y de los dos índices, así se ve mientras escribís: estaba
+// ~950 px abajo, afuera de la pantalla. En el celular va debajo de la tabla. Más
+// abajo siguen el gráfico y «Cada activo». La torta pasó a ser una barra finita:
+// repetía la tabla y sus colores cambiaban de activo mientras escribías (M3).
 //
 // LA CUENTA LA HACE EL SERVIDOR (GET /api/backtest/cartera → backend/
 // cartera_simulada.py), y «Mi cartera de hoy» también (GET /api/backtest/
 // cartera/hoy: LA regla de qué tiene precio de todos los días, y nunca plata).
-// Las palabras: utils/carteraSimulada.js, que nunca promete. La torta es LA de
-// la cartera (components/CompositionDonut), sólo con porcentajes. El pedido, con
-// sus reintentos, es el mismo de «Una regla» (`usePedidoDePrueba`).
+// Las palabras: utils/carteraSimulada.js, que nunca promete. El pedido, con sus
+// reintentos, es el mismo de «Una regla» (`usePedidoDePrueba`).
 //
 // LA DIRECCIÓN lleva la cartera SÓLO si la armaste de cero (?origen=cero
 // &activos=AAPL,GGAL&pesos=60,40&local=GGAL&anios=2): recargar o mandar el link
@@ -33,33 +38,29 @@
 // que tiene las acciones argentinas: con el de Análisis fundamental, AGRO sólo
 // ofrecía Adecoagro (verificación 05/11, V2). «GGAL.BA» es GGAL: no entra dos veces.
 //
-// El resultado: primero la respuesta, después los números (diseño 05/11, M1), en
-// condicional y, con «Mi cartera de hoy», diciendo que no es lo que ganaste
-// (producto y método 05/11). Mientras la suma no da 100, el último resultado queda
-// tenue en vez de desaparecer (M2).
+// El resultado, en condicional y, con «Mi cartera de hoy», diciendo que no es lo
+// que ganaste (producto y método 05/11). Mientras la suma no da 100, el último
+// resultado queda tenue en vez de desaparecer (M2).
 //
 // Una sola pantalla para compu y celular (R6).
 
 import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Plus, X } from 'lucide-react'
-import CompositionDonut from '../components/CompositionDonut'
 import Segmento from '../components/asset/Segmento'
 import Skeleton from '../components/Skeleton'
 import TickerSearch from '../components/fundamentals/TickerSearch'
-import {
-  Aviso, GraficoDeCien, PUNTEADO, QUE_ES_LA_PEOR_CAIDA, TarjetaDeResultado, Trazo, usePedidoDePrueba, v,
-} from '../components/backtest/piezas'
+import { Aviso, GraficoDeCien, PUNTEADO, QUE_ES_LA_PEOR_CAIDA, Trazo, usePedidoDePrueba, v } from '../components/backtest/piezas'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { usePrivacy } from '../contexts/PrivacyContext'
 import { useLotesDeLaCuenta } from '../hooks/useLotesDeLaCuenta'
 import { api } from '../utils/api'
-import { PERIODOS, aniosDe, colorDe, enQueTermino, porcentaje } from '../utils/backtesting'
+import { PERIODOS_CARTERA, aniosDe, colorDe, porcentaje } from '../utils/backtesting'
 import {
   COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, aLaDireccion, carteraDe, consultaDe,
   errorDeHoy, estadoDeLaCartera, filasDeHoy, lecturaCartera, limpiar, loQueFalta, motivoCartera, notaDeHoy,
-  notaDeLosQueSobran, notaHoy, notaOjito, notaSinActivos, origenDe, origenes, pesoTxt, porcionesDeLaTorta,
-  repartirIgual, sobranDe, textoDe, trayendoHoy,
+  notaDeLosQueSobran, notaDelResumen, notaHoy, notaOjito, notaSinActivos, origenDe, origenes, pesoTxt, repartirIgual,
+  sobranDe, textoDe, tramosDeLaBarra, trayendoHoy,
 } from '../utils/carteraSimulada'
 import { marcaLocal } from '../utils/comparadorPrecio'
 import { fechaCorta } from '../utils/cuantoSeMueve'
@@ -79,10 +80,16 @@ const DE_LA_CARTERA = ['activos', 'pesos', 'local']
 // «GGAL.BA» y «GGAL» son el mismo papel en la cartera: la marca dice la serie.
 const sinBA = (s) => s.replace(/\.BA$/, '')
 
+/** La cartera y cada índice, como se ven en la respuesta y en el gráfico. */
+const lineasDe = (res) => [
+  { clave: 'cartera', nombre: 'Esta cartera', color: COLOR_CARTERA, resumen: res.cartera },
+  ...res.indices.map(i => ({ clave: i.clave, nombre: i.nombre, ...VARA[i.clave], resumen: i })),
+]
+
 export default function SimularCartera() {
   const [searchParams, setSearchParams] = useSearchParams()
   const origen = origenDe(searchParams.get('origen'), searchParams.has('activos'))
-  const anios = aniosDe(searchParams.get('anios'))
+  const anios = aniosDe(searchParams.get('anios'), PERIODOS_CARTERA)
   const { hidden } = usePrivacy()
   const { clientCtx } = useAdvisorContext()
   const cliente = nombreDelCliente(clientCtx)
@@ -219,12 +226,16 @@ export default function SimularCartera() {
   }
 
   const estado = estadoDeLaCartera(filas)
-  const porciones = porcionesDeLaTorta(filas)
   const lleno = filas.length >= MAX_ACTIVOS
   const trayendo = origen === 'hoy' && hoy.estado === 'trayendo'
   // Con el ojito prendido, tu cartera de hoy no se ve aunque ya estuviera
   // cargada: los porcentajes (y «pasó de 30 % a 20 %») dicen qué tenés.
   const tapada = hidden && origen === 'hoy'
+  // Tapada no se pide nada, tampoco en el dibujo antes de que se vacíe la tabla.
+  const sim = useSimulacion(tapada ? [] : filas, anios)
+  const vista = loQueSeVe(sim)
+  // Cambiada, ya no es «tu cartera de hoy»: lo que vale es lo del diario del lunes.
+  const deDonde = origen === 'hoy' && !cambiada ? 'hoy' : 'cero'
   const yaEstaEnLaCartera = (t) => (filas.some(f => f.asset === sinBA(String(t?.symbol || '').toUpperCase())) ? 'Ya está' : null)
 
   return (
@@ -245,7 +256,7 @@ export default function SimularCartera() {
           <div className="flex flex-col gap-1.5">
             <span className="text-[12px] font-medium text-ink-2">Período</span>
             <div className="flex">
-              <Segmento etiqueta="Período" valor={anios} alElegir={cambiarAnios} opciones={PERIODOS} estirar />
+              <Segmento etiqueta="Período" valor={anios} alElegir={cambiarAnios} opciones={PERIODOS_CARTERA} estirar />
             </div>
           </div>
         </div>
@@ -289,6 +300,7 @@ export default function SimularCartera() {
             {!filas.length && !trayendo && (
               <p className="py-3 text-[13px] text-ink-1">Todavía no hay activos. Sumá el primero y poné cuánto de la cartera va en él.</p>
             )}
+            {filas.length > 0 && <BarraDelCien filas={filas} />}
             <div className="flex flex-wrap items-center justify-between gap-2 pt-3">
               <div className="flex flex-wrap items-center gap-2">
                 {/* Mientras se trae tu cartera de hoy no se suma: lo sumado quedaba debajo
@@ -307,7 +319,7 @@ export default function SimularCartera() {
                   </button>
                 )}
               </div>
-              {/* Lo enfoca «Repartir» del aviso de abajo, que desaparece al tocarlo. Sin
+              {/* Lo enfoca «Repartir» del aviso de al lado, que desaparece al tocarlo. Sin
                   activos no dice nada (en ámbar, «Faltan 100%» antes de escribir nada
                   parecía un error); con 100, sólo eso (diseño 05/11, B12 y M10). */}
               <span ref={totalRef} tabIndex={-1} role="status"
@@ -328,19 +340,44 @@ export default function SimularCartera() {
               </div>
             )}
           </div>
-          <CompositionDonut title="La torta" items={porciones} montos={false} maxSlices={MAX_ACTIVOS + 1} minSlicePct={0}
-            emptyLabel="Sumá un activo y poné cuánto va: la torta se arma acá." />
+          <Respuesta sim={sim} vista={vista} filas={filas} estado={estado} trayendoHoy={trayendo} origen={deDonde}
+            cliente={cliente} onRepartir={() => { totalRef.current?.focus?.(); repartir() }} />
         </div>}
       </section>
 
-      {!tapada && (
-        // Cambiada, ya no es «tu cartera de hoy»: lo que vale es lo del diario del lunes.
-        <Simulacion filas={filas} anios={anios} estado={estado} origen={origen === 'hoy' && !cambiada ? 'hoy' : 'cero'}
-          cliente={cliente}
-          onRepartir={() => { totalRef.current?.focus?.(); repartir() }} />
-      )}
+      {!tapada && <Detalle sim={sim} vista={vista} />}
     </div>
   )
+}
+
+/** El pedido de la simulación, sólo con 100 % repartido (el mismo de «Una regla»,
+ *  `usePedidoDePrueba`), y el último resultado que se pudo simular: queda tenue
+ *  mientras la suma no da 100 o mientras llega el nuevo (M2). */
+function useSimulacion(filas, anios) {
+  const consulta = consultaDe(filas, anios)
+  const pedido = usePedidoDePrueba(consulta ? `/backtest/cartera?${consulta}` : null, { pausa: PAUSA_MS })
+  const ultimo = useRef(null)
+  if (pedido.res?.disponible) ultimo.current = pedido.res
+  if (!filas.length) ultimo.current = null
+  // «Simuló una cartera» se cuenta una vez por cartera y período, no en cada reintento.
+  const contado = useRef(null)
+  useEffect(() => {
+    if (pedido.res?.disponible && consulta && contado.current !== consulta) {
+      contado.current = consulta
+      track('cartera_simulada', { activos: filas.length, anios })
+    }
+  }, [pedido.res]) // eslint-disable-line react-hooks/exhaustive-deps
+  return { ...pedido, consulta, ultimo: ultimo.current }
+}
+
+/** El resultado que se ve, el MISMO al lado de la tabla y abajo: {res, tenue,
+ *  cargando}, o null si no hay ninguno (falta repartir, un error, un aviso). */
+function loQueSeVe({ consulta, res, error, cargando, trayendo, ultimo }) {
+  if (!consulta) return ultimo ? { res: ultimo, tenue: true, cargando: false } : null
+  if (error || (trayendo && !res?.disponible)) return null
+  if (!res || (cargando && !res.disponible)) return ultimo ? { res: ultimo, tenue: true, cargando: true } : null
+  if (!res.disponible) return null
+  return { res, tenue: cargando, cargando }
 }
 
 function NotaDeHoy({ hoy, cliente, cambiada, onReintentar, onArmarDeCero }) {
@@ -365,32 +402,45 @@ function NotaDeHoy({ hoy, cliente, cambiada, onReintentar, onArmarDeCero }) {
   return <p className="text-[12.5px] text-ink-2">{nota}{hoy.nota && !cambiada ? ` ${hoy.nota}` : ''}</p>
 }
 
-/** Lo que dice el servidor de la cartera armada: se pide sólo cuando suma 100.
- *  Mientras no suma 100, el último resultado queda tenue debajo del aviso, en vez
- *  de desaparecer y hacer saltar la página (diseño 05/11, M2). */
-function Simulacion({ filas, anios, estado, origen, cliente, onRepartir }) {
-  const consulta = consultaDe(filas, anios)
-  const { res, error, estadoHttp, cargando, trayendo, reintentar } = usePedidoDePrueba(
-    consulta ? `/backtest/cartera?${consulta}` : null, { pausa: PAUSA_MS })
+/** La barra del 100 % (`tramosDeLaBarra`): un tramo violeta por activo, en el orden
+ *  de la tabla y cortados por una rayita; lo que falta, en ámbar tenue (como
+ *  «Faltan 10%»); pasada de 100, toda en ámbar (como «Sobran 33,5%»). Al pasar el
+ *  mouse, cada tramo dice de quién es. Lo que dice ya lo dicen la tabla y el total:
+ *  el lector de pantalla no la lee. */
+function BarraDelCien({ filas }) {
+  const { tramos, falta, sobra } = tramosDeLaBarra(filas)
+  return (
+    <div data-barra="" aria-hidden="true" className="flex gap-0.5 h-2 mt-3 rounded-full overflow-hidden">
+      {tramos.map(t => (
+        <span key={t.asset} title={`${t.asset} ${pesoTxt(t.peso)}`} className={sobra ? 'bg-data-amber' : 'bg-data-violet'}
+          style={{ flexGrow: t.peso, flexBasis: 0 }} />
+      ))}
+      {falta > 0 && (
+        <span title={`Falta repartir ${pesoTxt(falta)}`} className="bg-data-amber/30" style={{ flexGrow: falta, flexBasis: 0 }} />
+      )}
+    </div>
+  )
+}
+
+/** Al lado de la tabla (en el celular, debajo): qué habría pasado, o por qué
+ *  todavía no se ve. Mientras la suma no da 100, el aviso arriba y el último
+ *  resultado tenue debajo (M2). */
+function Respuesta({ sim, vista, filas, estado, trayendoHoy, origen, cliente, onRepartir }) {
   // El teclado no se pierde cuando el botón que lo tenía desaparece: va acá.
   const zona = useRef(null)
-  const otraVez = () => { zona.current?.focus?.(); reintentar() }
-  // El último que se pudo simular, para dejarlo tenue mientras la suma no da 100.
-  const ultimo = useRef(null)
-  if (res?.disponible) ultimo.current = res
-  if (!filas.length) ultimo.current = null
-  // «Simuló una cartera» se cuenta una vez por cartera y período, no en cada reintento.
-  const contado = useRef(null)
-  useEffect(() => {
-    if (res?.disponible && consulta && contado.current !== consulta) {
-      contado.current = consulta
-      track('cartera_simulada', { activos: filas.length, anios })
-    }
-  }, [res]) // eslint-disable-line react-hooks/exhaustive-deps
+  const otraVez = () => { zona.current?.focus?.(); sim.reintentar() }
+  const resumen = vista && <Resumen res={vista.res} atenuado={!sim.consulta} cargando={vista.cargando} origen={origen} cliente={cliente} />
 
-  let contenido = null
-  if (!consulta) {
-    if (estado.aviso) {
+  let contenido
+  if (!sim.consulta) {
+    if (trayendoHoy) contenido = <EsperandoLaRespuesta />
+    else if (!filas.length) {
+      contenido = (
+        <p className="rounded-lg border border-dashed border-line-2 px-4 py-5 text-[13px] text-ink-2 leading-relaxed">
+          Cuando los porcentajes sumen 100%, acá vas a ver cómo le habría ido a la cartera al lado del S&P 500 y del Nasdaq.
+        </p>
+      )
+    } else {
       contenido = (
         <div className="flex flex-col gap-4">
           <Aviso>
@@ -402,94 +452,112 @@ function Simulacion({ filas, anios, estado, origen, cliente, onRepartir }) {
               </button>
             )}
           </Aviso>
-          {ultimo.current && <Resultado res={ultimo.current} atenuado origen={origen} cliente={cliente} />}
+          {resumen}
         </div>
       )
     }
-  } else if (error && estadoHttp === 429) {
+  } else if (sim.error && sim.estadoHttp === 429) {
     // El freno: el servidor ya dice cuánto esperar; sin «Reintentar» que volvería a
     // frenar ni un «en unos segundos» que lo contradiga (diseño 05/11, B2).
-    contenido = <Aviso error>{error}</Aviso>
-  } else if (error) {
-    contenido = <Aviso error detalle={error} onReintentar={otraVez}>No pudimos simular la cartera.</Aviso>
-  } else if (trayendo && !res?.disponible) {
+    contenido = <Aviso error>{sim.error}</Aviso>
+  } else if (sim.error) {
+    contenido = <Aviso error detalle={sim.error} onReintentar={otraVez}>No pudimos simular la cartera.</Aviso>
+  } else if (sim.trayendo && !sim.res?.disponible) {
     // Otra persona está bajando esos precios y se vuelve a pedir solo: se dice, en
     // vez de 12 segundos de gris (como en «Una regla»; auditoría 05/11, M8).
     contenido = <Aviso>Estamos trayendo los precios de los activos nuevos: un momento…</Aviso>
-  } else if (!res || (cargando && !res.disponible)) {
-    // Un aviso de otra cartera no queda en pantalla mientras se pide la nueva (M8).
-    contenido = ultimo.current
-      ? <Resultado res={ultimo.current} cargando origen={origen} cliente={cliente} />
-      : (
-        <div className="flex flex-col gap-4" aria-busy="true">
-          <Skeleton className="h-24 w-full rounded-lg" />
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            <Skeleton className="h-36 w-full rounded-xl" />
-            <Skeleton className="h-36 w-full rounded-xl" />
-            <Skeleton className="h-36 w-full rounded-xl hidden lg:block" />
-          </div>
-        </div>
-      )
-  } else if (!res.disponible) {
+  } else if (sim.res && !sim.res.disponible && !sim.cargando) {
     contenido = (
-      <Aviso onReintentar={res.motivo === 'bajando' || res.motivo === 'tope' ? otraVez : null}>
-        {motivoCartera(res, filas.length)}
+      <Aviso onReintentar={sim.res.motivo === 'bajando' || sim.res.motivo === 'tope' ? otraVez : null}>
+        {motivoCartera(sim.res, filas.length)}
       </Aviso>
     )
   } else {
-    contenido = <Resultado res={res} cargando={cargando} origen={origen} cliente={cliente} />
+    // Un aviso de otra cartera no queda en pantalla mientras se pide la nueva (M8).
+    contenido = resumen || <EsperandoLaRespuesta />
   }
-  return <div ref={zona} tabIndex={-1} className="focus:outline-none empty:hidden">{contenido}</div>
+  return (
+    <div ref={zona} tabIndex={-1} className="min-w-0 focus:outline-none border-t border-line pt-4 lg:border-t-0 lg:pt-0 lg:border-l lg:pl-5">
+      {contenido}
+    </div>
+  )
 }
 
-function Resultado({ res, cargando = false, atenuado = false, origen, cliente }) {
-  const lec = lecturaCartera(res, { origen, cliente })
-  const tarjetas = [
-    { clave: 'cartera', nombre: 'Esta cartera', color: COLOR_CARTERA, resumen: res.cartera },
-    ...res.indices.map(i => ({ clave: i.clave, nombre: i.nombre, ...VARA[i.clave], resumen: i })),
-  ]
+function EsperandoLaRespuesta() {
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3" aria-busy="true">
+      <Skeleton className="h-6 w-4/5" />
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-28 w-full rounded-lg" />
+    </div>
+  )
+}
+
+/** Qué habría pasado, primero (diseño 05/11, M1), y los números de la cartera y de
+ *  los dos índices en una tabla: lo que decían las tres tarjetas, lado a lado. */
+function Resumen({ res, cargando = false, atenuado = false, origen, cliente }) {
+  const lec = lecturaCartera(res, { origen, cliente })
+  return (
+    <div className="flex flex-col gap-3">
       {/* «Actualizando…» en su renglón fijo (antes empujaba todo; diseño 05/11, B3), y
           el resultado nuevo se anuncia al lector de pantalla (M9). */}
       {!atenuado && (
         <p role="status" className="text-[12.5px] text-ink-2 h-5 -mb-2">
-          {cargando ? 'Actualizando…' : <span className="sr-only">{lec ? `Listo: ${lec.titulo}.` : ''}</span>}
+          {cargando ? 'Actualizando…' : <span className="sr-only">{`Listo: ${lec.titulo}.`}</span>}
         </p>
       )}
-      <div className={`flex flex-col gap-4 ${cargando || atenuado ? 'opacity-60' : ''} transition-opacity`}>
-        {/* Primero la respuesta, después los números (diseño 05/11, M1). */}
-        {lec && (
-          <section aria-labelledby="sc-lectura" className="bg-bg-2/60 border border-line rounded-lg px-4 py-3 flex flex-col gap-1.5">
-            <h3 id="sc-lectura" className="text-[15px] font-semibold text-ink-0">{lec.titulo}</h3>
-            <p className="text-[13.5px] text-ink-0 leading-relaxed">
-              {lec.aclaracion}
-              {origen === 'hoy' && (
-                <Link to="/analisis" className="ml-1.5 font-medium text-data-violet hover:underline">Ver Métricas →</Link>
-              )}
-            </p>
-            {lec.frases.map(f => <p key={f} className="text-[13.5px] text-ink-1 leading-relaxed">{f}</p>)}
-          </section>
-        )}
-        {/* Tres en fila desde lg: con el número grande solo en su renglón (la tarjeta
-            compartida), entran sin pisarse (diseño 05/11, A1). */}
-        <div className={`grid grid-cols-1 ${tarjetas.length > 1 ? 'sm:grid-cols-2' : ''} ${tarjetas.length === 3 ? 'lg:grid-cols-3' : ''} gap-4`}>
-          {tarjetas.map(t => (
-            <TarjetaDeResultado key={t.clave} nombre={t.nombre} trazo={<Trazo color={t.color} dash={t.dash} />}
-              subtitulo={t.clave === 'cartera' ? null : 'Sin dividendos, como la cartera'}
-              resultado={t.resumen.resultado} resaltada={t.clave === 'cartera'}
-              datos={[
-                { etiqueta: 'Peor caída', valor: porcentaje(t.resumen.peor_caida, 0) },
-                { etiqueta: 'Habría terminado en', valor: enQueTermino(t.resumen.final) },
-              ]} />
-          ))}
-        </div>
-        <p className="text-[12px] text-ink-2 -mt-1">{QUE_ES_LA_PEOR_CAIDA}</p>
-        <GraficoDeCien curva={res.curva} desde={res.desde} hasta={res.hasta}
-          lineas={tarjetas.map(t => ({ clave: t.clave, nombre: t.nombre, color: t.color, dash: t.dash, final: t.resumen.final }))} />
-        <CadaActivo res={res} />
-        <p className="text-[12px] text-ink-2 leading-relaxed">{COMO_SE_SIMULA_CARTERA}</p>
+      <div className={`flex flex-col gap-3 ${cargando || atenuado ? 'opacity-60' : ''} transition-opacity`}>
+        <h3 className="text-[16px] font-semibold text-ink-0 leading-snug">{lec.titulo}</h3>
+        <p className="text-[13px] text-ink-1 leading-relaxed">
+          {lec.aclaracion}
+          {origen === 'hoy' && (
+            <Link to="/analisis" className="ml-1.5 font-medium text-data-violet hover:underline">Ver Métricas →</Link>
+          )}
+        </p>
+        <table className="w-full tabular">
+          <thead>
+            <tr className="border-b border-line text-[12px] text-ink-2">
+              <th scope="col" className="pb-1.5 text-left font-medium"><span className="sr-only">Cartera o índice</span></th>
+              <th scope="col" className="pb-1.5 text-right font-medium">Habría dado</th>
+              <th scope="col" className="pb-1.5 pl-4 text-right font-medium">Peor caída</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lineasDe(res).map(l => (
+              <tr key={l.clave} className="border-b border-line/60">
+                <th scope="row" className={`py-2 text-left text-[14px] ${l.clave === 'cartera' ? 'font-semibold text-ink-0' : 'font-medium text-ink-1'}`}>
+                  <span className="inline-flex items-center gap-2"><Trazo color={l.color} dash={l.dash} />{l.nombre}</span>
+                </th>
+                <td className={`py-2 text-right text-[16px] font-semibold ${colorDe(l.resumen.resultado)}`}>
+                  {porcentaje(l.resumen.resultado)}
+                </td>
+                <td className="py-2 pl-4 text-right text-[14px] text-ink-0">{porcentaje(l.resumen.peor_caida, 0)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="text-[12px] text-ink-2 leading-relaxed">{notaDelResumen(res)} {QUE_ES_LA_PEOR_CAIDA}</p>
+        {lec.avisos.map(a => <p key={a} className="text-[13px] text-ink-1 leading-relaxed">{a}</p>)}
       </div>
+    </div>
+  )
+}
+
+/** Debajo de la tarjeta: el gráfico, «Cada activo» y cómo se simula, del MISMO
+ *  resultado que se ve al lado de la tabla (tenue si aquél lo está). */
+function Detalle({ sim, vista }) {
+  if (!vista) {
+    // La primera vez, mientras llega: el lugar del gráfico.
+    const esperando = sim.consulta && !sim.error && !sim.trayendo && (!sim.res || sim.cargando)
+    return esperando ? <Skeleton className="h-72 w-full rounded-xl" /> : null
+  }
+  const { res } = vista
+  return (
+    <div className={`flex flex-col gap-4 ${vista.tenue ? 'opacity-60' : ''} transition-opacity`}>
+      <GraficoDeCien curva={res.curva} desde={res.desde} hasta={res.hasta}
+        lineas={lineasDe(res).map(l => ({ clave: l.clave, nombre: l.nombre, color: l.color, dash: l.dash, final: l.resumen.final }))} />
+      <CadaActivo res={res} frases={lecturaCartera(res).deLosActivos} />
+      <p className="text-[12px] text-ink-2 leading-relaxed">{COMO_SE_SIMULA_CARTERA}</p>
     </div>
   )
 }
@@ -501,15 +569,17 @@ function aporteEnDolares(x) {
   return `${signo}US$ ${Math.abs(r).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`
 }
 
-function CadaActivo({ res }) {
+function CadaActivo({ res, frases }) {
   // Los rótulos de cada número también para el lector de pantalla en compu, donde
   // los de arriba son una fila aparte (M12). Sin puntos de color: el de la torta
-  // dice cuánto pesa, no quién es, y cambiaba de dueño (diseño 05/11, M3).
+  // decía cuánto pesa, no quién es, y cambiaba de dueño (diseño 05/11, M3).
   const lector = (txt) => <span className="sr-only">{txt} </span>
   return (
     <section aria-labelledby="sc-cada" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col">
       <h3 id="sc-cada" className="text-[15px] font-semibold text-ink-0 mb-1.5">Cada activo</h3>
-      <div aria-hidden="true" className="hidden sm:grid grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))] gap-3 pb-1.5 border-b border-line text-[12px] font-medium text-ink-2">
+      {/* Lo que dicen estos números, al lado de ellos (antes iba con la respuesta). */}
+      {frases.map(f => <p key={f} className="pb-1.5 text-[13.5px] text-ink-1 leading-relaxed">{f}</p>)}
+      <div aria-hidden="true" className="hidden sm:grid grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))] gap-3 pt-1.5 pb-1.5 border-b border-line text-[12px] font-medium text-ink-2">
         <span>Activo</span><span className="text-right">Al principio</span><span className="text-right">Al final</span>
         <span className="text-right">Rindió</span><span className="text-right">Aportó</span>
       </div>
