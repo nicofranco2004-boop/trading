@@ -1,5 +1,5 @@
 {
-  "_que_es": "Visitas de prueba de punta a punta: lo que ve el navegador (dirección y página de donde venía) → lo que anota origen.js → el canal del panel de /admin. Las leen las DOS mitades: origen.test.js (navegador → código) y backend/tests/test_origen_registros.py (código → registro por HTTP → /api/admin/origenes → canal). Si una mitad cambia sin la otra, se pone roja.",
+  "_que_es": "Visitas de prueba de punta a punta: lo que ve el navegador (dirección y página de donde venía) → lo que anota origen.js (`codigo`) → lo que guarda el servidor (`guardado`, si es distinto: el nombre de un sitio o una app que no conoce pasa a «otro») → el canal del panel de /admin. Las leen las DOS mitades: origen.test.js (navegador → código) y backend/tests/test_origen_registros.py (código → registro por HTTP → /api/admin/origenes → canal). Si una mitad cambia sin la otra, se pone roja.",
   "escenarios": [
     {"caso": "link de X sin código (pasa por t.co)", "direccion": "https://rendi.finance/", "referrer": "https://t.co/", "codigo": "sitio/t.co", "canal": "x", "fuente": "X"},
     {"caso": "desde x.com", "direccion": "https://rendi.finance/planes", "referrer": "https://x.com/", "codigo": "sitio/x.com", "canal": "x"},
@@ -30,12 +30,19 @@
     {"caso": "Gmail en Android", "direccion": "https://rendi.finance/", "referrer": "android-app://com.google.android.gm/", "codigo": "app/com.google.android.gm", "canal": "otro_sitio", "fuente": "Gmail"},
     {"caso": "WhatsApp Web", "direccion": "https://rendi.finance/", "referrer": "https://web.whatsapp.com/", "codigo": "sitio/web.whatsapp.com", "canal": "otro_sitio", "fuente": "WhatsApp"},
     {"caso": "LinkedIn", "direccion": "https://rendi.finance/", "referrer": "https://www.linkedin.com/", "codigo": "sitio/linkedin.com", "canal": "otro_sitio"},
-    {"caso": "un blog cualquiera: sólo el sitio, sin la nota", "direccion": "https://rendi.finance/", "referrer": "https://blog.ejemplo.com.ar/nota/123?ref=abc", "codigo": "sitio/blog.ejemplo.com.ar", "canal": "otro_sitio"},
+    {"caso": "un blog cualquiera: el navegador anota el sitio, el servidor guarda «otro»", "direccion": "https://rendi.finance/", "referrer": "https://blog.ejemplo.com.ar/nota/123?ref=abc", "codigo": "sitio/blog.ejemplo.com.ar", "canal": "otro_sitio", "guardado": "sitio/otro"},
     {"caso": "anuncio de TikTok", "direccion": "https://rendi.finance/?ttclid=E.C.P.abc", "referrer": "", "codigo": "clic/ttclid", "canal": "otro_sitio"},
     {"caso": "anuncio de Bing", "direccion": "https://rendi.finance/?msclkid=5d3f", "referrer": "https://www.bing.com/", "codigo": "sitio/bing.com/msclkid", "canal": "otro_sitio"},
     {"caso": "un código de Nico que no dice la red", "direccion": "https://rendi.finance/?d=mail-1020", "referrer": "", "codigo": "mail-1020", "canal": "otro_codigo"},
     {"caso": "entró directo", "direccion": "https://rendi.finance/", "referrer": "", "codigo": null, "canal": "sin_dato"},
     {"caso": "recarga dentro de Rendi", "direccion": "https://rendi.finance/planes", "referrer": "https://rendi.finance/", "codigo": null, "canal": "sin_dato"},
-    {"caso": "desde www de Rendi", "direccion": "https://rendi.finance/", "referrer": "https://www.rendi.finance/blog/brokers", "codigo": null, "canal": "sin_dato"}
+    {"caso": "desde www de Rendi", "direccion": "https://rendi.finance/", "referrer": "https://www.rendi.finance/blog/brokers", "codigo": null, "canal": "sin_dato"},
+    {"caso": "anuncio de Meta armado con la plantilla del Administrador (fb + paid)", "direccion": "https://rendi.finance/?utm_source=fb&utm_medium=paid&utm_campaign=Promo%20Nov&fbclid=IwAR0xYz", "referrer": "https://l.facebook.com/", "codigo": "fb/paid/promo-nov", "canal": "meta_anuncios"},
+    {"caso": "post de Instagram etiquetado por una herramienta de publicación (social)", "direccion": "https://rendi.finance/?utm_source=instagram&utm_medium=social&utm_campaign=bio", "referrer": "https://l.instagram.com/", "codigo": "instagram/social/bio", "canal": "meta_sin_saber"},
+    {"caso": "link copiado de la barra (con la marca de Meta) y compartido en X", "direccion": "https://rendi.finance/?fbclid=IwAR0xYz", "referrer": "https://t.co/", "codigo": "sitio/t.co/fbclid", "canal": "x", "fuente": "X"},
+    {"caso": "un código que se quiere hacer pasar por IA no lo logra", "direccion": "https://rendi.finance/?d=sitio/chatgpt.com", "referrer": "", "codigo": "sitio-chatgpt.com", "canal": "otro_codigo"},
+    {"caso": "un mail metido en el utm se descarta (queda la marca)", "direccion": "https://rendi.finance/?utm_source=juan.perez%40gmail.com&fbclid=IwAR0xYz", "referrer": "", "codigo": "clic/fbclid", "canal": "meta_sin_saber"},
+    {"caso": "informe de un asesor abierto desde WhatsApp: sólo la app, nunca la llave", "direccion": "https://rendi.finance/i/k3Jx9QpLm2VwZr8TfYb4Nc7Hd1Ae6Gs5", "referrer": "android-app://com.whatsapp/", "codigo": "app/com.whatsapp", "canal": "otro_sitio", "fuente": "WhatsApp"},
+    {"caso": "una app de Android que no está en la lista: el servidor guarda «otro»", "direccion": "https://rendi.finance/?fbclid=IwAR0xYz", "referrer": "android-app://com.desconocida.app/", "codigo": "app/com.desconocida.app/fbclid", "guardado": "app/otro/fbclid", "canal": "meta_sin_saber"}
   ]
 }

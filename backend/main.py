@@ -5069,7 +5069,10 @@ class RegisterIn(BaseModel):
     @field_validator('origen', mode='before')
     @classmethod
     def origen_limpio(cls, v):
-        return _normalizar_origen(v)
+        # Del sitio o la app de donde venía se guarda el nombre sólo si es uno
+        # conocido; si no, «otro» (canal_de_origen.para_guardar).
+        from canal_de_origen import para_guardar
+        return para_guardar(_normalizar_origen(v))
 
     @field_validator('origen_visto', mode='before')
     @classmethod
@@ -5078,14 +5081,23 @@ class RegisterIn(BaseModel):
 
 
 _ORIGEN_LARGO_MAX = 60
+# Lo que se mira de lo que llega, antes de limpiar. El navegador nunca manda más
+# de 60; sin este corte, un origen de 40 MB pasaba entero por las dos limpiezas
+# en el pedido mismo (más de un segundo frenando al servidor para todos) antes
+# de quedar en 60.
+_ORIGEN_CRUDO_MAX = 256
 
 
 def _normalizar_origen(v) -> Optional[str]:
     """El código de origen limpio, con la MISMA regla que el navegador
     (`normalizarCodigo` en utils/origen.js): minúsculas, sólo letras, números y
-    `- _ . /`, hasta 60. None si no queda nada o no es texto."""
+    `- _ . /`, hasta 60. None si no queda nada, si no es texto o si trae una
+    arroba (es un mail, no un código)."""
     import re as _re
     if not isinstance(v, str):
+        return None
+    v = v[:_ORIGEN_CRUDO_MAX]
+    if "@" in v:
         return None
     limpio = _re.sub(r"\s+", "-", v.strip().lower())
     limpio = _re.sub(r"[^a-z0-9._/-]", "", limpio)[:_ORIGEN_LARGO_MAX]
@@ -5101,10 +5113,12 @@ def _normalizar_origen_visto(v) -> Optional[str]:
         return None
     try:
         t = _dt.fromisoformat(v.strip().replace("Z", "+00:00"))
-    except ValueError:
+        if t.tzinfo is not None:
+            # `9999-12-31T23:59:59-23:59` se entiende pero no entra en UTC
+            # (OverflowError): sin atraparlo, el registro entero daba 500.
+            t = t.astimezone(_tz.utc).replace(tzinfo=None)
+    except (ValueError, OverflowError):
         return None
-    if t.tzinfo is not None:
-        t = t.astimezone(_tz.utc).replace(tzinfo=None)
     if t > _dt.utcnow() + timedelta(minutes=5):
         return None
     return t.strftime("%Y-%m-%d %H:%M:%S")
@@ -29803,11 +29817,16 @@ def _registros_por_origen(conn, desde, hasta) -> dict:
     # Los que tienen origen primero (más registros arriba); "sin dato" al final.
     salida.sort(key=lambda f: (f["origen"] is None, -f["registros"], f["origen"] or ""))
     registros = sum(f["registros"] for f in salida)
+    con_dato = registros - por_canal["sin_dato"]["registros"]
     return {
         "desde": desde.isoformat(),
         "hasta": hasta.isoformat(),
         "registros": registros,
-        "con_dato": registros - por_canal["sin_dato"]["registros"],
+        "con_dato": con_dato,
+        # El mismo número con el nombre que lee el panel anterior (hasta el
+        # 06/11/2026): mientras se publica, o en una pestaña de /admin abierta
+        # desde antes, ése mostraba «0 vinieron por un link con código».
+        "con_codigo": con_dato,
         # Todos los canales, también los que dan 0: «Meta · anuncios: 0» es un dato.
         "canales": [{"canal": c, "nombre": nombre, "explica": explica, **por_canal[c]}
                     for c, nombre, explica in CANALES],

@@ -79,6 +79,8 @@ describe('el panel de registros por origen', () => {
       canales: VENTANA.canales.map(c => ({ ...c, registros: 0, confirmaron: 0, cargaron: 0 })) }
     const t = texto(vacia)
     expect(t).toContain('Nadie se registró en este período.')
+    expect(t).toContain('0 registros')
+    expect(t).not.toContain('se sabe de dónde')
     expect(t).not.toContain('Canal Registros')
   })
 

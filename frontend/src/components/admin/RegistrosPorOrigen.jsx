@@ -72,7 +72,7 @@ export function VentanaDeOrigenes({ v }) {
     <>
       <p className="text-sm text-ink-1 tabular">
         <span className="text-ink-0 font-medium">{entero(v.registros)}</span> {v.registros === 1 ? 'registro' : 'registros'}
-        {v.con_dato != null && (
+        {v.con_dato != null && v.registros > 0 && (
           <>
             {' · '}de <span className="text-ink-0 font-medium">{entero(v.con_dato)}</span> se sabe de dónde {v.con_dato === 1 ? 'vino' : 'vinieron'}
           </>
@@ -114,7 +114,7 @@ export function VentanaDeOrigenes({ v }) {
       )}
       <div className="text-xs text-ink-3 space-y-1.5">
         <p>
-          Cómo se sabe: si el link trae código, cuenta el código (<span className="text-ink-1">rendi.finance/?d=x-20261019</span>). Si no trae, Rendi mira la marca que Facebook, Instagram, X y Google le agregan al link, o el sitio de donde venía la persona. Si la misma persona entra dos veces, cuenta la primera (vence a los 30 días).
+          Cómo se sabe: si el link trae código, cuenta el código (<span className="text-ink-1">rendi.finance/?d=x-20261019</span>). Si no trae, Rendi mira la marca que Facebook, Instagram, X y Google le agregan al link, o el sitio de donde venía la persona; de un sitio que no conoce no guarda el nombre (figura como <span className="text-ink-1">sitio/otro</span>). Si la misma persona entra varias veces, cuenta el primer link con código y, si no hubo ninguno, lo primero que se reconoció (vence a los 30 días).
         </p>
         <p>
           Para separar los anuncios de Meta del resto, el link del anuncio tiene que llevar el código. En el Administrador de anuncios → Seguimiento → Parámetros de URL: <span className="text-ink-1 break-all">{'utm_source=meta-anuncios&utm_campaign={{campaign.name}}'}</span>

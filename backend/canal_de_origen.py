@@ -6,7 +6,8 @@ Por qué existe este archivo
 navegador, ver frontend/src/utils/origen.js). Hay dos clases de origen:
 
   · El código que trae el link. El de cada post (`?d=x-20261019`) o el de una
-    campaña (`utm_source=meta-anuncios&utm_campaign=…` → `meta-anuncios/<campaña>`).
+    campaña: `utm_source`, `utm_medium` y `utm_campaign` → `fuente[/medio][/campaña]`
+    (`utm_source=meta-anuncios&utm_campaign=…` → `meta-anuncios/<campaña>`).
     ChatGPT agrega solo `utm_source=chatgpt.com` a sus links.
   · Lo que el navegador reconoce cuando el link no trae código:
       `clic/<marca>`            la marca que la red le agrega al link (`fbclid`
@@ -16,10 +17,19 @@ navegador, ver frontend/src/utils/origen.js). Hay dos clases de origen:
                                 `perplexity.ai`), y la marca si el link traía una
       `app/<app>[/<marca>]`     una app de Android (`com.google.android.gm` es Gmail)
 
-El navegador guarda el nombre del sitio, de la app o de la marca TAL CUAL, sin
-decidir qué es: lo decide este archivo y nadie más. Así, cuando se suma una IA
-o un sitio a la tabla, los registros que ya lo traían pasan a contarse bien sin
-tocar nada más, y no hay dos listas que se puedan contradecir.
+El navegador manda el nombre del sitio, de la app o de la marca TAL CUAL, sin
+decidir qué es: lo decide este archivo y nadie más, y no hay dos listas que se
+puedan contradecir.
+
+Qué se guarda (`para_guardar`, al registrarse)
+──────────────────────────────────────────────
+Del sitio o de la app se guarda el nombre SÓLO si está en las tablas de abajo;
+si no, `otro`. El nombre de un sitio cualquiera puede ser un dato de la persona:
+dónde trabaja (`intranet.banco….com.ar`), cómo se llama (`juanperez.github.io`),
+qué apps usa (una de citas, una de salud). Es la misma regla que la lista de lo
+que se les cuenta a Google y a Meta (frontend/src/utils/rutasSensibles.js):
+olvidarse de un sitio cuesta un dato de las métricas, no un dato de la persona.
+Para contar un sitio nuevo, se suma a la tabla: cuenta desde ese día.
 
 Anuncio u orgánico, en Meta
 ───────────────────────────
@@ -28,9 +38,10 @@ un post, y el sitio de donde venía tampoco lo dice. Un anuncio de Meta sólo se
 distingue si su link lleva el código: Administrador de anuncios → Seguimiento →
 Parámetros de URL: `utm_source=meta-anuncios&utm_campaign={{campaign.name}}`.
 También cuenta como anuncio un código de Meta que lo dice (`ig-anuncio-1022`,
-`facebook-ads/…`). Todo lo demás de Meta es «sin saber si fue anuncio», salvo los
-posts de Nico con su código de siempre (`ig-20261022`, `fb-…`: la red y algo
-más pegado).
+`facebook-ads/…`, `fb/paid/…`, `MetaAds`). «Tus posts» afirma algo concreto y
+queda SÓLO para la forma de los códigos de Nico: la red, un guion y la fecha
+(`ig-20261022`, `fb-1020`). Todo lo demás de Meta (`ig`, `instagram_story`,
+`fb-share`) es «sin saber si fue anuncio».
 
 Nunca tira: un código raro termina en «Otro link con código» o en «Otro sitio o
 app», y uno vacío es «Sin dato». Lo prueba tests/test_origen_registros.py,
@@ -84,20 +95,28 @@ _SITIOS = {
     "threads.net": ("Threads", "meta_sin_saber"),
     "threads.com": ("Threads", "meta_sin_saber"),
     "messenger.com": ("Messenger", "meta_sin_saber"),
+    "m.me": ("Messenger", "meta_sin_saber"),
+    "ig.me": ("Instagram", "meta_sin_saber"),
     # IA.
     "chatgpt.com": ("ChatGPT", "ia"),
     "chat.openai.com": ("ChatGPT", "ia"),
     "perplexity.ai": ("Perplexity", "ia"),
+    "pplx.ai": ("Perplexity", "ia"),
     "gemini.google.com": ("Gemini", "ia"),
     "bard.google.com": ("Gemini", "ia"),
+    "notebooklm.google.com": ("NotebookLM", "ia"),
+    "aistudio.google.com": ("Google AI Studio", "ia"),
     "claude.ai": ("Claude", "ia"),
     "copilot.microsoft.com": ("Copilot", "ia"),
+    "m365.cloud.microsoft": ("Copilot", "ia"),
     "grok.com": ("Grok", "ia"),
     "chat.deepseek.com": ("DeepSeek", "ia"),
     "chat.mistral.ai": ("Mistral", "ia"),
     "meta.ai": ("Meta AI", "ia"),
     # Google (el buscador de cada país va por _ES_BUSCADOR_DE_GOOGLE).
     "news.google.com": ("Google Noticias", "google"),
+    "images.google.com": ("Google", "google"),
+    "m.google.com": ("Google", "google"),
     "googleadservices.com": ("Anuncio de Google", "google"),
     # Otros conocidos: no tienen canal propio, pero el panel dice qué son.
     "mail.google.com": ("Gmail", "otro_sitio"),
@@ -135,6 +154,7 @@ _APPS = {
     "ai.x.grok": ("Grok", "ia"),
     "com.deepseek.chat": ("DeepSeek", "ia"),
     "com.google.android.googlequicksearchbox": ("Google", "google"),
+    "com.google.android.apps.magazines": ("Google Noticias", "google"),
     "com.google.android.gm": ("Gmail", "otro_sitio"),
     "com.whatsapp": ("WhatsApp", "otro_sitio"),
     "com.whatsapp.w4b": ("WhatsApp Business", "otro_sitio"),
@@ -148,20 +168,33 @@ _APPS = {
 
 # En un código puesto en el link, la red sale de la primera palabra:
 # `x-20261019` y `x/post-1019` son X; `perplexity` (utm sin punto) es IA.
+# `msg` y `an` son Messenger y Audience Network en el {{site_source_name}} que
+# arma el Administrador de anuncios.
 _REDES_EN_CODIGOS = {
     "x": "x", "twitter": "x", "tw": "x",
-    "ig": "meta", "instagram": "meta", "fb": "meta", "facebook": "meta",
-    "threads": "meta", "meta": "meta",
+    "ig": "meta", "instagram": "meta", "insta": "meta", "fb": "meta", "facebook": "meta",
+    "face": "meta", "threads": "meta", "meta": "meta", "msg": "meta", "messenger": "meta", "an": "meta",
     "google": "google",
     "chatgpt": "ia", "openai": "ia", "perplexity": "ia", "gemini": "ia",
     "claude": "ia", "copilot": "ia", "grok": "ia", "deepseek": "ia",
 }
 
-# `meta-anuncios/<campaña>` (y `meta_anuncios`, `meta-ads`): el código que lleva
-# el link de un anuncio de Meta.
-_ES_ANUNCIO_DE_META = re.compile(r"^meta[-_]?(?:anuncios?|ads)(?:$|[-_./])")
-_PALABRAS_DE_ANUNCIO = frozenset({"anuncio", "anuncios", "ads", "paid"})
+# `meta-anuncios/<campaña>` (el código que lleva el link de un anuncio de Meta),
+# y lo mismo todo junto o con otra red: `metaads`, `fbads`, `meta_ads2026`.
+_ES_ANUNCIO_DE_META = re.compile(r"^(?:meta|fb|facebook|ig|instagram|insta)[-_]?(?:ads?|anuncios?)\d*(?:$|[-_./])")
+# Las palabras que dicen «anuncio» en un código de Meta (con o sin números
+# pegados atrás: `ads2026`). Incluye los `utm_medium` de pago (`paid`, `cpc`).
+_PALABRAS_DE_ANUNCIO = frozenset({
+    "ad", "ads", "anuncio", "anuncios", "pauta", "publicidad", "pago", "paid", "cpc", "cpm",
+    "ppc", "retargeting", "remarketing", "sponsored", "patrocinado"})
 
+# Los canales que son una red con nombre propio. Si el sitio de donde venía es
+# de una de éstas y la marca dice otra (`fbclid` llegando desde t.co), ganó el
+# sitio: alguien copió la dirección de la barra —Rendi deja la marca ahí para
+# Google y Meta— y la compartió en otra red.
+_CANALES_DE_RED = frozenset({"ia", "x", "meta_sin_saber", "google"})
+
+_AUTOMATICOS = ("sitio/", "app/", "clic/")
 _IDS = frozenset(c for c, _, _ in CANALES)
 
 
@@ -177,6 +210,12 @@ def _sitio(nombre):
     return mejor[1] if mejor else None
 
 
+def _lugar(tipo, nombre):
+    """(cómo se llama, canal) de un sitio (`tipo` = 'sitio') o de una app de
+    Android ('app'), o None si no está en las tablas."""
+    return _APPS.get(nombre) if tipo == "app" else _sitio(nombre)
+
+
 def _canal_del_codigo(codigo):
     """(canal, cómo se llama) de un código puesto en el link (`d` o utm)."""
     if _ES_ANUNCIO_DE_META.match(codigo):
@@ -190,40 +229,67 @@ def _canal_del_codigo(codigo):
     red = re.split(r"[-_.]", cabeza, maxsplit=1)[0]
     canal = _REDES_EN_CODIGOS.get(red)
     if canal == "meta":
-        # Un código de Meta que dice que es un anuncio (`ig-anuncio-1022`,
-        # `facebook-ads/noviembre`) se cuenta como anuncio.
-        if _PALABRAS_DE_ANUNCIO & set(re.split(r"[-_./]", codigo)):
+        palabras = {re.sub(r"\d+$", "", p) for p in re.split(r"[-_./]", codigo)}
+        if palabras & _PALABRAS_DE_ANUNCIO:
             return "meta_anuncios", None
-        # `ig-20261022`: el post de Nico (la red y algo más pegado). `ig`, `ig/…`
-        # o `fb/…` (los que arma el Administrador de anuncios con
-        # {{site_source_name}}) no dicen nada más: no se sabe si fue anuncio.
-        es_post = cabeza != red
+        # Sólo la forma de los códigos de Nico: la red, un guion y la fecha.
+        resto = cabeza[len(red):]
+        es_post = len(resto) >= 2 and resto[0] in "-_" and resto[1].isdigit()
         return ("meta_posts" if es_post else "meta_sin_saber"), None
     return (canal or "otro_codigo"), None
 
 
-def canal_del_origen(codigo):
-    """De qué canal es un origen guardado en `users.origen`.
-
-    Devuelve (canal, fuente): `canal` es un id de CANALES; `fuente`, cómo se
-    llama el sitio, la app o la marca cuando se conoce («Instagram», «Gmail»),
-    para que el panel lo diga; si no, None."""
-    if not isinstance(codigo, str) or not codigo.strip():
-        return "sin_dato", None
-    codigo = codigo.strip().lower()
+def _clasificar(codigo):
+    """(canal, fuente) de un código ya en minúsculas, sin el control final."""
     tipo, _, resto = codigo.partition("/")
     if tipo == "clic" and resto:
         marca = MARCAS.get(resto.split("/", 1)[0])
         return (marca[1], marca[0]) if marca else ("otro_sitio", None)
     if tipo in ("sitio", "app") and resto:
         nombre, _, nombre_marca = resto.partition("/")
-        lugar = _APPS.get(nombre) if tipo == "app" else _sitio(nombre)
+        lugar = _lugar(tipo, nombre)
         marca = MARCAS.get(nombre_marca)
-        # La marca le gana al sitio (como en el navegador): `gclid` dice
-        # anuncio de Google aunque haya venido desde otra página. El sitio, en
-        # cambio, dice mejor de dónde: Instagram y no «Facebook o Instagram».
-        canal = marca[1] if marca else (lugar[1] if lugar else "otro_sitio")
+        # El sitio dice mejor de dónde: «Instagram» y no «Facebook o Instagram».
         fuente = lugar[0] if lugar else (marca[0] if marca else None)
-        return canal, fuente
-    canal, fuente = _canal_del_codigo(codigo)
-    return (canal if canal in _IDS else "otro_codigo"), fuente
+        if marca and lugar and lugar[1] != marca[1] and lugar[1] in _CANALES_DE_RED:
+            return lugar[1], fuente
+        # Si no, la marca le gana al sitio: `gclid` desde Gmail es un anuncio de
+        # Google en Gmail; `fbclid` desde Linktree, un link de Instagram que pasó
+        # por ahí.
+        if marca:
+            return marca[1], fuente
+        return (lugar[1] if lugar else "otro_sitio"), fuente
+    return _canal_del_codigo(codigo)
+
+
+def canal_del_origen(codigo):
+    """De qué canal es un origen guardado en `users.origen`.
+
+    Devuelve (canal, fuente): `canal` es SIEMPRE un id de CANALES (una fila mal
+    escrita en una tabla no puede tumbar el panel); `fuente`, cómo se llama el
+    sitio, la app o la marca cuando se conoce («Instagram», «Gmail»), para que
+    el panel lo diga; si no, None."""
+    if not isinstance(codigo, str) or not codigo.strip():
+        return "sin_dato", None
+    codigo = codigo.strip().lower()
+    canal, fuente = _clasificar(codigo)
+    if canal not in _IDS:
+        canal = "otro_sitio" if codigo.startswith(_AUTOMATICOS) else "otro_codigo"
+    return canal, fuente
+
+
+def para_guardar(codigo):
+    """Lo que se guarda en `users.origen` de lo que mandó el navegador (ya
+    limpio): lo mismo, salvo el nombre de un sitio o de una app que no está en
+    las tablas, que pasa a `otro` (ver «Qué se guarda» arriba), y una marca que
+    no es de la lista, que se saca. Los códigos puestos en el link quedan como
+    vinieron: los eligió quien armó el link."""
+    if not isinstance(codigo, str) or not codigo.startswith(_AUTOMATICOS):
+        return codigo
+    tipo, _, resto = codigo.partition("/")
+    if tipo == "clic":
+        return codigo if resto in MARCAS else "clic/otra"
+    nombre, _, nombre_marca = resto.partition("/")
+    if not _lugar(tipo, nombre):
+        nombre = "otro"
+    return f"{tipo}/{nombre}" + (f"/{nombre_marca}" if nombre_marca in MARCAS else "")

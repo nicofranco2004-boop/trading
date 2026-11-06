@@ -448,9 +448,15 @@ export function AuthProvider({ children }) {
     //     vs UX bug recurrente. Si en el futuro tracking server-side, mover
     //     este flag al endpoint /api/plan/features o similar.
     //   • rendi_user: lo borra sesionGuardada, el único que lo borra.
+    //   • rendi_origen, SÓLO al salir del demo: de dónde llegó este navegador
+    //     (utils/origen.js). Quien probó el demo todavía no tiene cuenta: si
+    //     sale con «Cerrar sesión» y se registra, el origen tiene que viajar.
+    //     Al cerrar una cuenta de verdad sí se borra: el que entra después en
+    //     esa máquina no llegó por ahí.
     if (loComunEsMio) {
       try {
-        const preserve = new Set([CATALOGO.tema.clave, CATALOGO.conocioLaIA.clave, CATALOGO.usuario.clave])
+        const preserve = new Set([CATALOGO.tema.clave, CATALOGO.conocioLaIA.clave, CATALOGO.usuario.clave,
+          ...(user?.demo ? [CATALOGO.origen.clave] : [])])
         quitarClaves(LOCAL, claves(LOCAL).filter(k => k.startsWith('rendi_') && !preserve.has(k)))
       } catch { /* localStorage puede no estar disponible (private mode iOS antiguo) — best effort */ }
       olvidarLaSesionSiEsDe(persona)

@@ -34,7 +34,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import main
-from canal_de_origen import CANALES, MARCAS, canal_del_origen
+from canal_de_origen import CANALES, MARCAS, canal_del_origen, para_guardar
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 UTILS = os.path.join(REPO, "frontend", "src", "utils")
@@ -172,7 +172,9 @@ class OrigenDeLosRegistros(unittest.TestCase):
         self.assertEqual(set(panel), {"7d", "30d"})
         for clave in ("7d", "30d"):
             v = panel[clave]
-            self.assertEqual(set(v), {"desde", "hasta", "registros", "con_dato", "canales", "origenes"})
+            self.assertEqual(set(v), {"desde", "hasta", "registros", "con_dato", "con_codigo", "canales", "origenes"})
+            # `con_codigo` es el mismo número, con el nombre que lee el panel anterior.
+            self.assertEqual(v["con_codigo"], v["con_dato"])
             for c in v["canales"]:
                 self.assertEqual(set(c), {"canal", "nombre", "explica", "registros", "confirmaron", "cargaron"})
             for f in v["origenes"]:
@@ -190,8 +192,9 @@ class OrigenDeLosRegistros(unittest.TestCase):
         for i, e in enumerate(ESCENARIOS):
             extra = {"origen": e["codigo"], "origen_visto": visto} if e["codigo"] else {}
             u = self._registrar(self._email(f"visita{i}"), **extra)
-            # El servidor guarda el código tal como lo mandó el navegador.
-            self.assertEqual(u["origen"], e["codigo"], e["caso"])
+            # El servidor guarda el código tal como lo mandó el navegador, salvo
+            # el nombre de un sitio o una app que no conoce («otro»).
+            self.assertEqual(u["origen"], e.get("guardado", e["codigo"]), e["caso"])
         despues = self._panel()
         esperado = Counter(e["canal"] for e in ESCENARIOS)
         for clave in ("7d", "30d"):
@@ -203,7 +206,7 @@ class OrigenDeLosRegistros(unittest.TestCase):
             self.assertEqual(despues[clave]["con_dato"] - antes[clave]["con_dato"],
                              sum(1 for e in ESCENARIOS if e["codigo"]), clave)
         for e in ESCENARIOS:
-            fila = self._fila(despues["7d"], e["codigo"])
+            fila = self._fila(despues["7d"], e.get("guardado", e["codigo"]))
             self.assertEqual(fila["canal"], e["canal"], e["caso"])
             if "fuente" in e:
                 self.assertEqual(fila["fuente"], e["fuente"], e["caso"])
@@ -230,6 +233,29 @@ class OrigenDeLosRegistros(unittest.TestCase):
                             origen_visto="no es una fecha")
         self.assertEqual(u["origen"], "ig-20261019script")
         self.assertIsNone(u["origen_visto_at"])
+
+    def test_una_fecha_que_no_entra_en_utc_no_tumba_el_registro(self):
+        # Se entiende, pero pasada a UTC cae después del año 9999: daba 500.
+        self.assertIsNone(main._normalizar_origen_visto("9999-12-31T23:59:59-23:59"))
+        u = self._registrar(self._email("fecha"), origen=self.codigo,
+                            origen_visto="9999-12-31T23:59:59-23:59")
+        self.assertEqual(u["origen"], self.codigo)
+        self.assertIsNone(u["origen_visto_at"])
+
+    def test_de_un_sitio_o_una_app_que_no_conoce_no_se_guarda_el_nombre(self):
+        """Por HTTP, aunque lo mande otro que no es el navegador: el nombre de
+        un sitio o una app que no está en la tabla puede ser un dato de la
+        persona (dónde trabaja, qué apps usa)."""
+        for i, (manda, queda) in enumerate([
+            ("sitio/intranet.banco-ejemplo.com.ar", "sitio/otro"),
+            ("sitio/181.46.12.200/fbclid", "sitio/otro/fbclid"),
+            ("app/com.desconocida.citas", "app/otro"),
+            ("clic/inventada", "clic/otra"),
+            ("sitio/l.instagram.com/fbclid", "sitio/l.instagram.com/fbclid"),
+            ("x-20261019", "x-20261019"),
+        ]):
+            u = self._registrar(self._email(f"nombre{i}"), origen=manda)
+            self.assertEqual(u["origen"], queda, manda)
 
     def test_basura_en_el_origen_no_da_422(self):
         for i, (origen, visto) in enumerate([
@@ -277,9 +303,28 @@ class LaMismaReglaQueElNavegador(unittest.TestCase):
             "<b>": "b",
             "": None,
             "!!!": None,
+            "ana@x.com": None,
         }
         for entrada, esperado in casos.items():
             self.assertEqual(main._normalizar_origen(entrada), esperado, entrada)
+
+    def test_lo_que_se_limpia_nunca_pasa_de_256_caracteres(self):
+        """Un origen de 40 MB pasaba entero por las dos limpiezas (más de un
+        segundo frenando al servidor para todos). Se mira el largo de lo que
+        entra a cada limpieza, no el tiempo: un umbral de tiempo da rojo falso
+        en una máquina cargada."""
+        import re as _re
+        largos = []
+        original = _re.sub
+
+        def anotar(patron, reemplazo, texto, *a, **k):
+            largos.append(len(texto))
+            return original(patron, reemplazo, texto, *a, **k)
+
+        with patch("re.sub", anotar):
+            self.assertEqual(main._normalizar_origen(" a" * 1_000_000), ("a-" * 30)[:60])
+        self.assertTrue(largos)
+        self.assertLessEqual(max(largos), 256)
 
     def test_las_marcas_que_anota_el_navegador_son_las_que_conoce_el_servidor(self):
         """MARCAS_DE_CLIC (origen.js) y MARCAS (canal_de_origen.py): la misma
@@ -309,11 +354,11 @@ class ElCanalDeCadaOrigen(unittest.TestCase):
         "meta-ads": "meta_anuncios",
         "metaads": "meta_anuncios",                 # utm_source=MetaAds
         "metaanuncios/promo": "meta_anuncios",
-        "meta-anunciosx": "meta_posts",            # no es el código: es «meta» + guion
+        "meta-anunciosx": "meta_sin_saber",        # no es el código ni la forma de un post
         # Los posts de Nico con su código, y los utm de Meta de alguien más.
         "ig-20261022": "meta_posts",
         "fb_1020": "meta_posts",
-        "ig-stories/1022": "meta_posts",
+        "ig-stories/1022": "meta_sin_saber",         # «tus posts» es sólo red-fecha
         "ig": "meta_sin_saber",
         "ig/campana": "meta_sin_saber",
         "fb/promo-noviembre": "meta_sin_saber",
@@ -354,8 +399,15 @@ class ElCanalDeCadaOrigen(unittest.TestCase):
         "sitio/chat.openai.com": "ia",
         "sitio/www.perplexity.ai": "ia",
         "sitio/meta.ai": "ia",
-        # La marca le gana al sitio.
-        "sitio/t.co/gclid": "google",
+        # La marca le gana al sitio, salvo que el sitio sea de OTRA red con
+        # nombre propio: entonces alguien copió la dirección y la compartió ahí.
+        "sitio/t.co/gclid": "x",
+        "sitio/t.co/fbclid": "x",
+        "sitio/chatgpt.com/fbclid": "ia",
+        "sitio/google.com/fbclid": "google",
+        "sitio/mail.google.com/gclid": "google",     # anuncio de Google en Gmail
+        "sitio/linkedin.com/fbclid": "meta_sin_saber",
+        "app/com.whatsapp/fbclid": "meta_sin_saber",
         "sitio/linktr.ee/fbclid": "meta_sin_saber",
         "sitio/l.facebook.com/raro": "meta_sin_saber",
         "clic/fbclid": "meta_sin_saber",
@@ -369,6 +421,51 @@ class ElCanalDeCadaOrigen(unittest.TestCase):
         "app/com.desconocida.app": "otro_sitio",
         "app/com.google.android.gm/fbclid": "meta_sin_saber",
         "sitio/": "otro_codigo",
+        # Anuncios de Meta como los puede escribir una persona o la plantilla
+        # del Administrador de anuncios…
+        "meta-ad": "meta_anuncios",
+        "fb-ad": "meta_anuncios",
+        "ig-pauta": "meta_anuncios",
+        "meta-publicidad": "meta_anuncios",
+        "meta-pago": "meta_anuncios",
+        "meta-cpc": "meta_anuncios",
+        "fb_cpc": "meta_anuncios",
+        "meta-retargeting": "meta_anuncios",
+        "instagram-sponsored": "meta_anuncios",
+        "meta-ads2026": "meta_anuncios",
+        "meta-anuncios2026/promo": "meta_anuncios",
+        "metaad": "meta_anuncios",                  # utm_source=MetaAd
+        "fbads": "meta_anuncios",
+        "fb/paid/promo": "meta_anuncios",
+        "ig/paid_social/promo": "meta_anuncios",
+        "fbadmin": "otro_codigo",
+        # …y códigos de Meta que no son los posts de Nico ni dicen anuncio.
+        "instagram_story": "meta_sin_saber",
+        "ig_story": "meta_sin_saber",
+        "facebook_group": "meta_sin_saber",
+        "fb-share": "meta_sin_saber",
+        "ig-influencer/juan": "meta_sin_saber",
+        "instagram/social/bio": "meta_sin_saber",
+        "msg/promo": "meta_sin_saber",
+        "an/promo": "meta_sin_saber",
+        "insta-20261022": "meta_posts",
+        "face-1020": "meta_posts",
+        "threads-20261022": "meta_posts",
+        # Sitios y apps que faltaban.
+        "sitio/m.me": "meta_sin_saber",
+        "sitio/ig.me": "meta_sin_saber",
+        "sitio/pplx.ai": "ia",
+        "sitio/notebooklm.google.com": "ia",
+        "sitio/aistudio.google.com": "ia",
+        "sitio/m365.cloud.microsoft": "ia",
+        "sitio/images.google.com": "google",
+        "app/com.google.android.apps.magazines": "google",
+        # Lo que guarda el servidor de un sitio, una app o una marca que no conoce.
+        "sitio/otro": "otro_sitio",
+        "sitio/otro/fbclid": "meta_sin_saber",
+        "app/otro": "otro_sitio",
+        "clic/otra": "otro_sitio",
+        "sitio-chatgpt.com": "otro_codigo",          # ?d=sitio/chatgpt.com, neutralizado
         # Sin dato.
         "": "sin_dato",
         "   ": "sin_dato",
@@ -402,8 +499,62 @@ class ElCanalDeCadaOrigen(unittest.TestCase):
         self.assertEqual(len(IDS), len(set(IDS)))
         for c, nombre, explica in CANALES:
             self.assertTrue(nombre.strip() and explica.strip(), c)
-        for _, canal in MARCAS.values():
-            self.assertIn(canal, IDS)
+
+    def test_todas_las_filas_de_las_tablas_apuntan_a_un_canal_que_existe(self):
+        """Un canal mal escrito en una fila (`"meta"` en vez de
+        `"meta_sin_saber"`) tumbaba /api/admin/origenes con un KeyError."""
+        import canal_de_origen as c
+        for tabla in (c.MARCAS, c._SITIOS, c._APPS):
+            for nombre, (fuente, canal) in tabla.items():
+                self.assertIn(canal, IDS, nombre)
+                self.assertTrue(fuente.strip(), nombre)
+        self.assertLessEqual(set(c._REDES_EN_CODIGOS.values()), set(IDS) | {"meta"})
+
+    def test_una_fila_mal_escrita_no_tumba_el_panel(self):
+        import canal_de_origen as c
+        roto = {**c._SITIOS, "roto.com": ("Roto", "meta")}
+        with patch.object(c, "_SITIOS", roto):
+            self.assertEqual(canal_del_origen("sitio/roto.com"), ("otro_sitio", "Roto"))
+            self.assertEqual(canal_del_origen("roto.com/x")[0], "otro_codigo")
+
+    def test_lo_que_se_guarda(self):
+        """`para_guardar`: el nombre de un sitio o una app sólo si está en la
+        tabla; la marca sólo si es de la lista; los códigos del link, como
+        vinieron."""
+        casos = {
+            "sitio/l.instagram.com/fbclid": "sitio/l.instagram.com/fbclid",
+            "sitio/google.com.ar/gclid": "sitio/google.com.ar/gclid",
+            "app/com.whatsapp": "app/com.whatsapp",
+            "sitio/intranet.banco-ejemplo.com.ar": "sitio/otro",
+            "sitio/juanperez.github.io/fbclid": "sitio/otro/fbclid",
+            "sitio/notebook-de-juan": "sitio/otro",
+            "sitio/181.46.12.200": "sitio/otro",
+            "app/com.desconocida.citas": "app/otro",
+            "sitio/t.co/raro": "sitio/t.co",
+            "clic/fbclid": "clic/fbclid",
+            "clic/inventada": "clic/otra",
+            "x-20261019": "x-20261019",
+            "meta-anuncios/promo": "meta-anuncios/promo",
+            "juanperez.github.io": "juanperez.github.io",   # un utm que eligió quien armó el link
+            None: None,
+        }
+        for entra, sale in casos.items():
+            self.assertEqual(para_guardar(entra), sale, entra)
+
+    def test_lo_que_se_guarda_al_azar_sigue_limpio_y_en_su_canal(self):
+        rnd = random.Random(611)
+        letras = "abcdefghijklmnopqrstuvwxyz0123456789._/-"
+        prefijos = ("sitio/", "app/", "clic/", "sitio/l.facebook.com/", "x-", "")
+        for _ in range(3000):
+            codigo = main._normalizar_origen(rnd.choice(prefijos) + "".join(
+                rnd.choice(letras) for _ in range(rnd.randint(0, 60))))
+            guardado = para_guardar(codigo)
+            # Lo que se guarda pasa la limpieza sin cambios y no cambia de canal
+            # salvo para ir a «otro».
+            self.assertEqual(main._normalizar_origen(guardado), guardado, codigo)
+            if guardado != codigo:
+                self.assertTrue(guardado.startswith(("sitio/otro", "app/otro", "clic/otra"))
+                                or canal_del_origen(guardado)[0] == canal_del_origen(codigo)[0], codigo)
 
     def test_al_azar_nunca_rompe_y_siempre_da_un_canal(self):
         rnd = random.Random(20261106)

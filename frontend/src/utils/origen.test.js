@@ -33,11 +33,36 @@ function navegador(href, guardado = {}, referrer = '') {
 const AHORA = Date.parse('2026-10-19T12:00:00Z')
 
 describe('al entrar con un código', () => {
-  it('se guarda con su fecha y la página donde entró', () => {
+  it('se guarda con su fecha, y nada más (ni la página donde entró)', () => {
     const n = navegador('https://rendi.finance/blog/brokers?d=x-1019')
     anotarOrigen(AHORA)
-    expect(n.guardado()).toEqual({ codigo: 'x-1019', visto: '2026-10-19T12:00:00.000Z', pagina: '/blog/brokers' })
+    expect(n.guardado()).toEqual({ codigo: 'x-1019', visto: '2026-10-19T12:00:00.000Z' })
     expect(origenParaElRegistro(AHORA)).toEqual({ origen: 'x-1019', origen_visto: '2026-10-19T12:00:00.000Z' })
+  })
+
+  it('el medio del utm viaja (dice si fue pago); solo no alcanza para un código', () => {
+    expect(codigoDeLaDireccion('?utm_source=fb&utm_medium=paid&utm_campaign=Promo')).toBe('fb/paid/promo')
+    expect(codigoDeLaDireccion('?utm_source=newsletter&utm_medium=email')).toBe('newsletter/email')
+    expect(codigoDeLaDireccion('?utm_medium=paid&utm_campaign=promo')).toBe('paid/promo')
+    expect(codigoDeLaDireccion('?utm_medium=paid')).toBe(null)
+    // Los de siempre, igual que antes.
+    expect(codigoDeLaDireccion('?utm_source=chatgpt.com')).toBe('chatgpt.com')
+    expect(codigoDeLaDireccion('?utm_source=meta-anuncios&utm_campaign=Promo%20Nov')).toBe('meta-anuncios/promo-nov')
+  })
+
+  it('un código del link no se hace pasar por uno reconocido solo', () => {
+    expect(codigoDeLaDireccion('?d=sitio/chatgpt.com')).toBe('sitio-chatgpt.com')
+    expect(codigoDeLaDireccion('?d=clic/gclid')).toBe('clic-gclid')
+    expect(codigoDeLaDireccion('?utm_source=app&utm_campaign=x')).toBe('app-x')
+    // Sólo el comienzo exacto: `sitios/…` o `x/sitio/…` quedan como vinieron.
+    expect(codigoDeLaDireccion('?d=sitios/a')).toBe('sitios/a')
+    expect(codigoDeLaDireccion('?d=x/sitio/a')).toBe('x/sitio/a')
+  })
+
+  it('un mail metido en el código se descarta', () => {
+    expect(codigoDeLaDireccion('?utm_source=juan.perez@gmail.com')).toBe(null)
+    expect(codigoDeLaDireccion('?utm_source=x&utm_campaign=ana%2Bpromo%40empresa.com.ar')).toBe('x')
+    expect(codigoDeLaDireccion('?d=a@b')).toBe(null)
   })
 
   it('se saca `d` de la dirección y lo demás queda', () => {
@@ -188,17 +213,52 @@ describe('sin código en el link: la marca del clic y el sitio de donde venía',
     expect(origenParaElRegistro(AHORA).origen).toBe('clic/fbclid')
   })
 
-  it('manda el primero también con el sitio: el post que vino después no lo pisa', () => {
+  it('un código le gana a lo reconocido solo aunque llegue después; al revés, nunca', () => {
+    // Entró desde Google y a la semana tocó el anuncio de «volvé» de Meta.
+    const n = navegador('https://rendi.finance/', {}, 'https://www.google.com.ar/')
+    anotarOrigen(AHORA)
+    expect(n.guardado().codigo).toBe('sitio/google.com.ar')
+    n.win.location = new URL('https://rendi.finance/?utm_source=meta-anuncios&utm_campaign=Volve')
+    vi.stubGlobal('document', { referrer: 'https://l.instagram.com/' })
+    anotarOrigen(AHORA + 6 * 864e5)
+    expect(n.guardado()).toEqual({ codigo: 'meta-anuncios/volve', visto: new Date(AHORA + 6 * 864e5).toISOString() })
+    // Después, ni un sitio ni otro código lo pisan.
+    n.win.location = new URL('https://rendi.finance/')
+    vi.stubGlobal('document', { referrer: 'https://t.co/' })
+    anotarOrigen(AHORA + 7 * 864e5)
+    n.win.location = new URL('https://rendi.finance/?d=x-1022')
+    anotarOrigen(AHORA + 8 * 864e5)
+    expect(n.guardado().codigo).toBe('meta-anuncios/volve')
+  })
+
+  it('entre sitios y marcas manda el primero; una visita sin nada no anota nada', () => {
     const n = navegador('https://rendi.finance/', {}, 'https://t.co/')
     anotarOrigen(AHORA)
-    n.win.location = new URL('https://rendi.finance/?d=x-1022')
-    vi.stubGlobal('document', { referrer: '' })
+    n.win.location = new URL('https://rendi.finance/?fbclid=x')
+    vi.stubGlobal('document', { referrer: 'https://l.facebook.com/' })
     anotarOrigen(AHORA + 864e5)
     expect(n.guardado().codigo).toBe('sitio/t.co')
-    // Y una visita sin nada que reconocer no anota nada.
     const m = navegador('https://rendi.finance/', {}, '')
     anotarOrigen(AHORA)
     expect(m.guardado()).toBe(null)
+  })
+
+  it('el anuncio del día 29 cuenta aunque el registro sea el día 30 (antes quedaba «Sin dato»)', () => {
+    const n = navegador('https://rendi.finance/', {}, 'https://www.google.com/')
+    anotarOrigen(AHORA)
+    n.win.location = new URL('https://rendi.finance/?utm_source=meta-anuncios&utm_campaign=promo')
+    vi.stubGlobal('document', { referrer: '' })
+    anotarOrigen(AHORA + 29 * 864e5)
+    expect(origenParaElRegistro(AHORA + 30.2 * 864e5)?.origen).toBe('meta-anuncios/promo')
+  })
+
+  it('en un informe público (/i/<llave>) la llave no queda guardada en ningún lado', () => {
+    const llave = 'k3Jx9QpLm2VwZr8TfYb4Nc7Hd1Ae6Gs5'
+    const n = navegador(`https://rendi.finance/i/${llave}`, {}, 'android-app://com.whatsapp/')
+    anotarOrigen(AHORA)
+    expect(n.guardado()).toEqual({ codigo: 'app/com.whatsapp', visto: '2026-10-19T12:00:00.000Z' })
+    expect([...n.store.values()].join(' ')).not.toContain(llave)
+    expect(n.win.location.pathname).toBe(`/i/${llave}`)
   })
 })
 
@@ -230,6 +290,7 @@ describe('la regla de limpieza es la misma que la del servidor', () => {
     ['<b>', 'b'],
     ['', null],
     ['!!!', null],
+    ['ana@x.com', null],
   ])('%j → %j', (entrada, esperado) => {
     expect(normalizarCodigo(entrada)).toBe(esperado)
   })
