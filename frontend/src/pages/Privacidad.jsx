@@ -40,7 +40,7 @@ export default function Privacidad() {
           <ul className="text-sm text-ink-1 leading-relaxed space-y-1.5 list-disc pl-5 [&_li]:marker:text-data-violet">
             <li>Guardamos solo lo que vos cargás (operaciones, posiciones, plazos fijos, entradas mensuales) más tu email y nombre.</li>
             <li>No tenemos acceso a tu dinero ni a tus cuentas: no hay integración bancaria. Vos cargás los datos manualmente o por CSV.</li>
-            <li>No vendemos, alquilamos ni compartimos tus datos con fines comerciales, ni hacemos profiling publicitario.</li>
+            <li>No vendemos ni alquilamos tus datos, y los de tu cartera (montos, cantidades, operaciones) no se usan para publicidad. Para medir las visitas y nuestros anuncios usamos Google Analytics y el píxel de Meta (ver la sección 7).</li>
             <li>El pago lo procesa Rebill: nunca almacenamos datos de tu tarjeta o medio de pago.</li>
             <li>Mervall-E AI usa Claude (Anthropic) para pensar la respuesta y OpenAI para leerla en voz alta: la lectura viene activada y la apagás con el botón del parlante. Ninguno de los dos entrena sus modelos con tus datos.</li>
             <li>Si le hablás a Mervall-E AI con el micrófono, ese audio va a OpenAI para convertirse en texto. Nosotros no lo guardamos en ningún lado, y el micrófono sólo se prende cuando vos lo tocás. OpenAI lo retiene hasta 30 días para controlar abusos y después lo borra.</li>
@@ -109,6 +109,7 @@ export default function Privacidad() {
             <li>Logs de actividad: timestamps de login, creación de cuenta y eventos del sistema.</li>
             <li>Logs de errores (sin información personal sensible).</li>
             <li>De qué red, sitio o campaña llegaste cuando creás la cuenta, si tu navegador lo informa (por ejemplo «X», «Instagram», «ChatGPT» o el código del link de un post), para saber qué canales traen gente. Sólo el nombre, y sólo si es uno conocido: nunca la dirección de la página de donde venías ni lo que buscaste.</li>
+            <li>Lo que registran Google Analytics y el píxel de Meta cuando visitás rendi.finance: qué páginas ves (sin los datos de tu cuenta), desde qué tipo de dispositivo y si te registraste. Ver las secciones 5 y 7.</li>
           </ul>
           <p className="mt-4"><strong className="text-ink-0">Datos de pago (procesados por Rebill):</strong></p>
           <p>
@@ -129,7 +130,6 @@ export default function Privacidad() {
             <li>Datos de tarjetas o cuentas bancarias (los maneja Rebill, no nosotros).</li>
             <li>Credenciales de tus brokers (nunca te pedimos las contraseñas de Cocos, IOL, etc.).</li>
             <li>Categorías especiales de datos (salud, ideología política, religión, orientación, etc.).</li>
-            <li>Identificadores de tracking publicitario o cookies de terceros con fines de advertising.</li>
           </ul>
         </Section>
 
@@ -179,8 +179,15 @@ export default function Privacidad() {
             </li>
             <li>
               <strong className="text-ink-0">Mantener y mejorar el producto (interés legítimo).</strong>{' '}
-              Para diagnosticar errores y entender patrones de uso de forma agregada. No
-              usamos esta información para identificarte individualmente con fines publicitarios.
+              Para diagnosticar errores y entender patrones de uso de forma agregada: cuántos
+              usan cada parte de Rendi, no qué hace cada persona.
+            </li>
+            <li>
+              <strong className="text-ink-0">Medir las visitas y nuestros anuncios (interés legítimo).</strong>{' '}
+              Para saber cuánta gente entra, de dónde llega y si nuestros anuncios en Facebook e
+              Instagram traen registros, usamos Google Analytics y el píxel de Meta, y le pedimos
+              a Meta que les muestre anuncios de Rendi a quienes ya visitaron el sitio o ya tienen
+              cuenta. Nunca con los datos de tu cartera. Podés oponerte: ver las secciones 5 y 7.
             </li>
             <li>
               <strong className="text-ink-0">Cumplir obligaciones legales.</strong> Cuando
@@ -322,6 +329,32 @@ export default function Privacidad() {
               <a href="https://www.rebill.com/legal/privacy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">rebill.com/legal/privacy</a>.
             </li>
             <li>
+              <strong className="text-ink-0">Google (Google Analytics).</strong>{' '}
+              Cuenta las visitas a rendi.finance: qué páginas se ven (también la de un activo,
+              como <Code>/activo/AAPL</Code>, sin montos ni cantidades), de qué sitio o campaña
+              llegaste, el tipo de dispositivo y algunos pasos (por ejemplo, que te registraste o
+              que usaste Mervall-E AI). No le mandamos tu email, tu nombre, tu número de cuenta ni
+              ningún monto, y de una página con datos tuyos o con un enlace privado (como un
+              informe compartido) no recibe esa parte de la dirección. Lo tenemos configurado sin
+              las funciones de Google para personalizar anuncios. Política:{' '}
+              <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">policies.google.com/privacy</a>.
+            </li>
+            <li>
+              <strong className="text-ink-0">Meta (el píxel y las listas para anuncios de Facebook e Instagram).</strong>{' '}
+              El píxel de Meta le avisa a Meta que visitaste rendi.finance y si empezaste o
+              completaste el registro, para medir si nuestros anuncios funcionan y para mostrarles
+              anuncios de Rendi a quienes ya entraron. No se activa en las páginas con datos tuyos.
+              Si en ese navegador tenés abierta tu cuenta de Facebook o Instagram, Meta puede
+              asociar la visita a esa cuenta. Además, podemos pasarle a Meta una lista con el email
+              y el nombre de quienes tienen cuenta en Rendi, para mostrarles anuncios de Rendi (por
+              ejemplo, para invitarlos a volver) o para no mostrárselos: Meta la recibe cifrada y,
+              según sus términos, la usa sólo para encontrar esas cuentas y después la borra. No
+              van en esa lista los clientes que dio de alta un asesor ni quienes se dieron de baja
+              de los emails promocionales; si no querés estar, date de baja con el link de
+              cualquiera de esos emails o escribinos. Política:{' '}
+              <a href="https://www.facebook.com/privacy/policy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">facebook.com/privacy/policy</a>.
+            </li>
+            <li>
               <strong className="text-ink-0">Fuentes de datos de mercado.</strong> Para
               mostrar precios y contexto, consultamos servicios externos como Yahoo Finance,
               dolarapi.com, BCRA, data912.com, ArgentinaDatos, CAFCI y Google News. A estas
@@ -335,8 +368,11 @@ export default function Privacidad() {
           </p>
           <p className="mt-4"><strong className="text-ink-0">Lo que NO hacemos:</strong></p>
           <ul>
-            <li>NO vendemos, alquilamos ni cedemos tus datos a terceros con fines comerciales.</li>
-            <li>NO hacemos profiling ni segmentación con fines publicitarios.</li>
+            <li>NO vendemos ni alquilamos tus datos.</li>
+            <li>
+              NO usamos los datos de tu cartera para publicidad, y a Google y a Meta no les
+              mandamos montos, cantidades ni operaciones.
+            </li>
             <li>
               NO compartimos tu información con tu broker, AFIP, ARCA ni ningún ente
               regulatorio, salvo orden judicial o requerimiento legal válido al que estemos
@@ -347,7 +383,8 @@ export default function Privacidad() {
 
         <Section title="6. Transferencias internacionales de datos">
           <p>
-            Algunos de nuestros proveedores (por ejemplo, los de hosting, IA o emails)
+            Algunos de nuestros proveedores (por ejemplo, los de hosting, IA o emails, y Google
+            y Meta, que miden las visitas y los anuncios)
             operan servidores ubicados fuera de la República Argentina. Esto implica que,
             para prestarte el servicio, ciertos datos pueden transferirse y procesarse en
             otros países.
@@ -361,10 +398,7 @@ export default function Privacidad() {
         </Section>
 
         <Section title="7. Cookies y tecnologías de seguimiento">
-          <p>
-            Rendi usa <strong className="text-ink-0">solo cookies funcionales esenciales</strong>{' '}
-            para operar:
-          </p>
+          <p><strong className="text-ink-0">Para que Rendi funcione</strong> usamos:</p>
           <ul>
             <li>
               <strong className="text-ink-0">Cookie de sesión HttpOnly</strong> — mantiene
@@ -372,17 +406,56 @@ export default function Privacidad() {
               desde JavaScript.
             </li>
             <li>
-              <strong className="text-ink-0">Preferencia de tema</strong> — recuerda si
-              elegís el modo claro u oscuro de la interfaz.
+              <strong className="text-ink-0">Preferencias guardadas en tu navegador</strong> —
+              por ejemplo, si elegís el modo claro u oscuro o la moneda en que mirás tu cartera.
+            </li>
+            <li>
+              <strong className="text-ink-0">De dónde llegaste</strong> — si llegaste a Rendi
+              desde una red, un sitio o el link de un post, tu navegador lo recuerda (sólo el
+              nombre) hasta 30 días o hasta que creás la cuenta, para contarlo en ese momento
+              (ver la sección 2).
             </li>
           </ul>
           <p className="mt-4">
-            <strong className="text-ink-0">NO usamos</strong> cookies de tracking
-            publicitario, pixels de Facebook, conversion tracking de Google Ads ni
-            rastreadores de terceros con fines de profiling. Como las únicas cookies que
-            usamos son estrictamente necesarias para que puedas usar tu sesión,{' '}
-            <strong className="text-ink-0">no mostramos un banner de consentimiento de
-            cookies</strong>: no hay nada de tracking que aceptar o rechazar.
+            <strong className="text-ink-0">Para medir las visitas y nuestros anuncios</strong>,
+            sólo en <Code>rendi.finance</Code>, usamos dos herramientas de terceros que guardan
+            sus propias cookies:
+          </p>
+          <ul>
+            <li>
+              <strong className="text-ink-0">Google Analytics</strong> — cuenta las visitas y
+              algunos pasos (por ejemplo, que te registraste). Guarda cookies como{' '}
+              <Code>_ga</Code>. Lo tenemos configurado sin las funciones de Google para
+              personalizar anuncios.
+            </li>
+            <li>
+              <strong className="text-ink-0">Píxel de Meta</strong> — le avisa a Meta de las
+              visitas y del registro, para medir nuestros anuncios en Facebook e Instagram y
+              mostrarles anuncios de Rendi a quienes ya visitaron el sitio. Guarda la cookie{' '}
+              <Code>_fbp</Code> y usa la marca que Facebook e Instagram le agregan a sus links.
+            </li>
+          </ul>
+          <p>
+            A ninguna de las dos le mandamos tu email, tu nombre, tu número de cuenta ni los
+            montos o las operaciones de tu cartera. En las páginas con datos tuyos o con un
+            enlace privado (como un informe compartido), Google no recibe esa parte de la
+            dirección y el píxel de Meta no se activa. Qué recibe cada una está en la sección 5.
+          </p>
+          <p className="mt-4"><strong className="text-ink-0">Cómo evitarlas.</strong> Rendi funciona igual sin ellas:</p>
+          <ul>
+            <li>Bloqueá las cookies de terceros o usá un bloqueador de contenido en tu navegador.</li>
+            <li>
+              Para Google Analytics, Google ofrece un complemento de inhabilitación:{' '}
+              <a href="https://tools.google.com/dlpage/gaoptout" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">tools.google.com/dlpage/gaoptout</a>.
+            </li>
+            <li>
+              Para Meta, en tu cuenta de Facebook o Instagram (Centro de cuentas → «Tu actividad
+              fuera de las tecnologías de Meta») podés desconectar lo que los sitios le cuentan.
+            </li>
+          </ul>
+          <p>
+            Hoy no mostramos un aviso para aceptar o rechazar estas cookies al entrar: si no las
+            querés, podés evitarlas de las formas de arriba.
           </p>
         </Section>
 

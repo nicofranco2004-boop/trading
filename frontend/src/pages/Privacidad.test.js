@@ -114,3 +114,88 @@ describe('lo que los legales dicen de la lectura en voz alta sigue siendo cierto
     expect(/viene activad/i.test(plano(pagina.slice(0, corte)))).toBe(VOZ_ARRANCA_PRENDIDA)
   })
 })
+
+// 🔴 06/11/2026: la sección 7 decía «NO usamos … pixels de Facebook» y «no hay
+// nada de tracking que aceptar o rechazar», y el sitio cargaba Google Analytics y
+// el píxel de Meta. El resumen, la §2, la §3, la §5 y la pregunta frecuente de la
+// portada decían lo mismo con otras palabras. Nadie se enteró: un texto que miente
+// no rompe nada. Esto ata los textos a lo que el código carga: si se prende, se
+// apaga o se reconfigura una de las dos herramientas, los textos cambian en el
+// mismo movimiento.
+describe('lo que los legales dicen de la medición y los anuncios sigue siendo cierto', () => {
+  const plano = (s) => s.replace(/\{\/\*[\s\S]*?\*\/\}/g, ' ').replace(/<[^>]+>/g, ' ')
+    .replace(/\{' '\}/g, ' ').replace(/\s+/g, ' ')
+  const fuente = (ruta) => readFileSync(new URL(ruta, import.meta.url), 'utf8')
+  const metaPixel = fuente('../utils/metaPixel.js')
+  const analytics = fuente('../utils/analytics.js')
+  const pixelPrendido = /const META_PIXEL_ID = '\d+'/.test(metaPixel)
+  const googlePrendido = /const GA_ID = 'G-[A-Z0-9]+'/.test(analytics)
+  const privacidad = plano(pagina)
+  const entre = (a, b) => {
+    const i = pagina.indexOf(a)
+    const j = pagina.indexOf(b)
+    expect(i, `no encuentro «${a}»`).toBeGreaterThanOrEqual(0)
+    expect(j, `no encuentro «${b}»`).toBeGreaterThan(i)
+    return plano(pagina.slice(i, j))
+  }
+  const resumen = entre('Resumen rápido', '1. Introducción')
+  const seccion5 = entre('title="5. ', 'title="6. ')
+  const seccion7 = entre('title="7. ', 'title="8. ')
+  // Sin los comentarios del código: ahí se cuenta qué decía antes.
+  const faq = plano(fuente('../components/landing/FAQ.jsx').replace(/^\s*\/\/.*$/gm, ' '))
+
+  it('si el píxel de Meta está prendido, lo dicen el resumen, la §5, la §7 y la portada', () => {
+    for (const [donde, texto] of [['el resumen', resumen], ['la §5', seccion5], ['la §7', seccion7], ['la pregunta frecuente', faq]]) {
+      expect(/píxel de Meta/i.test(texto), `${donde} tiene que decir si se usa el píxel de Meta`).toBe(pixelPrendido)
+    }
+  })
+
+  it('si Google Analytics está prendido, lo dicen el resumen, la §5, la §7 y la portada', () => {
+    for (const [donde, texto] of [['el resumen', resumen], ['la §5', seccion5], ['la §7', seccion7], ['la pregunta frecuente', faq]]) {
+      expect(/Google Analytics/.test(texto), `${donde} tiene que decir si se usa Google Analytics`).toBe(googlePrendido)
+    }
+  })
+
+  it('la §7 tiene un renglón propio para cada herramienta prendida', () => {
+    // Nombrarla de pasada («…y el píxel de Meta no se activa») no alcanza: tiene
+    // que estar dicho qué es y para qué.
+    expect(/Google Analytics — cuenta las visitas/.test(seccion7)).toBe(googlePrendido)
+    expect(/Píxel de Meta — le avisa a Meta/.test(seccion7)).toBe(pixelPrendido)
+  })
+
+  it('las cookies que nombra la §7 son las de esas herramientas', () => {
+    expect(/_ga\b/.test(seccion7)).toBe(googlePrendido)
+    expect(/_fbp\b/.test(seccion7)).toBe(pixelPrendido)
+  })
+
+  it('lo que promete de Google es la configuración del código', () => {
+    // Si alguien prende las señales de Google o la personalización de anuncios,
+    // la frase de la página deja de ser cierta.
+    expect(analytics).toMatch(/allow_google_signals:\s*false/)
+    expect(analytics).toMatch(/allow_ad_personalization_signals:\s*false/)
+    expect(privacidad).toMatch(/sin las funciones de Google para personalizar anuncios/)
+  })
+
+  it('la lista de mails para los anuncios de Meta: qué es, quiénes no van y cómo salir', () => {
+    // Lo cumple el servidor: backend/tests/test_admin_mails_meta.py (quiénes van).
+    expect(seccion5).toMatch(/lista con el email y el nombre/)
+    expect(seccion5).toMatch(/No van en esa lista los clientes que dio de alta un asesor ni quienes se dieron de baja de los emails promocionales/)
+    expect(faq).toMatch(/te podés dar de baja/)
+  })
+
+  it('ninguna de las frases que eran falsas volvió', () => {
+    const VIEJAS = [
+      /no hay nada de tracking/i,
+      /NO usamos[^.]*pixels? de Facebook/i,
+      /solo cookies funcionales/i,
+      /cookies de terceros con fines de advertising/i,
+      /NO hacemos profiling/i,
+      /identificarte individualmente con fines publicitarios/i,
+      /ni hacemos profiling publicitario/i,
+      /los usamos solo para prestarte el servicio/i,
+    ]
+    for (const [donde, texto] of [['Privacidad', privacidad], ['la pregunta frecuente', faq]]) {
+      for (const vieja of VIEJAS) expect(texto, `${donde} volvió a decir ${vieja}`).not.toMatch(vieja)
+    }
+  })
+})
