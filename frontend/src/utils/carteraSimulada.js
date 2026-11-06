@@ -10,7 +10,11 @@
 // 100, la torta, la dirección y las palabras de lo que volvió.
 //
 // NUNCA PROMETE, como el Backtesting de una regla (utils/backtesting.js): todo en
-// pasado, siempre al lado del S&P 500 y del Nasdaq, sin «la mejor cartera».
+// pasado, siempre al lado del S&P 500 y del Nasdaq, sin «la mejor cartera». Lo que
+// NO pasó va en condicional («le habría ido mejor»): en pasado real se leía como
+// tu resultado, y con «Mi cartera de hoy» encima sale mejor de lo que fue
+// (auditorías de producto y de método, 05/11: con los pesos de hoy desde el primer
+// día decía «le ganó al S&P 500» el doble de veces de lo que pasó).
 // Y habla de lo que TENEMOS, no del activo: «no tenemos los precios de AL30»,
 // no «AL30 no tiene precio» (cotiza todos los días: lo que falta es nuestro
 // dato; auditoría 05/11, M10).
@@ -19,7 +23,7 @@
 // Ahí no es «tu cartera»: es la de él (M11).
 import { porcionColor } from './chartTheme'
 import { fechaCorta } from './cuantoSeMueve'
-import { comoSeVe, enQueTermino, periodoEnPalabras, porcentaje } from './backtesting'
+import { comoSeVe, porcentaje } from './backtesting'
 
 // Los del servidor (backend/cartera_simulada.py): cuántos activos entran y con
 // qué tolerancia los porcentajes «suman 100».
@@ -29,8 +33,6 @@ export const TOLERANCIA = 0.05
 // Lo que falta para 100 en la torta: el fondo, como un hueco por llenar.
 const SIN_REPARTIR = 'rgb(var(--bg-3))'
 
-export const MODOS = [['regla', 'Una regla'], ['cartera', 'Una cartera']]
-export const modoDe = (t) => (t === 'cartera' ? 'cartera' : 'regla')
 /** Las dos maneras de arrancar, en el selector. */
 export const origenes = (cliente = null) => [['hoy', cliente ? 'Su cartera de hoy' : 'Mi cartera de hoy'], ['cero', 'Armar de cero']]
 /** Con qué arranca: lo que dice la dirección. Un link con una cartera y sin
@@ -43,20 +45,20 @@ export const QUE_SE_SIMULA = 'Poné cada activo y cuánto de la cartera va en é
 const deQuien = (cliente) => (cliente ? `la cartera de hoy de ${cliente}` : 'tu cartera de hoy')
 
 /** Arriba de «Mi cartera de hoy». La cartera de hoy no viaja en el link (dice qué
- *  tenés): quien lo abre ve la suya. */
+ *  tenés): quien lo abre ve la suya. Lo que queda afuera es lo que no TENEMOS
+ *  para simular (verificación y diseño 05/11, V4 y M8). */
 export function notaHoy(cliente = null, cambiada = false) {
   if (cambiada) {
     return `Partiste de ${deQuien(cliente)} y la cambiaste. Los cambios no quedan en el link: al recargar vuelve `
       + 'la de hoy.'
   }
-  return `Con ${cliente ? `los activos de ${cliente}` : 'tus activos'} y lo que pesa cada uno hoy, sin bonos, fondos `
-    + 'ni efectivo (no tienen precio de todos los días). Cambiá lo que quieras. El link no la lleva: quien lo abra '
-    + 've la suya.'
+  return `Con ${cliente ? `los activos de ${cliente}` : 'tus activos'} y lo que pesa cada uno hoy. Quedan afuera los `
+    + 'bonos y los fondos, porque no tenemos sus precios de cada día, y el efectivo. Cambiá lo que quieras.'
 }
 export const notaOjito = (cliente = null) => `Con «Ocultar saldos» prendido no traemos ${deQuien(cliente)}: los `
   + `porcentajes dicen qué ${cliente ? 'tiene' : 'tenés'}. Apagalo, o armala de cero.`
-export const notaSinActivos = (cliente = null) => `Todavía no ${cliente ? 'tiene' : 'tenés'} activos con precio de `
-  + 'todos los días: armala de cero.'
+export const notaSinActivos = (cliente = null) => `Todavía no ${cliente ? 'tiene' : 'tenés'} acciones, CEDEARs ni `
+  + 'cripto para simular: armala de cero.'
 export const trayendoHoy = (cliente = null) => `Trayendo ${deQuien(cliente)}…`
 export const errorDeHoy = (cliente = null) => `No pudimos traer ${deQuien(cliente)}.`
 
@@ -184,21 +186,33 @@ export function consultaDe(filas, anios) {
 export function porcionesDeLaTorta(filas) {
   const con = filas.map(f => ({ asset: f.asset, p: numeroDe(f.txt) })).filter(x => x.p > 0)
     .sort((a, b) => b.p - a.p || a.asset.localeCompare(b.asset))
+  // Sin ningún porcentaje, nada: así se ve «Sumá un activo…» y no un anillo gris que
+  // dice «Falta repartir 100%» (diseño 05/11, M3).
+  if (!con.length) return []
   const total = con.reduce((s, x) => s + x.p, 0)
   const items = con.map((x, i) => ({ key: x.asset, label: x.asset, value: x.p, pct: x.p, color: porcionColor(i) }))
-  if (total < 100) items.push({ key: 'sin_dato', label: 'Falta repartir', value: 100 - total, pct: 100 - total, color: SIN_REPARTIR })
+  // El hueco, sólo si de verdad falta: con 33,33 × 3 decía «Falta repartir 0,0%» al
+  // lado de «Suma 100%» (verificación 05/11, V6).
+  if (100 - total > TOLERANCIA) items.push({ key: 'sin_dato', label: 'Falta repartir', value: 100 - total, pct: 100 - total, color: SIN_REPARTIR })
   return items
 }
 
 /** «Mi cartera de hoy» (GET /backtest/cartera/hoy) como filas para editar. */
 export const filasDeHoy = (r) => (r?.activos || []).map(a => ({ asset: a.asset, local: !!a.local, txt: textoDe(a.peso) }))
 
-/** Qué quedó afuera de «Mi cartera de hoy», en palabras (null si nada). */
-export function notaDeHoy(r) {
+/** Qué parte de tu plata se simula y qué quedó afuera de «Mi cartera de hoy», en
+ *  palabras (null si nada). La parte: el servidor la cuenta sobre TODA tu plata
+ *  (`parte`); sin decirla, mitad fondo y mitad CEDEARs se veía como «tu cartera»
+ *  toda en CEDEARs (producto 05/11, A4; método, C6). */
+export function notaDeHoy(r, cliente = null) {
   const afuera = r?.afuera || []
   const sin = afuera.filter(x => x.motivo === 'sin_serie').map(x => x.asset.replace(/^FCI:/, ''))
   const tope = afuera.filter(x => x.motivo === 'tope').map(x => x.asset)
   const out = []
+  if (r?.parte != null && r.parte < 100) {
+    out.push(`Lo que se simula es el ${r.parte}% de ${cliente ? 'su' : 'tu'} plata: lo demás (efectivo, plazos fijos, `
+      + 'bonos o fondos) no lo podemos simular.')
+  }
   if (sin.length) {
     out.push(`${sin.length === 1 ? 'Quedó' : 'Quedaron'} afuera ${enLista(sin)}: no tenemos sus precios de cada día.`)
   }
@@ -206,16 +220,19 @@ export function notaDeHoy(r) {
     out.push(`Entran hasta ${MAX_ACTIVOS} activos: ${tope.length === 1 ? 'quedó' : 'quedaron'} afuera ${enLista(tope)}, `
       + `${tope.length === 1 ? 'el que menos pesa' : 'los que menos pesan'}.`)
   }
-  return out.length ? `${out.join(' ')} El resto se repartió sobre 100%.` : null
+  if (!out.length) return null
+  return `${out.join(' ')}${sin.length || tope.length ? ' El resto se repartió sobre 100%.' : ''}`
 }
 
 const NOMBRE_INDICE = { sp500: 'S&P 500', nasdaq: 'Nasdaq' }
-// ¿Le fue mejor? Con los números TAL COMO SE VEN en las tarjetas (`comoSeVe`, el
-// redondeo de la tarjeta), como en el Backtesting de una regla (`contraMantener`).
+// Menos de un punto es «casi lo mismo»: un ETF del S&P 500 contra el S&P 500
+// salía «le ganó» por 0,2 puntos de diferencia de seguimiento (método 05/11, C9).
+const CASI_LO_MISMO = 1
+// ¿Le habría ido mejor? Con los números TAL COMO SE VEN en las tarjetas
+// (`comoSeVe`, el redondeo de la tarjeta).
 const contra = (c, i) => {
-  const a = comoSeVe(c)
-  const b = comoSeVe(i)
-  return a > b ? 'gano' : a < b ? 'perdio' : 'empate'
+  const d = comoSeVe(c) - comoSeVe(i)
+  return Math.abs(d) < CASI_LO_MISMO ? 'empate' : d > 0 ? 'gano' : 'perdio'
 }
 
 function titulo(c, indices) {
@@ -223,65 +240,78 @@ function titulo(c, indices) {
   const de = (k) => indices.filter(i => contra(c.resultado, i.resultado) === k).map(i => `el ${i.nombre}`)
   const [g, p, e] = [de('gano'), de('perdio'), de('empate')]
   const todos = indices.length
-  if (g.length === todos) return `Le fue mejor que ${g.join(' y que ')}`
-  if (p.length === todos) return `${capital(p.join(' y '))} le ${todos === 1 ? 'ganó' : 'ganaron'}`
-  if (e.length === todos) return `Dio casi lo mismo que ${e.join(' y ')}`
-  if (g.length && p.length) return `Le fue mejor que ${g[0]}, pero no que ${p[0]}`
-  if (g.length) return `Le fue mejor que ${g[0]} y dio casi lo mismo que ${e[0]}`
-  return `Dio casi lo mismo que ${e[0]}, y ${p[0]} le ganó`
+  if (g.length === todos) return `Le habría ido mejor que ${g.join(' y que ')}`
+  if (p.length === todos) return `${capital(p.join(' y '))} le ${todos === 1 ? 'habría ganado' : 'habrían ganado'}`
+  if (e.length === todos) return `Habría dado casi lo mismo que ${e.join(' y ')}`
+  if (g.length && p.length) return `Le habría ido mejor que ${g[0]}, pero no que ${p[0]}`
+  if (g.length) return `Le habría ido mejor que ${g[0]} y habría dado casi lo mismo que ${e[0]}`
+  return `Habría dado casi lo mismo que ${e[0]}, y ${p[0]} le habría ganado`
+}
+
+// Dólares de cada US$ 100, con un decimal: un «punto» del resultado es un dólar,
+// y «sumó 17,8 puntos» explicaba «puntos» con «puntos» (diseño 05/11, M7).
+const dolares = (x) => `US$ ${Math.abs(x).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`
+
+/** Lo que dice debajo del título según con qué se arrancó. Con «Mi cartera de hoy»,
+ *  que es tu cartera de hoy puesta en el pasado y no lo que ganaste: con los pesos
+ *  de hoy desde el primer día sale igual o mejor de lo que fue (método 05/11, C1:
+ *  hasta +10,7 puntos a 2 años). Con una armada, que elegir los porcentajes mirando
+ *  el resultado es elegir con el diario del lunes (producto 05/11, A1). */
+export function aclaracionDeLaCartera(origen, cliente = null) {
+  if (origen === 'hoy') {
+    return `Es ${deQuien(cliente)} puesta en el pasado: con los pesos de hoy desde el primer día, con lo que `
+      + `${cliente ? 'compró' : 'compraste'} después y sin lo que ${cliente ? 'vendió' : 'vendiste'}. No es lo que `
+      + `${cliente ? 'ganó' : 'ganaste'}: eso está en Métricas.`
+  }
+  return 'Elegir los porcentajes mirando este resultado es elegir con el diario del lunes.'
 }
 
 // La peor caída como se ve en las tarjetas (sin decimales, más si redondea a 0),
 // sin el signo.
 const caida = (x) => porcentaje(x, 0).replace(/^[−+-]/, '')
 
-/** «La peor caída de la cartera —lo más que llegó a bajar desde su mejor
- *  momento— fue de 27%, contra…». Se dice qué es (no es «terminó 27 % abajo») y
- *  de quién: después de la frase de un activo, «Su peor caída» se leía como la de
- *  ese activo (auditoría 05/11, M2). */
+/** «La peor caída de la cartera habría sido de 27%, contra…». De quién: después de
+ *  la frase de un activo, «Su peor caída» se leía como la de ese activo (auditoría
+ *  05/11, M2). Qué es «peor caída» se dice una vez, debajo de las tarjetas. */
 function fraseDeLaCaida(c, idx) {
   const lasOtras = idx.map(i => `${caida(i.peor_caida)} del ${i.nombre}`)
   if (caida(c.peor_caida) === '0%') {
     const otras = idx.length ? ` En el mismo período, el ${idx.map(i => `${i.nombre} llegó a caer ${caida(i.peor_caida)}`).join(' y el ')}.` : ''
-    return `La cartera no llegó a bajar desde su mejor momento.${otras}`
+    return `La cartera no habría llegado a bajar desde su mejor momento.${otras}`
   }
-  return `La peor caída de la cartera —lo más que llegó a bajar desde su mejor momento— fue de ${caida(c.peor_caida)}`
+  return `La peor caída de la cartera habría sido de ${caida(c.peor_caida)}`
     + `${lasOtras.length ? `, contra ${enLista(lasOtras)}` : ''}.`
 }
 
-/** Lo que dicen los números, en palabras: {titulo, frases}. En pasado: qué
- *  habría pasado, nunca qué va a pasar ni cuál cartera es mejor. */
-export function lecturaCartera(res) {
+/** Lo que dicen los números, en palabras: {titulo, aclaracion, frases}. En
+ *  condicional: qué habría pasado, nunca qué va a pasar ni cuál cartera es mejor.
+ *  Los tres «US$ 100 habrían quedado en» no se repiten: están en las tarjetas y en
+ *  el gráfico (diseño 05/11, M10). `origen`: 'hoy' o 'cero'. */
+export function lecturaCartera(res, { origen = 'cero', cliente = null } = {}) {
   if (!res?.disponible) return null
   const c = res.cartera
   const idx = res.indices || []
   const xs = res.activos || []
-  const periodo = res.recortado ? `desde el ${fechaCorta(res.desde)}` : `en ${periodoEnPalabras(res.anios)}`
   const frases = []
-  let quedo = `${capital(periodo)}, US$ 100 en esta cartera habrían quedado en ${enQueTermino(c.final)}`
-  if (idx.length === 1) quedo += `, y en el ${idx[0].nombre}, en ${enQueTermino(idx[0].final)}`
-  if (idx.length === 2) {
-    quedo += `; en el ${idx[0].nombre}, en ${enQueTermino(idx[0].final)}, y en el ${idx[1].nombre}, en ${enQueTermino(idx[1].final)}`
-  }
-  frases.push(`${quedo}.`)
   if (xs.length > 1) {
     const orden = [...xs].sort((a, b) => b.aporte - a.aporte)
     const [mas, menos] = [orden[0], orden.at(-1)]
-    const pts = (x) => porcentaje(x).replace('%', '')
     if (mas.aporte > 0 && menos.aporte < 0) {
-      frases.push(`El que más sumó fue ${mas.asset}, ${pts(mas.aporte)} puntos, y el que más restó, ${menos.asset}, `
-        + `${pts(menos.aporte)}: entre todos, la cartera dio ${porcentaje(c.resultado)}.`)
+      frases.push(`De cada US$ 100, ${mas.asset} habría sumado ${dolares(mas.aporte)} y ${menos.asset} habría restado `
+        + `${dolares(menos.aporte)}: entre todos, la cartera habría dado ${porcentaje(c.resultado)}.`)
     } else if (mas.aporte > 0) {
-      frases.push(`El que más sumó fue ${mas.asset}: ${pts(mas.aporte)} de los ${pts(c.resultado)} puntos de la cartera.`)
+      frases.push(`De cada US$ 100, el que más habría sumado es ${mas.asset}: ${dolares(mas.aporte)} de los `
+        + `${dolares(c.resultado)} que habría ganado la cartera.`)
     } else if (menos.aporte < 0) {
-      frases.push(`El que más restó fue ${menos.asset}: ${pts(menos.aporte)} de los ${pts(c.resultado)} puntos de la cartera.`)
+      frases.push(`De cada US$ 100, el que más habría restado es ${menos.asset}: ${dolares(menos.aporte)} de los `
+        + `${dolares(c.resultado)} que habría perdido la cartera.`)
     }
     // El que más cambió de peso sin tocar la cartera (el mayor, no un orden: la
     // lista de «Cada activo» va en el orden en que la armaste).
     const corrida = (x) => Math.abs(x.peso_final - x.peso)
     const cambio = xs.reduce((m, x) => (corrida(x) > corrida(m) ? x : m))
     if (corrida(cambio) >= 1) {
-      frases.push(`Sin tocarla, ${cambio.asset} pasó de ${pesoTxt(cambio.peso)} a ${pesoTxt(cambio.peso_final)} de la cartera.`)
+      frases.push(`Sin tocarla, ${cambio.asset} habría pasado de ${pesoTxt(cambio.peso)} a ${pesoTxt(cambio.peso_final)} de la cartera.`)
     }
   }
   frases.push(fraseDeLaCaida(c, idx))
@@ -296,7 +326,7 @@ export function lecturaCartera(res) {
       ? `No tenemos precios del ${nombre} desde el ${fechaCorta(f.hasta)}: quedó afuera.`
       : `Todavía no tenemos la historia del ${nombre} para compararla.`)
   }
-  return { titulo: titulo(c, idx), frases }
+  return { titulo: titulo(c, idx), aclaracion: aclaracionDeLaCartera(origen, cliente), frases }
 }
 
 /** Por qué no se pudo simular, en una oración entera. `cuantos`: los activos de
@@ -333,11 +363,13 @@ export function motivoCartera(res, cuantos = 2) {
   }
 }
 
-/** Debajo de «Cada activo». Un activo gana peso si le va MEJOR QUE EL CONJUNTO, no
- *  sólo si sube: «el que sube pesa cada vez más» lo contradecía la tabla de arriba
- *  (GGAL +16 % pasó de 10 % a 8 %; auditoría 05/11, A4). */
-export const NOTA_CADA_ACTIVO = 'Sin tocar la cartera, el que sube más que el conjunto gana peso, y el que sube '
-  + 'menos (o baja), lo pierde. «Aportó»: cuántos puntos del resultado de la cartera vienen de ese activo.'
+/** Debajo de «Cada activo». Un activo gana peso si le va MEJOR QUE EL CONJUNTO, suba
+ *  o baje: «el que sube pesa cada vez más» lo contradecía la tabla (GGAL +16 % pasó
+ *  de 10 % a 8 %; auditoría 05/11, A4), y «el que baja lo pierde», también (BTC −22,6 %
+ *  pasó de 50 % a 59,7 %, con GGAL bajando más; verificación 05/11, V1). Lo prueba
+ *  utils/carteraSimulada.test.js contra lo que contesta el servidor. */
+export const NOTA_CADA_ACTIVO = 'Sin tocar la cartera, gana peso el que rinde más que el conjunto, aunque baje, y lo '
+  + 'pierde el que rinde menos, aunque suba. «Aportó»: cuánto de cada US$ 100 ganó o perdió la cartera por ese activo.'
 
 /** La aclaración de abajo: cómo se simula y que no es una recomendación. */
 export const COMO_SE_SIMULA_CARTERA = 'La simulación compra todo el primer día, al cierre, con los porcentajes que '

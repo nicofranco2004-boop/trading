@@ -33,18 +33,20 @@ import { useSearchParams } from 'react-router-dom'
 import { Plus, X } from 'lucide-react'
 import Segmento from '../components/asset/Segmento'
 import Skeleton from '../components/Skeleton'
-import { Aviso, Dato, GraficoDeCien, PUNTEADO, Punto, Trazo, usePedidoDePrueba, v } from '../components/backtest/piezas'
+import {
+  Aviso, GraficoDeCien, PUNTEADO, Punto, QUE_ES_LA_PEOR_CAIDA, TarjetaDeResultado, Trazo, usePedidoDePrueba, v,
+} from '../components/backtest/piezas'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { useActivoDelGrafico } from '../hooks/useActivoDelGrafico'
 import { useFichaDelActivo } from '../hooks/useFichaDelActivo'
 import { fechaCorta } from '../utils/cuantoSeMueve'
-import { MODOS, modoDe } from '../utils/carteraSimulada'
 import { activoValido } from '../utils/graficoTecnico'
 import { nombreDelCliente } from '../utils/navegacion'
 import { track } from '../utils/track'
 import {
-  MAX_REGLAS, PERIODOS, REGLAS, aniosDe, colorDe, comoSeSimula, compraClave, ganaron, lectura, motivoEnPalabras,
-  otraRegla, porcentaje, precio, queSePrueba, reglaDe, reglasDe, sinEstaCompra, textoDelRecorte, tramosComprada,
+  MAX_REGLAS, MODOS, PERIODOS, REGLAS, aniosDe, colorDe, comoSeSimula, compraClave, ganaron, lectura, modoDe,
+  motivoEnPalabras, otraRegla, porcentaje, precio, queSePrueba, reglaDe, reglasDe, sinEstaCompra, textoDelRecorte,
+  tramosComprada,
 } from '../utils/backtesting'
 import { Encabezado } from './GraficoTecnico'
 
@@ -214,7 +216,7 @@ function PruebaDe({ activo, reglas, anios, onTuyo, onAbierto }) {
   // El pedido es el mismo de «Una cartera» (`usePedidoDePrueba`): si otra persona
   // está bajando los precios se vuelve a pedir y se dice, en vez de 12 segundos
   // de gris (auditoría 04/11, B3); lo que llega de otra prueba no se usa.
-  const { res, error, cargando, trayendo, reintentar } = usePedidoDePrueba(
+  const { res, error, estadoHttp, cargando, trayendo, reintentar } = usePedidoDePrueba(
     ficha.loading || ficha.otroNombre || sinPrecios ? null
       : `/tecnico/${encodeURIComponent(activo)}/backtest?reglas=${clave}&anios=${anios}${ficha.accionLocal ? '&local=1' : ''}`)
   // El teclado no se pierde cuando el «Reintentar» que lo tenía desaparece: va acá (M5).
@@ -238,6 +240,10 @@ function PruebaDe({ activo, reglas, anios, onTuyo, onAbierto }) {
         probar una regla. Elegí otro activo arriba a la izquierda.
       </Aviso>
     )
+  } else if (error && estadoHttp === 429) {
+    // El freno: el servidor ya dice cuánto esperar; sin «Reintentar» que volvería a
+    // frenar ni un «en unos segundos» que lo contradiga (diseño 05/11, B2).
+    contenido = <Aviso error>{error}</Aviso>
   } else if (error) {
     contenido = (
       <Aviso error detalle={error} onReintentar={otraVez}>
@@ -272,13 +278,26 @@ function Resultado({ res, cargando }) {
   const lec = lectura(res)
   const recorte = textoDelRecorte(res)
   const varias = res.resultados.length > 1
-  const columnas = res.resultados.length === 1 ? '' : res.resultados.length === 2 ? 'lg:grid-cols-3' : 'lg:grid-cols-4'
+  // Cuatro tarjetas en fila recién en xl: a 1.024 px con el menú al costado no
+  // entraban (diseño 05/11, A1).
+  const columnas = res.resultados.length === 1 ? '' : res.resultados.length === 2 ? 'lg:grid-cols-3' : 'xl:grid-cols-4'
   return (
     <div className="flex flex-col gap-4">
-      {/* Mientras llega la prueba nueva, la de antes queda tenue y se avisa
-          (auditoría 04/11, B6). */}
-      <p role="status" className="text-[12.5px] text-ink-2 min-h-0 empty:hidden">{cargando ? 'Actualizando…' : ''}</p>
+      {/* Mientras llega la prueba nueva, la de antes queda tenue y se avisa, en su
+          renglón fijo: antes empujaba todo 34 px y lo volvía a subir (auditoría
+          04/11, B6; diseño 05/11, B3). Y lo nuevo se anuncia (M9). */}
+      <p role="status" className="text-[12.5px] text-ink-2 h-5 -mb-2">
+        {cargando ? 'Actualizando…' : <span className="sr-only">{lec ? `Listo: ${lec.titulo}.` : ''}</span>}
+      </p>
       <div className={`flex flex-col gap-4 ${cargando ? 'opacity-60' : ''} transition-opacity`}>
+        {/* Primero la respuesta, después los números (diseño 05/11, M1: quedaba debajo
+            de las tarjetas y nunca se veía sin bajar). */}
+        {lec && (
+          <section aria-labelledby="bt-lectura" className="bg-bg-2/60 border border-line rounded-lg px-4 py-3 flex flex-col gap-1.5">
+            <h3 id="bt-lectura" className="text-[15px] font-semibold text-ink-0">{lec.titulo}</h3>
+            {lec.frases.map(f => <p key={f} className="text-[13.5px] text-ink-1 leading-relaxed">{f}</p>)}
+          </section>
+        )}
         {recorte && <p className="text-[12.5px] text-ink-2">{recorte}</p>}
         <div className={`grid grid-cols-1 sm:grid-cols-2 ${columnas} gap-4`}>
           {res.resultados.map((x, i) => (
@@ -291,17 +310,10 @@ function Resultado({ res, cargando }) {
             resumen={res.mantener} operaciones={1} detalle="el primer día"
             comprada={res.ruedas} ruedas={res.ruedas} />
         </div>
-        {varias && (
-          <p className="text-[12px] text-ink-2 -mt-1">
-            Las reglas van en el orden en que las sumaste. No las ordenamos de la que dio más a la que dio menos.
-          </p>
-        )}
-        {lec && (
-          <section aria-labelledby="bt-lectura" className="bg-bg-2/60 rounded-lg px-4 py-3 flex flex-col gap-1.5">
-            <h3 id="bt-lectura" className="text-[14px] font-semibold text-ink-0">{lec.titulo}</h3>
-            {lec.frases.map(f => <p key={f} className="text-[13.5px] text-ink-1 leading-relaxed">{f}</p>)}
-          </section>
-        )}
+        <p className="text-[12px] text-ink-2 -mt-1">
+          {QUE_ES_LA_PEOR_CAIDA}
+          {varias ? ' Las reglas van en el orden en que las sumaste, no de la que dio más a la que dio menos.' : ''}
+        </p>
         <Grafico res={res} />
         <Operaciones res={res} />
         <p className="text-[12px] text-ink-2 leading-relaxed">{comoSeSimula(res)}</p>
@@ -310,30 +322,16 @@ function Resultado({ res, cargando }) {
   )
 }
 
+// LA tarjeta de los dos modos (components/backtest/piezas.jsx), con lo de la regla.
 function Tarjeta({ titulo, trazo, resumen, operaciones, detalle, comprada, ruedas, resaltada = false }) {
   return (
-    <section aria-label={titulo} className={`bg-bg-1 border rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-3 min-w-0 ${
-      resaltada ? 'border-data-violet/40' : 'border-line'}`}>
-      <h3 className="flex items-center gap-2 text-[14px] font-semibold text-ink-0">{trazo}{titulo}</h3>
-      <dl className="grid grid-cols-2 gap-x-3 gap-y-3">
-        <Dato etiqueta="Resultado">
-          <span className={`text-[26px] leading-tight font-semibold tabular ${colorDe(resumen.resultado)}`}>
-            {porcentaje(resumen.resultado)}
-          </span>
-        </Dato>
-        <Dato etiqueta="Peor caída">
-          <span className="text-[18px] font-semibold tabular text-ink-0">{porcentaje(resumen.peor_caida, 0)}</span>
-        </Dato>
-        <Dato etiqueta="Operaciones">
-          <span className="text-[16px] font-semibold tabular text-ink-0">{operaciones}</span>
-          <span className="text-[12.5px] text-ink-2"> · {detalle}</span>
-        </Dato>
-        <Dato etiqueta="Días comprado">
-          <span className="text-[16px] font-semibold tabular text-ink-0">{comprada}</span>
-          <span className="text-[12.5px] text-ink-2 tabular"> de {ruedas}</span>
-        </Dato>
-      </dl>
-    </section>
+    <TarjetaDeResultado nombre={titulo} trazo={trazo} resultado={resumen.resultado} resaltada={resaltada}
+      datos={[
+        { etiqueta: 'Peor caída', valor: porcentaje(resumen.peor_caida, 0) },
+        { etiqueta: 'Operaciones', valor: operaciones, detalle: `· ${detalle}` },
+        // Días de mercado, no de calendario (diseño 05/11, M7).
+        { etiqueta: 'Días comprada', valor: comprada, detalle: `de ${ruedas} días de mercado` },
+      ]} />
   )
 }
 
@@ -341,7 +339,8 @@ function Grafico({ res }) {
   const varias = res.resultados.length > 1
   const lineas = [
     ...res.resultados.map((x, i) => ({ clave: x.regla, nombre: varias ? reglaDe(x.regla).corto : 'La regla', color: COLOR_REGLA[i], final: x.final })),
-    { clave: 'mantener', nombre: 'Mantener', color: COLOR_MANTENER, dash: PUNTEADO, final: res.mantener.final },
+    // El mismo nombre que su tarjeta (diseño 05/11, M6).
+    { clave: 'mantener', nombre: 'Comprar y mantener', color: COLOR_MANTENER, dash: PUNTEADO, final: res.mantener.final },
   ]
   // Una regla: sus días comprada son franjas violetas detrás de la línea. Con
   // varias, las franjas se taparían entre sí: van abajo, una fila por regla.
@@ -364,7 +363,7 @@ function CuandoComprada({ res }) {
       {res.resultados.map((x, i) => (
         <div key={x.regla} className="flex flex-col gap-1">
           <span className="text-[12px] text-ink-2 tabular">
-            <span className="font-medium" style={{ color: COLOR_REGLA[i] }}>{reglaDe(x.regla).corto}</span>
+            <span className="inline-flex items-center gap-1.5 font-medium text-ink-1"><Punto color={COLOR_REGLA[i]} />{reglaDe(x.regla).corto}</span>
             {' · '}{x.ruedas_comprada}{' '}de {res.ruedas} días
           </span>
           <div className="relative h-2 rounded-xs bg-bg-2 overflow-hidden" aria-hidden="true">

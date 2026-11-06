@@ -113,8 +113,9 @@ function todos(c, pred) {
   return out
 }
 const porEtiqueta = (c, etiqueta) => todos(c, n => n.atributos?.['aria-label'] === etiqueta)[0] || null
-const titulosDeTarjetas = (c) => todos(c, n => n.nodeName === 'SECTION' && n.atributos?.['aria-label'])
-  .map(n => n.atributos['aria-label'])
+// Las tarjetas ya no son «regiones» (con 3 reglas llenaban la lista de regiones del
+// lector de pantalla; diseño 05/11, M9): se las reconoce por su título.
+const titulosDeTarjetas = (c) => todos(c, n => n.nodeName === 'H3').map(n => texto(n))
 /** Elegir en un <select> como el navegador: cambia el valor y avisa con `change`. */
 async function elegirEn(contenedor, select, valor) {
   await enActo(async () => {
@@ -192,9 +193,10 @@ describe('Análisis técnico → Backtesting', () => {
     montado = await abrir('/analisis-tecnico?tab=backtesting&activo=GGAL&reglas=rsi')
     const t = montado.t()
     for (const parte of ['Probá una regla con el pasado', 'Siguiendo la regla', 'Comprar y mantener', '+22,5%',
-      'Esto prueba una forma de usar el indicador: todo adentro con la señal, todo afuera cuando se da vuelta. '
+      'Esto prueba una forma de usar el indicador: comprar todo cuando da la señal y vender todo cuando se da vuelta. '
         + 'El indicador es el mismo de la ficha.',
-      '−35,9%', '−59%', '−63%', '3 · 2 ganaron', '223 de 501', 'Le fue mejor que comprar y mantener',
+      '−35,9%', '−59%', '−63%', '3 · 2 ganaron', '223 de 501 días de mercado', 'Le habría ido mejor que comprar y mantener',
+      'Habría dado', 'Peor caída: lo más que llegó a bajar desde su mejor momento.',
       'GGAL bajó 35% en los últimos 2 años', 'En el camino llegó a caer 59% desde su mejor momento.',
       'Sin la compra del 05/05/26 (+32,6%), la regla habría terminado en pérdida: −7,6%.',
       'Cada operación', '10/04/25 → 10/11/25', '24/08/26 → seguía comprada', 'US$ 41,12 → US$ 35,14 (último cierre)',
@@ -266,7 +268,7 @@ describe('Análisis técnico → Backtesting → comparar reglas', () => {
     expect(t).toContain('Compará reglas con el pasado')
     expect(t).toContain('Esto prueba una forma de usar cada indicador')
     expect(titulosDeTarjetas(montado.contenedor)).toEqual(expect.arrayContaining(['RSI 30 / 70', 'Media de 200', 'Comprar y mantener']))
-    expect(t).toContain('No las ordenamos de la que dio más a la que dio menos')
+    expect(t).toContain('Las reglas van en el orden en que las sumaste, no de la que dio más a la que dio menos.')
     expect(t).toContain('Cuándo estuvo comprada cada una')
     // Con varias, sin franjas detrás de las líneas: una línea por regla y la de mantener.
     expect(dibujado.franjas).toEqual([])
@@ -285,7 +287,7 @@ describe('Análisis técnico → Backtesting → comparar reglas', () => {
     const boton = buscarBoton(montado.contenedor, 'Comparar con otra regla')
     expect('disabled' in boton.atributos).toBe(true)
     expect(montado.t()).toContain('Ya sumaste 3, el máximo.')
-    expect(montado.t()).toContain('Las tres le ganaron a comprar y mantener')
+    expect(montado.t()).toContain('Las tres habrían terminado mejor que comprar y mantener')
     expect(montado.t()).toContain('Con tan pocas compras (10, 3 y 7) en los últimos 2 años')
   })
 

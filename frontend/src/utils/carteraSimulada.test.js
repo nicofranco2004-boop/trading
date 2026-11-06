@@ -19,11 +19,11 @@ import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import {
   COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, TOLERANCIA,
-  aLaDireccion, carteraDe, consultaDe, errorDeHoy, estadoDeLaCartera, filasDeHoy, lecturaCartera, limpiar, loQueFalta,
-  modoDe, motivoCartera, notaDeHoy, notaDeLosQueSobran, notaHoy, notaOjito, notaSinActivos, numeroDe, origenDe,
+  aLaDireccion, aclaracionDeLaCartera, carteraDe, consultaDe, errorDeHoy, estadoDeLaCartera, filasDeHoy, lecturaCartera,
+  limpiar, loQueFalta, motivoCartera, notaDeHoy, notaDeLosQueSobran, notaHoy, notaOjito, notaSinActivos, numeroDe, origenDe,
   origenes, porcionesDeLaTorta, repartirIgual, sobranDe, textoDe, totalDe, trayendoHoy,
 } from './carteraSimulada'
-import { porcentaje } from './backtesting'
+import { modoDe, porcentaje } from './backtesting'
 import { porcionColor } from './chartTheme'
 
 const AQUI = dirname(fileURLToPath(import.meta.url))
@@ -146,6 +146,14 @@ describe('mi cartera de hoy', () => {
     expect(notaDeHoy({ activos: [], afuera: [] })).toBeNull()
   })
 
+  it('dice qué parte de tu plata se simula (un porcentaje, nunca plata)', () => {
+    // Mitad fondo y mitad CEDEARs se veía como «tu cartera», toda en CEDEARs (producto 05/11, A4).
+    expect(notaDeHoy({ activos: [], afuera: [], parte: 62 })).toBe('Lo que se simula es el 62% de tu plata: lo demás '
+      + '(efectivo, plazos fijos, bonos o fondos) no lo podemos simular.')
+    expect(notaDeHoy({ activos: [], afuera: [], parte: 62 }, 'Ana')).toMatch(/^Lo que se simula es el 62% de su plata/)
+    expect(notaDeHoy({ activos: [], afuera: [], parte: 100 })).toBeNull()
+  })
+
   it('con el asesor adentro de un cliente, la cartera es la de él', () => {
     expect(origenes('Ana')[0][1]).toBe('Su cartera de hoy')
     expect(origenes()[0][1]).toBe('Mi cartera de hoy')
@@ -153,43 +161,51 @@ describe('mi cartera de hoy', () => {
     expect(notaHoy()).toMatch(/^Con tus activos y lo que pesa cada uno hoy/)
     expect(notaOjito('Ana')).toBe('Con «Ocultar saldos» prendido no traemos la cartera de hoy de Ana: los porcentajes '
       + 'dicen qué tiene. Apagalo, o armala de cero.')
-    expect(notaSinActivos('Ana')).toBe('Todavía no tiene activos con precio de todos los días: armala de cero.')
+    expect(notaSinActivos('Ana')).toBe('Todavía no tiene acciones, CEDEARs ni cripto para simular: armala de cero.')
     expect([trayendoHoy('Ana'), errorDeHoy()]).toEqual(['Trayendo la cartera de hoy de Ana…', 'No pudimos traer tu cartera de hoy.'])
+    expect(aclaracionDeLaCartera('hoy', 'Ana')).toMatch(/^Es la cartera de hoy de Ana puesta en el pasado: .+ No es lo que ganó/)
   })
 
-  it('la de hoy no va en el link, y cambiada lo dice', () => {
-    expect(notaHoy()).toMatch(/El link no la lleva: quien lo abra ve la suya\.$/)
+  it('lo que queda afuera es lo que no TENEMOS, y cambiada dice que no queda en el link', () => {
+    // «(no tienen precio de todos los días)» hablaba del bono, que cotiza todos los días (V4, M8).
+    expect(notaHoy()).toBe('Con tus activos y lo que pesa cada uno hoy. Quedan afuera los bonos y los fondos, porque no '
+      + 'tenemos sus precios de cada día, y el efectivo. Cambiá lo que quieras.')
     expect(notaHoy(null, true)).toBe('Partiste de tu cartera de hoy y la cambiaste. Los cambios no quedan en el link: '
       + 'al recargar vuelve la de hoy.')
   })
 })
 
 describe('lo que dicen los números', () => {
-  it('la cartera de las pruebas, al lado del S&P 500 y del Nasdaq', () => {
-    const l = lecturaCartera(CASOS.tres)
-    expect(l.titulo).toBe('Le fue mejor que el S&P 500, pero no que el Nasdaq')
-    // La plata con un decimal, como el resultado: con US$ 121 y US$ 121 el título
-    // decía «le fue mejor» (M1).
+  it('la cartera de las pruebas, al lado del S&P 500 y del Nasdaq, en condicional', () => {
+    const l = lecturaCartera(CASOS.tres, { origen: 'hoy' })
+    // En condicional: es lo que habría pasado, no tu resultado (producto y método 05/11).
+    // +21,4 % contra +20,8 %: menos de un punto es «casi lo mismo» (método C9).
+    expect(l.titulo).toBe('Habría dado casi lo mismo que el S&P 500, y el Nasdaq le habría ganado')
+    // Con «Mi cartera de hoy», que es tu cartera de hoy puesta en el pasado y no lo que ganaste.
+    expect(l.aclaracion).toBe('Es tu cartera de hoy puesta en el pasado: con los pesos de hoy desde el primer día, con '
+      + 'lo que compraste después y sin lo que vendiste. No es lo que ganaste: eso está en Métricas.')
+    // Los aportes en dólares de cada US$ 100 (diseño M7); los «habrían quedado en» no se repiten:
+    // están en las tarjetas y en el gráfico (diseño M10).
     expect(l.frases).toEqual([
-      'En los últimos 2 años, US$ 100 en esta cartera habrían quedado en US$ 121,4; en el S&P 500, en US$ 120,8, y en el Nasdaq, en US$ 128,6.',
-      'El que más sumó fue AAPL, +17,8 puntos, y el que más restó, GGAL, −6,0: entre todos, la cartera dio +21,4%.',
-      'Sin tocarla, GGAL pasó de 30% a 19,7% de la cartera.',
-      `La peor caída de la cartera —lo más que llegó a bajar desde su mejor momento— fue de ${CAIDA(CASOS.tres.cartera)}, `
+      'De cada US$ 100, AAPL habría sumado US$ 17,8 y GGAL habría restado US$ 6,0: entre todos, la cartera habría dado +21,4%.',
+      'Sin tocarla, GGAL habría pasado de 30% a 19,7% de la cartera.',
+      `La peor caída de la cartera habría sido de ${CAIDA(CASOS.tres.cartera)}, `
         + `contra ${CAIDA(CASOS.tres.indices[0])} del S&P 500 y ${CAIDA(CASOS.tres.indices[1])} del Nasdaq.`,
     ])
     expect(CAIDA(CASOS.tres.cartera)).toBe('20%')
+    // Armada de cero: el diario del lunes.
+    expect(lecturaCartera(CASOS.tres, { origen: 'cero' }).aclaracion)
+      .toBe('Elegir los porcentajes mirando este resultado es elegir con el diario del lunes.')
   })
 
   it('sin el Nasdaq lo dice, y compara con el que hay', () => {
     const l = lecturaCartera(CASOS.sin_nasdaq)
-    expect(l.titulo).toBe('Le fue mejor que el S&P 500')
-    expect(l.frases[0]).toMatch(/habrían quedado en US\$ 121,4, y en el S&P 500, en US\$ 120,8\.$/)
+    expect(l.titulo).toBe('Habría dado casi lo mismo que el S&P 500')
     expect(l.frases.at(-1)).toBe('Todavía no tenemos la historia del Nasdaq para compararla.')
   })
 
   it('si un activo cotiza desde después, dice desde cuándo', () => {
     const l = lecturaCartera(CASOS.recortada)
-    expect(l.frases[0]).toMatch(/^Desde el 26\/01\/26, US\$ 100 en esta cartera/)
     expect(l.frases).toContain('Tenemos precios de NUEVA desde el 26/01/26: la simulación arranca ese día.')
     // Las caídas de la frase son las de las tarjetas, también las que redondean a 0
     // («0,3 %», no «0 %»; auditoría de las pruebas, F8).
@@ -201,28 +217,46 @@ describe('lo que dicen los números', () => {
     const l = lecturaCartera(CASOS.todos_restan)
     const [baja1, baja2] = CASOS.todos_restan.activos
     expect(baja2.aporte).toBeLessThan(baja1.aporte)
-    expect(l.frases).toContain(`El que más restó fue BAJA2: ${porcentaje(baja2.aporte).replace('%', '')} de los `
-      + `${porcentaje(CASOS.todos_restan.cartera.resultado).replace('%', '')} puntos de la cartera.`)
+    expect(l.frases).toContain(`De cada US$ 100, el que más habría restado es BAJA2: ${dolares(baja2.aporte)} de los `
+      + `${dolares(CASOS.todos_restan.cartera.resultado)} que habría perdido la cartera.`)
   })
 
   it('una cartera que no llegó a bajar no dice «su peor caída fue de 0 %»', () => {
     const l = lecturaCartera({ ...CASOS.tres, cartera: { ...CASOS.tres.cartera, peor_caida: 0 } })
-    expect(l.frases).toContain(`La cartera no llegó a bajar desde su mejor momento. En el mismo período, el S&P 500 `
+    expect(l.frases).toContain(`La cartera no habría llegado a bajar desde su mejor momento. En el mismo período, el S&P 500 `
       + `llegó a caer ${CAIDA(CASOS.tres.indices[0])} y el Nasdaq llegó a caer ${CAIDA(CASOS.tres.indices[1])}.`)
   })
 
-  it('los títulos dicen contra qué índice, con los números como se ven', () => {
+  it('la nota de «Cada activo» dice la regla que cumplen los números del servidor', () => {
+    // Gana peso el que rinde más que el conjunto, aunque baje; lo pierde el que rinde
+    // menos, aunque suba. «El que sube pesa cada vez más» y «el que baja lo pierde» los
+    // contradecía la tabla (auditoría A4 y verificación V1, 05/11). Contra TODOS los
+    // casos que contesta el servidor, no contra uno armado a mano.
+    let gananBajando = 0
+    for (const r of Object.values(CASOS).filter(x => x.disponible)) {
+      for (const a of r.activos) {
+        if (Math.abs(a.resultado - r.cartera.resultado) < 1e-9) continue
+        expect(a.peso_final > a.peso, `${a.asset}`).toBe(a.resultado > r.cartera.resultado)
+        if (a.resultado < 0 && a.peso_final > a.peso) gananBajando += 1
+      }
+    }
+    expect(gananBajando, 'el caso que la nota vieja contradecía está en los datos').toBeGreaterThan(0)
+    expect(NOTA_CADA_ACTIVO).toMatch(/gana peso el que rinde más que el conjunto, aunque baje, y lo pierde el que rinde menos, aunque suba/)
+  })
+
+  it('los títulos dicen contra qué índice, con los números como se ven, y menos de un punto es casi lo mismo', () => {
     const t = (c, s, n) => lecturaCartera({ ...CASOS.tres, cartera: { ...CASOS.tres.cartera, resultado: c },
       indices: [{ ...CASOS.tres.indices[0], resultado: s }, { ...CASOS.tres.indices[1], resultado: n }] }).titulo
-    expect(t(30, 20, 25)).toBe('Le fue mejor que el S&P 500 y que el Nasdaq')
-    expect(t(10, 20, 25)).toBe('El S&P 500 y el Nasdaq le ganaron')
-    expect(t(21.41, 21.38, 25)).toBe('Dio casi lo mismo que el S&P 500, y el Nasdaq le ganó')
-    expect(t(30, 30.04, 10)).toBe('Le fue mejor que el Nasdaq y dio casi lo mismo que el S&P 500')
-    expect(t(20, 20, 20)).toBe('Dio casi lo mismo que el S&P 500 y el Nasdaq')
-    // Con el redondeo de la TARJETA (−10,25 se ve −10,3): antes daba «casi lo mismo»
-    // con las tarjetas en −10,3 % y −10,2 % (B5).
+    expect(t(30, 20, 25)).toBe('Le habría ido mejor que el S&P 500 y que el Nasdaq')
+    expect(t(10, 20, 25)).toBe('El S&P 500 y el Nasdaq le habrían ganado')
+    expect(t(21.41, 21.38, 25)).toBe('Habría dado casi lo mismo que el S&P 500, y el Nasdaq le habría ganado')
+    expect(t(30, 30.04, 10)).toBe('Le habría ido mejor que el Nasdaq y habría dado casi lo mismo que el S&P 500')
+    expect(t(20, 20, 20)).toBe('Habría dado casi lo mismo que el S&P 500 y el Nasdaq')
+    // Un ETF del S&P 500 contra el S&P 500: 0,2 puntos de diferencia no es «le ganó» (método C9).
+    expect(t(33.2, 33.0, 39.6)).toBe('Habría dado casi lo mismo que el S&P 500, y el Nasdaq le habría ganado')
+    // Con el redondeo de la TARJETA (−10,25 se ve −10,3), y a un punto o más, ya no es «casi».
     expect(porcentaje(-10.25)).toBe('−10,3%')
-    expect(t(-10.25, -10.2, 25)).toBe('El S&P 500 y el Nasdaq le ganaron')
+    expect(t(-10.25, -9.2, 25)).toBe('El S&P 500 y el Nasdaq le habrían ganado')
     const solo = lecturaCartera({ ...CASOS.tres, indices: [], faltan: [] })
     expect(solo.titulo).toBe('Así habría ido esta cartera')
     expect(lecturaCartera(CASOS.vieja)).toBeNull()
@@ -277,4 +311,9 @@ describe('nunca promete', () => {
 // la prueba no lo veía (auditoría de las pruebas 05/11, F8).
 function CAIDA(x) {
   return porcentaje(x.peor_caida, 0).replace(/^[−+-]/, '')
+}
+
+// Dólares de cada US$ 100 como los escribe la frase (sin signo, un decimal).
+function dolares(x) {
+  return `US$ ${Math.abs(x).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`
 }

@@ -113,15 +113,21 @@ export const precio = (x) => (Math.abs(x) >= 1
   ? Number(x).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   : Number(x).toLocaleString('es-AR', { maximumSignificantDigits: 4 }))
 
+// Los dos modos de la pestaña: «Una regla» (esta página) y «Una cartera»
+// (pages/SimularCartera.jsx). Viven acá y no con las palabras de la cartera: quien
+// abre el Gráfico no baja las de la cartera (verificación 05/11, V11).
+export const MODOS = [['regla', 'Una regla'], ['cartera', 'Una cartera']]
+export const modoDe = (t) => (t === 'cartera' ? 'cartera' : 'regla')
+
 /** «el último año» · «los últimos 2 años». */
 export const periodoEnPalabras = (anios) => (anios === 1 ? 'el último año' : `los últimos ${anios} años`)
 
 /** Debajo del título: qué se prueba (una forma de usar el indicador) y qué no
  *  (el indicador, que es el de la ficha). */
 export const queSePrueba = (varias) => (varias
-  ? 'Esto prueba una forma de usar cada indicador: todo adentro con la señal, todo afuera cuando se da '
-    + 'vuelta. Los indicadores son los mismos de la ficha.'
-  : 'Esto prueba una forma de usar el indicador: todo adentro con la señal, todo afuera cuando se da '
+  ? 'Esto prueba una forma de usar cada indicador: comprar todo cuando da la señal y vender todo cuando se '
+    + 'da vuelta. Los indicadores son los mismos de la ficha.'
+  : 'Esto prueba una forma de usar el indicador: comprar todo cuando da la señal y vender todo cuando se da '
     + 'vuelta. El indicador es el mismo de la ficha.')
 
 /** ¿Le ganó a comprar y mantener? Con los números TAL COMO SE VEN en las
@@ -331,20 +337,26 @@ function fraseClave(x, minuscula = false) {
 /** La marca de esa compra en la lista de operaciones. */
 export const sinEstaCompra = (x) => `Sin esta compra, la regla ${comoTerminaba(x.sin_la_mejor.sin_ella, false)}.`
 
+// Los títulos van en CONDICIONAL: es lo que habría pasado siguiendo la regla, no lo
+// que pasó. En pasado real («Le fue mejor») se leía como un resultado propio
+// (auditorías de producto y de método, 05/11). Lo que sí pasó —que la regla no
+// marcó compras— va en pasado.
 function titulo(contra, regla, mantener) {
-  if (contra === 'empate') return 'Dio casi lo mismo que comprar y mantener'
-  if (contra === 'perdio') return 'Comprar y mantener le ganó'
-  if (regla < 0) return 'Perdió menos que comprar y mantener'
-  if (mantener < 0) return 'Le fue mejor que comprar y mantener'
-  return 'Le ganó a comprar y mantener'
+  if (contra === 'empate') return 'Habría dado casi lo mismo que comprar y mantener'
+  if (contra === 'perdio') return 'Comprar y mantener le habría ganado'
+  if (regla < 0) return 'Habría perdido menos que comprar y mantener'
+  if (mantener < 0) return 'Le habría ido mejor que comprar y mantener'
+  return 'Le habría ganado a comprar y mantener'
 }
 
+// «Terminado mejor»: con dos de tres en pérdida, «las tres le ganaron» se leía como
+// tres ganancias (diseño 05/11, B11).
 function tituloComparado(ganan, cuantas, compraron) {
   if (compraron === 0) return 'Ninguna marcó compras en el período'
   const todas = cuantas === 2 ? 'las dos' : 'las tres'
-  if (ganan === 0) return 'Ninguna le ganó a comprar y mantener'
-  if (ganan === cuantas) return `${capital(todas)} le ganaron a comprar y mantener`
-  return `${ganan === 1 ? 'Una' : 'Dos'} de ${todas} le ${ganan === 1 ? 'ganó' : 'ganaron'} a comprar y mantener`
+  if (ganan === 0) return 'Ninguna habría terminado mejor que comprar y mantener'
+  if (ganan === cuantas) return `${capital(todas)} habrían terminado mejor que comprar y mantener`
+  return `${ganan === 1 ? 'Una' : 'Dos'} de ${todas} ${ganan === 1 ? 'habría' : 'habrían'} terminado mejor que comprar y mantener`
 }
 
 const capital = (t) => t.charAt(0).toUpperCase() + t.slice(1)

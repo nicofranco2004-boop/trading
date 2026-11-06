@@ -64,13 +64,14 @@ let pedidos
 let simulacion   // (url) → lo que contesta /backtest/cartera?…
 let hoyDelServidor   // () → lo que contesta /backtest/cartera/hoy
 let lotes        // lo que contesta /positions
+let sugerencias  // (q) → lo que contesta /tickers/search
 function servidor() {
   pedidos = []
   api.get.mockImplementation(async (url) => {
     pedidos.push(`GET ${url}`)
     if (url === '/backtest/cartera/hoy') return hoyDelServidor()
     if (url.startsWith('/backtest/cartera?')) return simulacion(url)
-    if (url.startsWith('/tickers/search')) return { results: [] }
+    if (url.startsWith('/tickers/search')) return { results: sugerencias(decodeURIComponent(url.split('q=')[1] || '')) }
     if (url === '/positions') return lotes
     if (url === '/brokers') return [{ id: 1, name: 'Schwab', currency: 'USD' }]
     if (url === '/dolar') return { mep: { venta: 1500 } }
@@ -120,6 +121,14 @@ function todos(c, pred) {
   return out
 }
 const porEtiqueta = (c, etiqueta) => todos(c, n => n.atributos?.['aria-label'] === etiqueta)[0] || null
+// Entrar a un campo como el navegador: React escucha `focusin` en la raíz (como `clic`).
+async function entrar(contenedor, nodo) {
+  await enActo(async () => {
+    const ev = { type: 'focusin', target: nodo, bubbles: true, cancelable: true, defaultPrevented: false,
+      timeStamp: Date.now(), preventDefault() {}, stopPropagation() {} }
+    for (const fn of contenedor.escuchas.focusin || []) fn(ev)
+  })
+}
 const porcentajes = (c) => todos(c, n => /^Porcentaje de /.test(n.atributos?.['aria-label'] || ''))
   .map(n => [n.atributos['aria-label'].replace('Porcentaje de ', '').replace(' en la cartera', ''), n.value])
 
@@ -138,6 +147,7 @@ beforeEach(() => {
   asesor.clientCtx = null
   simulacion = delServidor
   hoyDelServidor = () => HOY
+  sugerencias = () => []
   lotes = [{ id: 1, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK', quantity: 10, invested: 1000, buy_price: 100 }]
   instalarNavegadorMinimo()
   localStorage.setItem('rendi_user', JSON.stringify({ email: 'Ana@X.com' }))
@@ -159,14 +169,18 @@ describe('Backtesting → Una cartera', () => {
     // Tu cartera de hoy, la del servidor, y lo que quedó afuera.
     expect(porcentajes(montado.contenedor)).toEqual([['AAPL', '50'], ['GGAL', '30'], ['BTC', '20']])
     expect(t).toContain('Quedó afuera AL30: no tenemos sus precios de cada día.')
-    expect(t).toContain('Total 100% · Suma 100%')
+    expect(t).toContain('Suma 100%')
     expect(torta.ultima.montos).toBe(false)
     expect(torta.ultima.items.map(i => [i.key, i.value])).toEqual([['AAPL', 50], ['GGAL', 30], ['BTC', 20]])
     // La simulación, con la marca de BYMA de GGAL, y lo que dicen los números.
     expect(simulaciones()).toEqual(['GET /backtest/cartera?activos=AAPL,GGAL,BTC&pesos=50,30,20&local=GGAL&anios=2'])
     const r = montado.t()
-    for (const parte of ['Esta cartera', 'S&P 500', 'Nasdaq', '+21,4%', 'Le fue mejor que el S&P 500, pero no que el Nasdaq',
-      'El que más sumó fue AAPL, +17,8 puntos', 'Sin tocarla, GGAL pasó de 30% a 19,7% de la cartera.',
+    // En condicional, primero la respuesta, y con «Mi cartera de hoy» que no es lo que ganaste.
+    for (const parte of ['Esta cartera', 'S&P 500', 'Nasdaq', '+21,4%',
+      'Habría dado casi lo mismo que el S&P 500, y el Nasdaq le habría ganado',
+      'Es tu cartera de hoy puesta en el pasado', 'No es lo que ganaste: eso está en Métricas.', 'Ver Métricas',
+      'De cada US$ 100, AAPL habría sumado US$ 17,8', 'Sin tocarla, GGAL habría pasado de 30% a 19,7% de la cartera.',
+      'Sin dividendos, como la cartera', 'Peor caída: lo más que llegó a bajar desde su mejor momento.',
       'Cada activo', 'Cómo habrían ido US$ 100', 'no es una recomendación']) {
       expect(r, parte).toContain(parte)
     }
@@ -301,14 +315,6 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
   }
   // Lo que dibuja «Una cartera» (sin el resto de Análisis técnico).
   const laCartera = (c) => todos(c, n => n.atributos?.['aria-labelledby'] === 'sc-titulo')[0].parentNode
-  // Entrar a un campo como el navegador: React escucha `focusin` en la raíz (como `clic`).
-  async function entrar(contenedor, nodo) {
-    await enActo(async () => {
-      const ev = { type: 'focusin', target: nodo, bubbles: true, cancelable: true, defaultPrevented: false,
-        timeStamp: Date.now(), preventDefault() {}, stopPropagation() {} }
-      for (const fn of contenedor.escuchas.focusin || []) fn(ev)
-    })
-  }
   // A quién se le pide el foco (el navegador de las pruebas no lo lleva).
   function mirarElFoco(nodo) {
     const proto = Object.getPrototypeOf(nodo)
@@ -356,15 +362,76 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
 
   // M4: «Armar de cero» abre el buscador con los populares; un Enter sin escribir
   // nada sumaba AAPL al 100 % y lo simulaba.
-  it('un Enter con el buscador vacío no suma nada', async () => {
+  it('un Enter con el buscador vacío no suma nada, con la lista abierta como en el navegador', async () => {
     montado = await abrir(CARTERA)
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Armar de cero'))
     await esperar()
     const antes = simulaciones().length   // la de hoy, antes de armar de cero
-    await tecla(porEtiqueta(montado.contenedor, 'Buscar un activo para sumar a la cartera'), 'Enter')
+    // La lista se abre al entrar al cuadro (`focusin`): sin abrirla, la prueba quedaba
+    // verde aunque se borrara el arreglo (verificación 05/11, V12).
+    const buscador = porEtiqueta(montado.contenedor, 'Buscar un activo para sumar a la cartera')
+    await entrar(montado.contenedor, buscador)
+    expect(todos(montado.contenedor, n => n.atributos?.role === 'option').length).toBeGreaterThan(0)
+    // Ninguna resaltada sin escribir ni navegar (V9), y Enter no elige.
+    expect(todos(montado.contenedor, n => n.atributos?.role === 'option' && String(n.atributos['aria-selected']) === 'true')).toEqual([])
+    await tecla(buscador, 'Enter')
     await pasaLaPausa()
     expect(porcentajes(montado.contenedor)).toEqual([])
     expect(simulaciones()).toHaveLength(antes)
+    // Con la flecha, la primera de la lista; y ahí Enter sí la elige.
+    await entrar(montado.contenedor, porEtiqueta(montado.contenedor, 'Buscar un activo para sumar a la cartera'))
+    await tecla(porEtiqueta(montado.contenedor, 'Buscar un activo para sumar a la cartera'), 'ArrowDown')
+    await tecla(porEtiqueta(montado.contenedor, 'Buscar un activo para sumar a la cartera'), 'Enter')
+    await esperar()
+    expect(porcentajes(montado.contenedor)).toEqual([['AAPL', '100']])
+  })
+
+  // V2: con el catálogo de Análisis fundamental, AGRO sólo ofrecía Adecoagro (Nueva York).
+  it('AGRO del buscador es Agrometal aunque el servidor sugiera Adecoagro', async () => {
+    sugerencias = (q) => (q === 'AGRO' ? [{ symbol: 'AGRO', name: 'Adecoagro S.A.' }] : [])
+    montado = await abrir(DE_CERO)
+    await sumarConElBuscador(montado, 'AGRO')
+    await pasaLaPausa()
+    expect(montado.t()).toMatch(/AGROBYMA/)
+    expect(simulaciones().at(-1)).toBe('GET /backtest/cartera?activos=AGRO&pesos=100&local=AGRO&anios=2')
+  })
+
+  // V8: el buscador espera tus lotes, que deciden la marca de lo que tenés.
+  it('mientras tus lotes no llegaron, el buscador no se abre', async () => {
+    let soltar
+    const tarde = new Promise(r => { soltar = r })
+    const antes = api.get.getMockImplementation()
+    api.get.mockImplementation(async (url) => (url === '/positions' ? tarde : antes(url)))
+    montado = await abrir(CARTERA)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Armar de cero'))
+    await esperar()
+    expect(porEtiqueta(montado.contenedor, 'Buscar un activo para sumar a la cartera')).toBeNull()
+    expect(montado.t()).toContain('Un momento…')
+    await enActo(async () => { soltar([]) })
+    await esperar()
+    expect(porEtiqueta(montado.contenedor, 'Buscar un activo para sumar a la cartera')).not.toBeNull()
+  })
+
+  // M2: mientras la suma no da 100, el último resultado queda tenue, no desaparece.
+  it('mientras la suma no da 100, el último resultado queda a la vista, con el aviso arriba', async () => {
+    montado = await abrir(CARTERA)
+    expect(montado.t()).toContain('+21,4%')
+    await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '5')
+    await pasaLaPausa()
+    expect(montado.t()).toContain('Para ver cómo le habría ido, los porcentajes tienen que sumar 100%: falta repartir 45%.')
+    expect(montado.t()).toContain('+21,4%')            // el de antes, tenue
+    expect(simulaciones()).toHaveLength(1)              // y no se pidió nada con 55 %
+  })
+
+  // B5: con el ojito prendido, la salida se puede tocar.
+  it('con el ojito prendido, «Armar de cero» está en el mismo aviso', async () => {
+    ojito.hidden = true
+    montado = await abrir(CARTERA)
+    const botones = todos(montado.contenedor, n => n.nodeName === 'BUTTON' && texto(n) === 'Armar de cero')
+    expect(botones.length).toBe(2)   // el del selector y el del aviso
+    await clic(montado.contenedor, botones[1])
+    await esperar()
+    expect(deLaDireccion(montado.donde, 'origen')).toBe('cero')
   })
 
   // M7: tocar la opción ya elegida borraba lo armado, sin aviso ni vuelta atrás.
@@ -393,7 +460,7 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
     await enActo(async () => { soltar(HOY) })
     await esperar()
     expect(buscarBoton(montado.contenedor, 'Sumar activo').atributos.disabled).toBeUndefined()
-    expect(montado.t()).toContain('Total 100% · Suma 100%')
+    expect(montado.t()).toContain('Suma 100%')
   })
 
   // M9: con más de 100, la leyenda decía porcentajes que nadie escribió.
@@ -444,15 +511,16 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
   it('la peor caída y la plata que dicen las frases son las de las tarjetas', async () => {
     simulacion = () => ({ ...CASOS.recortada, curva: [] })
     montado = await abrir(CARTERA)
-    const tarjeta = (nombre) => texto(porEtiqueta(montado.contenedor, nombre))
+    // La tarjeta: la caja del título con ese nombre (ya no son «regiones», M9).
+    const tarjeta = (nombre) => texto(todos(montado.contenedor, x => x.nodeName === 'H3' && texto(x) === nombre)[0].parentNode.parentNode)
     const caidaDe = (nombre) => tarjeta(nombre).match(/Peor caída([−+]?[\d.,]+%)/)[1].replace(/^[−+]/, '')
-    const plataDe = (nombre) => tarjeta(nombre).match(/habrían quedado en(US\$ [\d.,]+)/)[1]
+    const plataDe = (nombre) => tarjeta(nombre).match(/Habría terminado en(US\$ [\d.,]+)/)[1]
     const [c, s, n] = ['Esta cartera', 'S&P 500', 'Nasdaq'].map(caidaDe)
-    expect(montado.t()).toContain(`La peor caída de la cartera —lo más que llegó a bajar desde su mejor momento— fue de ${c}, `
-      + `contra ${s} del S&P 500 y ${n} del Nasdaq.`)
+    expect(montado.t()).toContain(`La peor caída de la cartera habría sido de ${c}, contra ${s} del S&P 500 y ${n} del Nasdaq.`)
+    // La plata de las tarjetas es la de la leyenda del gráfico, con un decimal.
     const [pc, ps, pn] = ['Esta cartera', 'S&P 500', 'Nasdaq'].map(plataDe)
-    expect(montado.t()).toContain(`habrían quedado en ${pc}; en el S&P 500, en ${ps}, y en el Nasdaq, en ${pn}.`)
-    expect(pc).toMatch(/,\d$/)   // con un decimal, como el resultado
+    expect(montado.t()).toContain(`Esta cartera${pc}S&P 500${ps}Nasdaq${pn}`)
+    expect(pc).toMatch(/,\d$/)
   })
 
   // F9: si todos restaron, la frase nombra al que más restó (del servidor).
@@ -461,7 +529,7 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
     simulacion = () => ({ ...res, curva: [] })
     montado = await abrir(`${DE_CERO}&activos=BAJA1,BAJA2&pesos=60,40&anios=1`)
     const peor = [...res.activos].sort((a, b) => a.aporte - b.aporte)[0]
-    expect(montado.t()).toContain(`El que más restó fue ${peor.asset}: ${porcentaje(peor.aporte).replace('%', '')} de los`)
+    expect(montado.t()).toContain(`De cada US$ 100, el que más habría restado es ${peor.asset}: US$ ${porcentaje(peor.aporte).replace(/^[−+]/, '').replace('%', '')} de los`)
   })
 
   // S4: el teclado no se pierde al sacar un activo.
@@ -486,7 +554,7 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
     let falla = true
     simulacion = () => { if (falla) { falla = false; throw new Error('Internal Server Error') } return delServidor() }
     montado = await abrir(CARTERA)
-    expect(montado.t()).toContain('No se pudo simular la cartera.')
+    expect(montado.t()).toContain('No pudimos simular la cartera.')
     expect(montado.t()).toContain('Detalle: el servidor tuvo un error')
     const boton = buscarBoton(montado.contenedor, 'Reintentar')
     const foco = mirarElFoco(boton)

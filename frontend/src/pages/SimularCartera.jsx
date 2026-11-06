@@ -29,18 +29,27 @@
 // Lo que sumás con el buscador lleva LA marca de la ficha (`marcaLocal`: si lo
 // tenés, tus lotes; si no, el ticker y el tipo que dice el buscador): GGAL es la
 // acción de BYMA en dólares MEP y AGRO es Agrometal, no Adecoagro (auditoría
-// 05/11, H1). «GGAL.BA» es GGAL: no entra dos veces.
+// 05/11, H1). El buscador usa el catálogo de Tu lista (`catalogoDelBuscador`), el
+// que tiene las acciones argentinas: con el de Análisis fundamental, AGRO sólo
+// ofrecía Adecoagro (verificación 05/11, V2). «GGAL.BA» es GGAL: no entra dos veces.
+//
+// El resultado: primero la respuesta, después los números (diseño 05/11, M1), en
+// condicional y, con «Mi cartera de hoy», diciendo que no es lo que ganaste
+// (producto y método 05/11). Mientras la suma no da 100, el último resultado queda
+// tenue en vez de desaparecer (M2).
 //
 // Una sola pantalla para compu y celular (R6).
 
 import { useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Plus, X } from 'lucide-react'
 import CompositionDonut from '../components/CompositionDonut'
 import Segmento from '../components/asset/Segmento'
 import Skeleton from '../components/Skeleton'
 import TickerSearch from '../components/fundamentals/TickerSearch'
-import { Aviso, Dato, GraficoDeCien, PUNTEADO, Punto, Trazo, usePedidoDePrueba, v } from '../components/backtest/piezas'
+import {
+  Aviso, GraficoDeCien, PUNTEADO, QUE_ES_LA_PEOR_CAIDA, TarjetaDeResultado, Trazo, usePedidoDePrueba, v,
+} from '../components/backtest/piezas'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { usePrivacy } from '../contexts/PrivacyContext'
 import { useLotesDeLaCuenta } from '../hooks/useLotesDeLaCuenta'
@@ -55,12 +64,14 @@ import {
 import { marcaLocal } from '../utils/comparadorPrecio'
 import { fechaCorta } from '../utils/cuantoSeMueve'
 import { nombreDelCliente } from '../utils/navegacion'
+import { catalogoDelBuscador } from '../utils/tickers'
 import { track } from '../utils/track'
 
-// La cartera en el violeta de la marca; los índices son la vara: tonos quietos
-// y punteados, distintos entre sí por el trazo y por lo claro.
+// La cartera en el violeta de la marca; los índices son la vara, punteados. El
+// Nasdaq en el azul que la marca reserva para «comparación y referencia»: con dos
+// grises había que adivinar cuál era cuál (diseño 05/11, M5).
 const COLOR_CARTERA = v('data-violet')
-const VARA = { sp500: { color: v('ink-1'), dash: PUNTEADO }, nasdaq: { color: v('ink-2'), dash: '2 3' } }
+const VARA = { sp500: { color: v('ink-1'), dash: PUNTEADO }, nasdaq: { color: v('rendi-accent'), dash: '2 3' } }
 // Mientras se escribe un porcentaje no se pide en cada tecla: se espera esto quieto.
 const PAUSA_MS = 400
 // Lo que dice la dirección de una cartera armada.
@@ -86,6 +97,7 @@ export default function SimularCartera() {
   const entradas = useRef({})
   const sumarBoton = useRef(null)
   const totalRef = useRef(null)
+  const origenRef = useRef(null)
   const enfocar = useRef(null)
 
   // Sólo la armada de cero va en la dirección (ver arriba).
@@ -133,7 +145,7 @@ export default function SimularCartera() {
       .then(r => {
         if (!vivo) return
         const nuevas = filasDeHoy(r)
-        setHoy({ estado: nuevas.length ? 'listo' : 'vacia', nota: notaDeHoy(r) })
+        setHoy({ estado: nuevas.length ? 'listo' : 'vacia', nota: notaDeHoy(r, cliente) })
         setFilas(nuevas)
         setCambiada(false)
       })
@@ -208,7 +220,6 @@ export default function SimularCartera() {
 
   const estado = estadoDeLaCartera(filas)
   const porciones = porcionesDeLaTorta(filas)
-  const colores = Object.fromEntries(porciones.map(p => [p.key, p.color]))
   const lleno = filas.length >= MAX_ACTIVOS
   const trayendo = origen === 'hoy' && hoy.estado === 'trayendo'
   // Con el ojito prendido, tu cartera de hoy no se ve aunque ya estuviera
@@ -225,7 +236,8 @@ export default function SimularCartera() {
         </div>
         <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-end sm:justify-between gap-3">
           <div className="flex flex-col gap-1.5">
-            <span className="text-[12px] font-medium text-ink-2">Con qué arranca</span>
+            {/* Lo enfoca el «Reintentar» de la cartera de hoy, que desaparece al tocarlo (V7). */}
+            <span ref={origenRef} tabIndex={-1} className="text-[12px] font-medium text-ink-2 focus:outline-none">Con qué arranca</span>
             <div className="flex">
               <Segmento etiqueta="Con qué arranca" valor={origen} alElegir={elegirOrigen} opciones={origenes(cliente)} estirar />
             </div>
@@ -239,7 +251,8 @@ export default function SimularCartera() {
         </div>
         {origen === 'hoy' && (
           <NotaDeHoy hoy={tapada ? { estado: 'oculto' } : hoy} cliente={cliente} cambiada={cambiada}
-            onReintentar={() => setVueltaHoy(x => x + 1)} />
+            onReintentar={() => { origenRef.current?.focus?.(); setVueltaHoy(x => x + 1) }}
+            onArmarDeCero={() => elegirOrigen('cero')} />
         )}
         {origen === 'cero' && notaDeLosQueSobran(sobran) && (
           <p className="text-[12.5px] text-ink-2">{notaDeLosQueSobran(sobran)}</p>
@@ -255,7 +268,6 @@ export default function SimularCartera() {
             {filas.map((f, i) => (
               <div key={f.asset} className="grid grid-cols-[minmax(0,1fr)_auto_2.75rem] items-center gap-2 py-1.5 border-b border-line/60">
                 <span className="flex items-center gap-2 min-w-0">
-                  <Punto color={colores[f.asset] || 'rgb(var(--bg-3))'} />
                   <span className="text-[15px] font-semibold text-ink-0 truncate">{f.asset}</span>
                   {f.local && <span className="text-[12px] text-ink-2">BYMA</span>}
                 </span>
@@ -295,18 +307,24 @@ export default function SimularCartera() {
                   </button>
                 )}
               </div>
-              {/* Lo enfoca «Repartir» del aviso de abajo, que desaparece al tocarlo. */}
+              {/* Lo enfoca «Repartir» del aviso de abajo, que desaparece al tocarlo. Sin
+                  activos no dice nada (en ámbar, «Faltan 100%» antes de escribir nada
+                  parecía un error); con 100, sólo eso (diseño 05/11, B12 y M10). */}
               <span ref={totalRef} tabIndex={-1} role="status"
-                className={`text-[14px] font-semibold tabular focus:outline-none ${estado.listo ? 'text-rendi-pos' : 'text-data-amber'} ${trayendo ? 'invisible' : ''}`}>
-                {trayendo ? '' : `Total ${estado.totalTxt} · ${estado.texto}`}
+                className={`text-[14px] font-semibold tabular focus:outline-none ${estado.listo ? 'text-rendi-pos' : 'text-data-amber'} ${trayendo || !filas.length ? 'invisible' : ''}`}>
+                {trayendo || !filas.length ? '' : estado.listo ? estado.texto : `Total ${estado.totalTxt} · ${estado.texto}`}
               </span>
             </div>
             {yaEsta && <p role="status" className="pt-2 text-[12.5px] text-ink-1">{yaEsta} ya está en la cartera: cambiá su porcentaje acá arriba.</p>}
             {lleno && <p className="pt-2 text-[12px] text-ink-2">Ya sumaste {MAX_ACTIVOS}, el máximo.</p>}
+            {/* El buscador, recién con tus lotes: deciden la marca de lo que tenés (V8). */}
             {sumando && !lleno && (
               <div className="pt-3">
-                <TickerSearch onSelect={sumar} autoFocus etiqueta="Buscar un activo para sumar a la cartera"
-                  placeholder="Ticker o nombre: GGAL, Apple, bitcoin…" pista="para sumar" marca={yaEstaEnLaCartera} />
+                {lotes ? (
+                  <TickerSearch onSelect={sumar} autoFocus etiqueta="Buscar un activo para sumar a la cartera"
+                    universo={catalogoDelBuscador} placeholder="Ticker o nombre: GGAL, Apple, bitcoin…" pista="para sumar"
+                    marca={yaEstaEnLaCartera} />
+                ) : <p role="status" className="text-[12.5px] text-ink-2">Un momento…</p>}
               </div>
             )}
           </div>
@@ -316,16 +334,29 @@ export default function SimularCartera() {
       </section>
 
       {!tapada && (
-        <Simulacion filas={filas} anios={anios} estado={estado} colores={colores}
+        // Cambiada, ya no es «tu cartera de hoy»: lo que vale es lo del diario del lunes.
+        <Simulacion filas={filas} anios={anios} estado={estado} origen={origen === 'hoy' && !cambiada ? 'hoy' : 'cero'}
+          cliente={cliente}
           onRepartir={() => { totalRef.current?.focus?.(); repartir() }} />
       )}
     </div>
   )
 }
 
-function NotaDeHoy({ hoy, cliente, cambiada, onReintentar }) {
+function NotaDeHoy({ hoy, cliente, cambiada, onReintentar, onArmarDeCero }) {
   if (hoy.estado === 'trayendo') return <p role="status" className="text-[12.5px] text-ink-2">{trayendoHoy(cliente)}</p>
-  if (hoy.estado === 'oculto') return <p className="text-[12.5px] text-ink-1">{notaOjito(cliente)}</p>
+  if (hoy.estado === 'oculto') {
+    // La salida, tocable: antes estaba escrita y no se podía tocar (diseño 05/11, B5).
+    return (
+      <p className="text-[12.5px] text-ink-1">
+        {notaOjito(cliente)}
+        <button type="button" onClick={onArmarDeCero}
+          className="ml-1.5 inline-flex items-center min-h-11 sm:min-h-0 font-medium text-data-violet hover:underline">
+          Armar de cero
+        </button>
+      </p>
+    )
+  }
   if (hoy.estado === 'vacia') return <p className="text-[12.5px] text-ink-1">{notaSinActivos(cliente)}</p>
   if (hoy.estado === 'error') {
     return <Aviso error detalle={hoy.detalle} onReintentar={onReintentar}>{errorDeHoy(cliente)}</Aviso>
@@ -334,14 +365,20 @@ function NotaDeHoy({ hoy, cliente, cambiada, onReintentar }) {
   return <p className="text-[12.5px] text-ink-2">{nota}{hoy.nota && !cambiada ? ` ${hoy.nota}` : ''}</p>
 }
 
-/** Lo que dice el servidor de la cartera armada: se pide sólo cuando suma 100. */
-function Simulacion({ filas, anios, estado, colores, onRepartir }) {
+/** Lo que dice el servidor de la cartera armada: se pide sólo cuando suma 100.
+ *  Mientras no suma 100, el último resultado queda tenue debajo del aviso, en vez
+ *  de desaparecer y hacer saltar la página (diseño 05/11, M2). */
+function Simulacion({ filas, anios, estado, origen, cliente, onRepartir }) {
   const consulta = consultaDe(filas, anios)
-  const { res, error, cargando, trayendo, reintentar } = usePedidoDePrueba(
+  const { res, error, estadoHttp, cargando, trayendo, reintentar } = usePedidoDePrueba(
     consulta ? `/backtest/cartera?${consulta}` : null, { pausa: PAUSA_MS })
   // El teclado no se pierde cuando el botón que lo tenía desaparece: va acá.
   const zona = useRef(null)
   const otraVez = () => { zona.current?.focus?.(); reintentar() }
+  // El último que se pudo simular, para dejarlo tenue mientras la suma no da 100.
+  const ultimo = useRef(null)
+  if (res?.disponible) ultimo.current = res
+  if (!filas.length) ultimo.current = null
   // «Simuló una cartera» se cuenta una vez por cartera y período, no en cada reintento.
   const contado = useRef(null)
   useEffect(() => {
@@ -355,35 +392,44 @@ function Simulacion({ filas, anios, estado, colores, onRepartir }) {
   if (!consulta) {
     if (estado.aviso) {
       contenido = (
-        <Aviso>
-          {estado.aviso}
-          {filas.length > 1 && (
-            <button type="button" onClick={onRepartir}
-              className="ml-1.5 inline-flex items-center min-h-11 sm:min-h-0 font-medium text-data-violet hover:underline">
-              Repartir en partes iguales
-            </button>
-          )}
-        </Aviso>
+        <div className="flex flex-col gap-4">
+          <Aviso>
+            {estado.aviso}
+            {filas.length > 1 && (
+              <button type="button" onClick={onRepartir}
+                className="ml-1.5 inline-flex items-center min-h-11 sm:min-h-0 font-medium text-data-violet hover:underline">
+                Repartir en partes iguales
+              </button>
+            )}
+          </Aviso>
+          {ultimo.current && <Resultado res={ultimo.current} atenuado origen={origen} cliente={cliente} />}
+        </div>
       )
     }
+  } else if (error && estadoHttp === 429) {
+    // El freno: el servidor ya dice cuánto esperar; sin «Reintentar» que volvería a
+    // frenar ni un «en unos segundos» que lo contradiga (diseño 05/11, B2).
+    contenido = <Aviso error>{error}</Aviso>
   } else if (error) {
-    contenido = <Aviso error detalle={error} onReintentar={otraVez}>No se pudo simular la cartera.</Aviso>
+    contenido = <Aviso error detalle={error} onReintentar={otraVez}>No pudimos simular la cartera.</Aviso>
   } else if (trayendo && !res?.disponible) {
     // Otra persona está bajando esos precios y se vuelve a pedir solo: se dice, en
     // vez de 12 segundos de gris (como en «Una regla»; auditoría 05/11, M8).
     contenido = <Aviso>Estamos trayendo los precios de los activos nuevos: un momento…</Aviso>
   } else if (!res || (cargando && !res.disponible)) {
     // Un aviso de otra cartera no queda en pantalla mientras se pide la nueva (M8).
-    contenido = (
-      <div className="flex flex-col gap-4" aria-busy="true">
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-          <Skeleton className="h-36 w-full rounded-xl" />
-          <Skeleton className="h-36 w-full rounded-xl" />
-          <Skeleton className="h-36 w-full rounded-xl hidden xl:block" />
+    contenido = ultimo.current
+      ? <Resultado res={ultimo.current} cargando origen={origen} cliente={cliente} />
+      : (
+        <div className="flex flex-col gap-4" aria-busy="true">
+          <Skeleton className="h-24 w-full rounded-lg" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <Skeleton className="h-36 w-full rounded-xl" />
+            <Skeleton className="h-36 w-full rounded-xl" />
+            <Skeleton className="h-36 w-full rounded-xl hidden lg:block" />
+          </div>
         </div>
-        <Skeleton className="h-72 w-full rounded-xl" />
-      </div>
-    )
+      )
   } else if (!res.disponible) {
     contenido = (
       <Aviso onReintentar={res.motivo === 'bajando' || res.motivo === 'tope' ? otraVez : null}>
@@ -391,75 +437,86 @@ function Simulacion({ filas, anios, estado, colores, onRepartir }) {
       </Aviso>
     )
   } else {
-    contenido = <Resultado res={res} cargando={cargando} colores={colores} />
+    contenido = <Resultado res={res} cargando={cargando} origen={origen} cliente={cliente} />
   }
   return <div ref={zona} tabIndex={-1} className="focus:outline-none empty:hidden">{contenido}</div>
 }
 
-function Resultado({ res, cargando, colores }) {
-  const lec = lecturaCartera(res)
+function Resultado({ res, cargando = false, atenuado = false, origen, cliente }) {
+  const lec = lecturaCartera(res, { origen, cliente })
   const tarjetas = [
     { clave: 'cartera', nombre: 'Esta cartera', color: COLOR_CARTERA, resumen: res.cartera },
     ...res.indices.map(i => ({ clave: i.clave, nombre: i.nombre, ...VARA[i.clave], resumen: i })),
   ]
   return (
     <div className="flex flex-col gap-4">
-      <p role="status" className="text-[12.5px] text-ink-2 empty:hidden">{cargando ? 'Actualizando…' : ''}</p>
-      <div className={`flex flex-col gap-4 ${cargando ? 'opacity-60' : ''} transition-opacity`}>
-        {/* Tres columnas recién en xl: en una tablet, con el menú al costado, el
-            número de 26 px no entraba en un tercio y pisaba el de al lado (M3). */}
-        <div className={`grid grid-cols-1 ${tarjetas.length > 1 ? 'sm:grid-cols-2' : ''} ${tarjetas.length === 3 ? 'xl:grid-cols-3' : ''} gap-4`}>
-          {tarjetas.map(t => (
-            <section key={t.clave} aria-label={t.nombre} className={`bg-bg-1 border rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-3 min-w-0 ${
-              t.clave === 'cartera' ? 'border-data-violet/40' : 'border-line'}`}>
-              <h3 className="flex items-center gap-2 text-[14px] font-semibold text-ink-0"><Trazo color={t.color} dash={t.dash} />{t.nombre}</h3>
-              <dl className="grid grid-cols-2 gap-x-3 gap-y-3">
-                <Dato etiqueta="Resultado">
-                  <span className={`text-[26px] leading-tight font-semibold tabular ${colorDe(t.resumen.resultado)}`}>
-                    {porcentaje(t.resumen.resultado)}
-                  </span>
-                </Dato>
-                <Dato etiqueta="Peor caída">
-                  <span className="text-[18px] font-semibold tabular text-ink-0">{porcentaje(t.resumen.peor_caida, 0)}</span>
-                </Dato>
-                <Dato etiqueta="US$ 100 habrían quedado en">
-                  <span className="text-[16px] font-semibold tabular text-ink-0">{enQueTermino(t.resumen.final)}</span>
-                </Dato>
-              </dl>
-            </section>
-          ))}
-        </div>
+      {/* «Actualizando…» en su renglón fijo (antes empujaba todo; diseño 05/11, B3), y
+          el resultado nuevo se anuncia al lector de pantalla (M9). */}
+      {!atenuado && (
+        <p role="status" className="text-[12.5px] text-ink-2 h-5 -mb-2">
+          {cargando ? 'Actualizando…' : <span className="sr-only">{lec ? `Listo: ${lec.titulo}.` : ''}</span>}
+        </p>
+      )}
+      <div className={`flex flex-col gap-4 ${cargando || atenuado ? 'opacity-60' : ''} transition-opacity`}>
+        {/* Primero la respuesta, después los números (diseño 05/11, M1). */}
         {lec && (
-          <section aria-labelledby="sc-lectura" className="bg-bg-2/60 rounded-lg px-4 py-3 flex flex-col gap-1.5">
-            <h3 id="sc-lectura" className="text-[14px] font-semibold text-ink-0">{lec.titulo}</h3>
+          <section aria-labelledby="sc-lectura" className="bg-bg-2/60 border border-line rounded-lg px-4 py-3 flex flex-col gap-1.5">
+            <h3 id="sc-lectura" className="text-[15px] font-semibold text-ink-0">{lec.titulo}</h3>
+            <p className="text-[13.5px] text-ink-0 leading-relaxed">
+              {lec.aclaracion}
+              {origen === 'hoy' && (
+                <Link to="/analisis" className="ml-1.5 font-medium text-data-violet hover:underline">Ver Métricas →</Link>
+              )}
+            </p>
             {lec.frases.map(f => <p key={f} className="text-[13.5px] text-ink-1 leading-relaxed">{f}</p>)}
           </section>
         )}
+        {/* Tres en fila desde lg: con el número grande solo en su renglón (la tarjeta
+            compartida), entran sin pisarse (diseño 05/11, A1). */}
+        <div className={`grid grid-cols-1 ${tarjetas.length > 1 ? 'sm:grid-cols-2' : ''} ${tarjetas.length === 3 ? 'lg:grid-cols-3' : ''} gap-4`}>
+          {tarjetas.map(t => (
+            <TarjetaDeResultado key={t.clave} nombre={t.nombre} trazo={<Trazo color={t.color} dash={t.dash} />}
+              subtitulo={t.clave === 'cartera' ? null : 'Sin dividendos, como la cartera'}
+              resultado={t.resumen.resultado} resaltada={t.clave === 'cartera'}
+              datos={[
+                { etiqueta: 'Peor caída', valor: porcentaje(t.resumen.peor_caida, 0) },
+                { etiqueta: 'Habría terminado en', valor: enQueTermino(t.resumen.final) },
+              ]} />
+          ))}
+        </div>
+        <p className="text-[12px] text-ink-2 -mt-1">{QUE_ES_LA_PEOR_CAIDA}</p>
         <GraficoDeCien curva={res.curva} desde={res.desde} hasta={res.hasta}
           lineas={tarjetas.map(t => ({ clave: t.clave, nombre: t.nombre, color: t.color, dash: t.dash, final: t.resumen.final }))} />
-        <CadaActivo res={res} colores={colores} />
+        <CadaActivo res={res} />
         <p className="text-[12px] text-ink-2 leading-relaxed">{COMO_SE_SIMULA_CARTERA}</p>
       </div>
     </div>
   )
 }
 
-function CadaActivo({ res, colores }) {
+// Lo que aportó cada activo, en dólares de cada US$ 100: «+US$ 17,8» (diseño 05/11, M7).
+function aporteEnDolares(x) {
+  const r = Math.round(x * 10) / 10
+  const signo = r > 0 ? '+' : r < 0 ? '−' : ''
+  return `${signo}US$ ${Math.abs(r).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`
+}
+
+function CadaActivo({ res }) {
   // Los rótulos de cada número también para el lector de pantalla en compu, donde
-  // los de arriba son una fila aparte (M12).
+  // los de arriba son una fila aparte (M12). Sin puntos de color: el de la torta
+  // dice cuánto pesa, no quién es, y cambiaba de dueño (diseño 05/11, M3).
   const lector = (txt) => <span className="sr-only">{txt} </span>
   return (
     <section aria-labelledby="sc-cada" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col">
       <h3 id="sc-cada" className="text-[15px] font-semibold text-ink-0 mb-1.5">Cada activo</h3>
       <div aria-hidden="true" className="hidden sm:grid grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))] gap-3 pb-1.5 border-b border-line text-[12px] font-medium text-ink-2">
         <span>Activo</span><span className="text-right">Al principio</span><span className="text-right">Al final</span>
-        <span className="text-right">El activo</span><span className="text-right">Aportó</span>
+        <span className="text-right">Rindió</span><span className="text-right">Aportó</span>
       </div>
       <ul>
         {res.activos.map(a => (
           <li key={a.asset} className="grid grid-cols-[minmax(0,1fr)_auto] sm:grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))] gap-x-3 gap-y-0.5 py-2.5 border-b border-line/60 tabular text-[14px] items-baseline">
             <span className="flex items-center gap-2 min-w-0">
-              <Punto color={colores[a.asset] || 'rgb(var(--bg-3))'} />
               <span className="font-semibold text-ink-0">{a.asset}</span>
               {a.primera_vela > res.desde && <span className="text-[12px] text-ink-2">desde el {fechaCorta(a.primera_vela)}</span>}
             </span>
@@ -471,12 +528,12 @@ function CadaActivo({ res, colores }) {
             </span>
             <span className="hidden sm:block text-right text-ink-0">{lector('al final')}{pesoTxt(a.peso_final)}</span>
             <span className={`text-right font-semibold ${colorDe(a.resultado)}`}>
-              <span className="sm:hidden text-[12px] font-normal text-ink-2">el activo </span>
-              <span className="hidden sm:inline">{lector('el activo')}</span>{porcentaje(a.resultado)}
+              <span className="sm:hidden text-[12px] font-normal text-ink-2">rindió </span>
+              <span className="hidden sm:inline">{lector('rindió')}</span>{porcentaje(a.resultado)}
             </span>
             <span className={`text-right ${colorDe(a.aporte)}`}>
               <span className="sm:hidden text-[12px] text-ink-2">aportó </span>
-              <span className="hidden sm:inline">{lector('aportó')}</span>{porcentaje(a.aporte).replace('%', ' puntos')}
+              <span className="hidden sm:inline">{lector('aportó')}</span>{aporteEnDolares(a.aporte)}
             </span>
           </li>
         ))}

@@ -96,7 +96,7 @@ describe('lo que se ofrece es lo del servidor', () => {
 describe('una regla: lo que dicen los números', () => {
   it('RSI en GGAL: le fue mejor, cayó mucho (menos que mantener), sin una compra habría perdido y fueron muy pocas', () => {
     expect(lectura(RSI)).toEqual({
-      titulo: 'Le fue mejor que comprar y mantener',
+      titulo: 'Le habría ido mejor que comprar y mantener',
       frases: [
         'GGAL bajó 35% en los últimos 2 años y la regla estuvo afuera el 55% de los días.',
         // 59 % contra 63 %: no es bastante más chica, no se pone al lado (05/11, M2).
@@ -117,7 +117,7 @@ describe('una regla: lo que dicen los números', () => {
         sin_la_mejor: { compra: '2026-07-01', resultado: 8.6, sin_ella: -3.4 } },
       { resultado: 56.0, peor_caida: -33.1 })
     expect(lectura(aapl)).toEqual({
-      titulo: 'Comprar y mantener le ganó',
+      titulo: 'Comprar y mantener le habría ganado',
       frases: [
         'AAPL subió 58% en los últimos 2 años y la regla estuvo afuera el 87% de los días: se perdió la mayor parte de la suba.',
         'A cambio, su peor caída fue de 14%, contra 33% de comprar y mantener.',
@@ -166,8 +166,8 @@ describe('una regla: lo que dicen los números', () => {
   })
 
   it('arriba: prueba una forma de usar el indicador, no el indicador', () => {
-    expect(queSePrueba(false)).toBe('Esto prueba una forma de usar el indicador: todo adentro con la señal, todo afuera '
-      + 'cuando se da vuelta. El indicador es el mismo de la ficha.')
+    expect(queSePrueba(false)).toBe('Esto prueba una forma de usar el indicador: comprar todo cuando da la señal y '
+      + 'vender todo cuando se da vuelta. El indicador es el mismo de la ficha.')
     expect(queSePrueba(true)).toMatch(/^Esto prueba una forma de usar cada indicador: .+ Los indicadores son los mismos de la ficha\.$/)
   })
 
@@ -182,7 +182,7 @@ describe('una regla: lo que dicen los números', () => {
 
   it('media de 200 en GGAL: perdió menos, desde el día en que la media existe', () => {
     const l = lectura(GGAL.media200)
-    expect(l.titulo).toBe('Perdió menos que comprar y mantener')
+    expect(l.titulo).toBe('Habría perdido menos que comprar y mantener')
     expect(l.frases[0]).toBe('GGAL bajó 42% desde el 17/04/25 y la regla estuvo afuera el 66% de los días.')
     expect(l.frases.join(' ')).not.toMatch(/sin la compra/i)
     expect(GGAL.media200.resultados[0].compras).toBeGreaterThanOrEqual(POCAS_COMPRAS)
@@ -198,7 +198,7 @@ describe('una regla: lo que dicen los números', () => {
   it('comprar y mantener le ganó (y la regla cayó más: no hay «a cambio»)', () => {
     const l = lectura(con({ asset: 'KO', anios: 1, variacion_precio: 20 },
       { resultado: 4, peor_caida: -12, compras: 12, sin_la_mejor: null }, { resultado: 19.6, peor_caida: -9 }))
-    expect(l.titulo).toBe('Comprar y mantener le ganó')
+    expect(l.titulo).toBe('Comprar y mantener le habría ganado')
     expect(l.frases).toEqual(['KO subió 20% en el último año y la regla estuvo afuera el 55% de los días: '
       + 'se perdió la mayor parte de la suba.'])
   })
@@ -225,8 +225,8 @@ describe('una regla: lo que dicen los números', () => {
 
   it('M2: «le ganó» se decide con los números tal como se ven, en un solo lugar', () => {
     expect(contraMantener({ compras: 3, resultado: -1.41 }, { resultado: -1.38 })).toBe('empate')
-    expect(lectura(con({}, { resultado: -1.41 }, { resultado: -1.38 })).titulo).toBe('Dio casi lo mismo que comprar y mantener')
-    expect(lectura(con({}, { resultado: 30, sin_la_mejor: null }, { resultado: 10 })).titulo).toBe('Le ganó a comprar y mantener')
+    expect(lectura(con({}, { resultado: -1.41 }, { resultado: -1.38 })).titulo).toBe('Habría dado casi lo mismo que comprar y mantener')
+    expect(lectura(con({}, { resultado: 30, sin_la_mejor: null }, { resultado: 10 })).titulo).toBe('Le habría ganado a comprar y mantener')
     expect(contraMantener({ compras: 0, resultado: 0 }, { resultado: -30 })).toBe('sin_compras')
     expect(lectura({ disponible: false, motivo: 'sin_datos' })).toBeNull()
   })
@@ -257,7 +257,7 @@ describe('una regla: lo que dicen los números', () => {
 describe('varias reglas: lo que dicen los números, sin elegir «la mejor»', () => {
   it('RSI y ADX + Squeeze en GGAL', () => {
     expect(lectura(GGAL['rsi,adx_squeeze'])).toEqual({
-      titulo: 'Las dos le ganaron a comprar y mantener',
+      titulo: 'Las dos habrían terminado mejor que comprar y mantener',
       frases: [
         'GGAL bajó 35% en los últimos 2 años y las reglas estuvieron afuera entre el 55% y el 78% de los días.',
         'RSI 30 / 70: sin la compra del 05/05/26 (+32,6%), la regla habría terminado en pérdida: −7,6%.',
@@ -270,7 +270,7 @@ describe('varias reglas: lo que dicen los números, sin elegir «la mejor»', ()
 
   it('las tres en GGAL: cuenta cuántas le ganaron y las compras de cada una, en su orden', () => {
     const l = lectura(GGAL['media50,rsi,adx_squeeze'])
-    expect(l.titulo).toBe('Las tres le ganaron a comprar y mantener')
+    expect(l.titulo).toBe('Las tres habrían terminado mejor que comprar y mantener')
     expect(l.frases).toContain('Con tan pocas compras (10, 3 y 7) en los últimos 2 años, no alcanza para saber si una regla '
       + 'es mejor que otra o si tuvo suerte.')
   })
@@ -278,11 +278,12 @@ describe('varias reglas: lo que dicen los números, sin elegir «la mejor»', ()
   it('los títulos dicen cuántas, nunca cuál', () => {
     const tres = GGAL['media50,rsi,adx_squeeze']
     const contra = (mantener) => lectura({ ...tres, mantener: { ...tres.mantener, resultado: mantener } }).titulo
-    expect(contra(200)).toBe('Ninguna le ganó a comprar y mantener')
-    expect(contra(10)).toBe('Dos de las tres le ganaron a comprar y mantener')
-    expect(contra(20)).toBe('Una de las tres le ganó a comprar y mantener')
+    expect(contra(200)).toBe('Ninguna habría terminado mejor que comprar y mantener')
+    expect(contra(10)).toBe('Dos de las tres habrían terminado mejor que comprar y mantener')
+    expect(contra(20)).toBe('Una de las tres habría terminado mejor que comprar y mantener')
     for (const t of [contra(200), contra(10), contra(20), contra(-50)]) {
-      expect(t).not.toMatch(/RSI|ADX|media|mejor/i)
+      // Contra comprar y mantener sí («terminado mejor que…»); entre ellas, nunca «la mejor».
+      expect(t).not.toMatch(/RSI|ADX|media|\b(la|el|es) mejor\b/i)
     }
   })
 
@@ -290,7 +291,7 @@ describe('varias reglas: lo que dicen los números, sin elegir «la mejor»', ()
     const dos = GGAL['rsi,adx_squeeze']
     const r = { ...dos, resultados: [dos.resultados[0], sinCompras(dos.resultados[1])] }
     const l = lectura(r)
-    expect(l.titulo).toBe('Una de las dos le ganó a comprar y mantener')
+    expect(l.titulo).toBe('Una de las dos habría terminado mejor que comprar y mantener')
     expect(l.frases[0]).toBe('GGAL bajó 35% en los últimos 2 años y RSI 30 / 70 estuvo afuera el 55% de los días.')
     expect(l.frases).toContain('ADX + Squeeze no marcó ninguna compra en los últimos 2 años.')
     const ninguna = { ...dos, resultados: dos.resultados.map(sinCompras) }
