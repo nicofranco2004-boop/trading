@@ -4,7 +4,10 @@ Las sesiones de preview se persisten en `import_batches` con status='preview'.
 Esto sobrevive a reinicios y reusa el mismo storage que los batches confirmados.
 
 Cleanup: batches en estado 'preview' más viejos que PREVIEW_TTL_HOURS se borran
-al inicio de cada preview nuevo (cleanup oportunista, no necesita cron job).
+en dos lugares: los DE LA CUENTA en cada preview nuevo (`cleanup_stale_previews`),
+y los de todas las cuentas una vez por hora, fuera de los pedidos
+(`barrer_borradores_vencidos`, que corre el reloj de main). Por qué no todo junto
+en el preview: ver `cleanup_stale_previews`.
 """
 from __future__ import annotations
 import csv
@@ -42,6 +45,10 @@ log = logging.getLogger(__name__)
 
 
 PREVIEW_TTL_HOURS = 1
+# Cuánto espera la vista previa un candado antes de contestar «hay otra operación
+# de tu cuenta en curso» (`pgsesion.esperar_a_lo_sumo`). main la reintenta 3 veces
+# (`_run_with_lock_retry`): a lo sumo ~30 s de botón girando, no para siempre.
+ESPERA_MAX_VISTA_PREVIA_S = 10
 MAX_FILE_BYTES = 5_000_000      # 5 MB por archivo individual (input al pipeline)
 MAX_TOTAL_BYTES = 5_000_000     # 5 MB sumado al cargar multi-file (cap del endpoint)
 MAX_ROWS = 10_000
@@ -199,13 +206,53 @@ def _new_id() -> str:
     return secrets.token_hex(16)
 
 
-def cleanup_stale_previews(conn) -> None:
-    """Borra batches con status='preview' más viejos que PREVIEW_TTL_HOURS."""
+def cleanup_stale_previews(conn, uid: int) -> None:
+    """Borra los borradores ('preview') vencidos DE ESTA CUENTA.
+
+    🔴 SÓLO LOS DE LA CUENTA, y no los de todas como hasta el 06/11/2026. Sobre
+    SQLite daba lo mismo: la primera escritura de cualquiera ya tomaba la base
+    entera. En Postgres cada fila tiene su candado, y borrar los borradores de
+    TODAS las cuentas adentro de la vista previa hacía que la vista previa de una
+    persona esperara a la de cualquier otra que estuviera a medio camino (y que
+    tuviera un borrador vencido a la vista). Con `lock_timeout` en 0 en
+    producción, esa espera no tenía fin: el botón «Generar vista previa» de
+    Matias (Bull Market) quedó girando. Medido en
+    tests/test_vista_previa_no_espera_a_otra_cuenta.py.
+
+    Las filas de la cuenta las escribe sólo quien tiene su turno, y la vista
+    previa ya lo tomó antes de llegar acá: esto no espera a nadie de afuera. Los
+    vencidos de las cuentas que no vuelven los barre `barrer_borradores_vencidos`."""
     conn.execute(
         f"""DELETE FROM import_batches
-            WHERE status='preview'
-              AND created_at < datetime('now', '-{PREVIEW_TTL_HOURS} hours')"""
+            WHERE user_id=? AND status='preview'
+              AND created_at < datetime('now', '-{PREVIEW_TTL_HOURS} hours')""",
+        (uid,),
     )
+
+
+def barrer_borradores_vencidos(conn) -> int:
+    """Los borradores vencidos de TODAS las cuentas, en una transacción propia y
+    corta. Lo corre el reloj de main cada hora, fuera de los pedidos. Cuántos borró.
+
+    No espera a nadie: en Postgres salta los que otro tiene agarrados (`SKIP
+    LOCKED`; la próxima hora los vuelve a mirar) y, si al borrar en cascada una
+    fila hija estuviera tomada, corta a los 5 s. En SQLite la base es de un
+    escritor a la vez y `busy_timeout` ya pone el tope."""
+    with conn:
+        if _ps.habla_postgres(conn):
+            _ps.esperar_a_lo_sumo(conn, 5)
+            cur = conn.execute(
+                f"""DELETE FROM import_batches WHERE id IN (
+                      SELECT id FROM import_batches
+                       WHERE status='preview'
+                         AND created_at < datetime('now', '-{PREVIEW_TTL_HOURS} hours')
+                       FOR UPDATE SKIP LOCKED)""")
+        else:
+            cur = conn.execute(
+                f"""DELETE FROM import_batches
+                    WHERE status='preview'
+                      AND created_at < datetime('now', '-{PREVIEW_TTL_HOURS} hours')""")
+        return cur.rowcount or 0
 
 
 def fetch_user_brokers(conn, uid: int) -> Dict[str, dict]:
@@ -1207,6 +1254,9 @@ def _run_preview_una_vez(
     # El turno de la cuenta PRIMERO, en los dos motores, y con él tomado, ¿los
     # brokers siguen como se leyeron? (ver `run_preview`). En SQLite esto ya era la
     # primera escritura; en Postgres pone en fila al renombre, que pide lo mismo.
+    # Con tope: si otro pedido de la cuenta tiene el turno y no lo suelta, se
+    # contesta en vez de girar para siempre (`ESPERA_MAX_VISTA_PREVIA_S`).
+    _ps.esperar_a_lo_sumo(conn, ESPERA_MAX_VISTA_PREVIA_S)
     _ps.tomar_turno(conn, uid)
     if _brokers_por_id(conn, uid) != brokers_leidos:
         raise _BrokersCambiaron()
@@ -1214,8 +1264,8 @@ def _run_preview_una_vez(
         _cur = conn.execute(_sql, _params)
         if _cb:
             _cb(_cur.lastrowid)
-    # Limpieza de previews vencidos, junto con el resto de las escrituras.
-    cleanup_stale_previews(conn)
+    # Limpieza de previews vencidos DE LA CUENTA, junto con el resto de las escrituras.
+    cleanup_stale_previews(conn, uid)
 
     conn.execute(
         """INSERT INTO import_batches
@@ -1557,7 +1607,7 @@ def store_preview_txs(conn, uid: int, *, broker: str, parser_format: str,
     (las seed-txs ya vienen armadas por `tenencia.build_tenencia_seed_txs`). El
     `load_session_for_confirm` + el confirm EXISTENTE las aplican sin cambios.
     Devuelve el batch_id (== session_id). Idempotente por hash de fingerprints."""
-    cleanup_stale_previews(conn)
+    cleanup_stale_previews(conn, uid)
     batch_id = _new_id()
     tc_blue = _read_user_tc_blue(conn, uid)
     _hist = fx_version(conn, uid) == FX_V2

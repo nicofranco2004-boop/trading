@@ -143,6 +143,25 @@ def tomar_turno(conn, uid: int) -> None:
     conn.execute("UPDATE users SET tier=tier WHERE id=?", (uid,))
 
 
+def esperar_a_lo_sumo(conn, segundos: int) -> None:
+    """Tope a lo que la transacción EN CURSO espera un candado (el turno de la
+    cuenta, una fila que otro está escribiendo). Pasado el tope, la sentencia
+    falla con «lock timeout» (`dberrors.es_base_trabada`) en vez de esperar.
+
+    🔴 POR QUÉ. En producción `lock_timeout` vale 0 —el pooler de Supabase se come
+    el `options=` del DSN (ver tests/conftest.py, `_forzar_ajustes_por_set`)— y 0
+    quiere decir «para siempre». Un pedido que espera un candado que nadie suelta
+    no termina nunca: la persona ve el botón girando y el pedido se queda con uno
+    de los lugares del pozo (`pgshim._Pozo`). Pasó el 06/11/2026 con la vista
+    previa de Bull Market (test_vista_previa_no_espera_a_otra_cuenta.py).
+
+    `SET LOCAL`: vale para esta transacción y se va con su commit o su rollback,
+    así que la conexión vuelve limpia al pozo. En SQLite no hace nada: allá el
+    tope ya lo pone `busy_timeout` (15 s, main.get_db)."""
+    if habla_postgres(conn):
+        conn.execute(f"SET LOCAL lock_timeout = '{int(segundos)}s'")
+
+
 @contextmanager
 def si_falla_se_deshace_solo_esto(conn, nombre: str):
     """Un punto de guardado: si lo de adentro revienta, se deshace SÓLO eso y la
