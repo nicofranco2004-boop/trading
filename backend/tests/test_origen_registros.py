@@ -434,6 +434,8 @@ class ElCanalDeCadaOrigen(unittest.TestCase):
         "instagram-sponsored": "meta_anuncios",
         "meta-ads2026": "meta_anuncios",
         "meta-anuncios2026/promo": "meta_anuncios",
+        "fb/paid2026/promo": "meta_anuncios",       # la palabra con números, en el medio
+        "ig-20261022/pauta2": "meta_anuncios",
         "metaad": "meta_anuncios",                  # utm_source=MetaAd
         "fbads": "meta_anuncios",
         "fb/paid/promo": "meta_anuncios",
