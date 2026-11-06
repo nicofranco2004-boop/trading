@@ -49,13 +49,16 @@ from velas_diarias import DIAS_GUARDADOS, SP500
 # precio, no desde hoy: `primer_dia`.
 DIAS_ANIO = 365
 # Una línea sin precios de la última semana, contada desde HOY, ya no dice «hoy»:
-# un activo que dejó de cotizar, un índice que la fuente dejó de mandar. `es_vieja`.
-# El cierre más largo de BYMA (Semana Santa con el 2 de abril, 2024) fue de 6 días
-# sin rueda: el día que reabre, el último precio tiene 7 días y todavía entra; el
-# siguiente, entre la medianoche y la corrida de la noche (que guarda el cierre
-# después de las 23:59), tiene 8 y una acción argentina sale «vieja» ese rato
-# (auditoría 06/11, H3). Las pantallas de la Cartera, Tu lista, el mail de los
-# sábados y el termómetro tienen su propio margen, de 10 días (no unificado).
+# un activo que dejó de cotizar, un índice que la fuente dejó de mandar. `es_vieja`,
+# LA regla de todas las pantallas (Nico, 06/11/2026: 7 días, no 10). Medido con 5
+# años de velas de producción: con la noche andando, ninguna acción de Nueva York,
+# cripto, el S&P ni acción argentina pasó 7 días sin precio (lo más largo: 6, 6, 5
+# y 7). El cierre más largo de BYMA (Semana Santa con el 2 de abril, 2024) fue de
+# 6 días sin rueda: el día que reabre, el último precio tiene 7 días y todavía
+# entra; el siguiente, entre la medianoche y el fin de la corrida de la noche
+# (~00:05), tiene 8 y una acción argentina sale «vieja» esos minutos (auditoría
+# 06/11, H3). Los textos de las pantallas dicen «la última semana»: si este número
+# cambia, cambian ellos (`tests/test_precio_viejo.py` los lista).
 DIAS_VIEJA = 7
 # Lo que se manda a la pantalla: TODO lo que se guarda (5 años de calendario),
 # para poder arrastrar el gráfico hasta el principio (Nico, 22/10: «no deja ir
@@ -484,12 +487,31 @@ def primer_dia(ultimo: str, dias: int) -> str:
 
 
 def es_vieja(ultimo: str, hoy: date) -> bool:
-    """¿Una línea sin precios de la última semana (`DIAS_VIEJA`), contada desde
-    `hoy`, el día argentino? Contada desde el activo más nuevo, un activo solo que
-    dejó de cotizar hace dos meses se mostraba igual, con «el último año»
-    terminando hace dos meses y sin avisar (auditoría de «Una cartera» 05/11, H9).
-    La usan Comparar, el Backtesting de una regla y «Una cartera»."""
+    """LA regla de «precio viejo»: ¿una línea sin precios de la última semana
+    (`DIAS_VIEJA`), contada desde `hoy`, el día argentino? Contada desde el activo
+    más nuevo, un activo solo que dejó de cotizar hace dos meses se mostraba igual,
+    con «el último año» terminando hace dos meses y sin avisar (auditoría de «Una
+    cartera» 05/11, H9).
+
+    La usan Comparar, el Backtesting de una regla y «Una cartera»; la ficha (el
+    aviso «Los precios son del…», `vieja` de `para_la_ficha`) y el botón del
+    resumen ✦; la Cartera y Tu lista (`vieja` de cada lectura); el % de tu plata en
+    tendencia alcista, el mail de los sábados y el termómetro (`lectura_vieja`); y
+    el diario de operaciones, con el día de la operación como `hoy`
+    (`tendencia_del_dia`). Hasta el 06/11 cada una tenía su margen (5, 7 o 10
+    días) y su reloj (el del servidor, el de la compu, «desde las 9 de la
+    mañana»): el mismo papel salía «viejo» en una pantalla y «al día» en otra
+    (auditoría de «1 año» 06/11, H2 y H7). La pantalla no vuelve a contar: usa
+    lo que dice el servidor."""
     return (hoy - date.fromisoformat(ultimo)).days > DIAS_VIEJA
+
+
+def lectura_vieja(lect: dict, hoy: date) -> bool:
+    """¿La lectura (`lectura`, su `fecha` es el último precio) es vieja contra
+    `hoy` (`es_vieja`)? Sin fecha (sin velas) no se sabe: False, y quien no tiene
+    lectura lo dice por su lado (`disponible`)."""
+    f = (lect or {}).get("fecha")
+    return bool(f) and es_vieja(f, hoy)
 
 
 def _desde_dias(velas: list, dias: int) -> int:
@@ -1203,11 +1225,14 @@ def puntos_del_grafico(velas: list, ind: dict, desde: int = 0) -> list:
 
 
 @pesado
-def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, ref: str = None) -> dict:
+def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, ref: str = None,
+                  hoy: date = None) -> dict:
     """Lo que necesita la ficha: la serie del gráfico (2 años de calendario) con
     sus medias y su RSI ya calculados sobre TODA la historia guardada (la media
     de 200 del primer punto del gráfico necesita los 10 meses de antes) y la
-    lectura."""
+    lectura. `vieja`: si su último precio es de antes de la última semana contada
+    desde `hoy` (el día argentino; `es_vieja`), para el aviso de arriba del gráfico."""
+    from fechas import hoy_art_date
     moneda = "ars" if moneda == "ars" else "usd"
     s = serie(conn, asset, moneda, local)
     velas = s["velas"]
@@ -1232,6 +1257,10 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         "escala": s.get("escala"),
         "puntos": puntos,
         "lectura": lect,
+        # Lo dice el servidor, con LA regla: antes la ficha lo contaba en el
+        # navegador desde las 9 de la mañana del día del último precio, con el
+        # reloj de la compu (auditoría de «1 año» 06/11, H7).
+        "vieja": lectura_vieja(lect, hoy or hoy_art_date()),
         # El último cierre del instrumento con el que se valúa tu tenencia
         # (`ref`): la pantalla lo compara con el precio en vivo para que la línea
         # de tu precio no se corra lo que se movió hoy (auditoría 22/10).
@@ -1275,9 +1304,11 @@ def para_la_cartera(conn, activos: list, hoy: date = None, desde: str = None) ->
     inventa. `hoy` (día argentino) lo pasa quien ya tiene su reloj: el resumen
     de los sábados. `desde` (exclusive): otro comienzo para los cambios; lo usa
     el mail de los sábados, que cuenta desde lo que ya contó el anterior. Lo ya
-    leído no se vuelve a calcular (`_leer_varios`; `desde` es parte de su llave)."""
+    leído no se vuelve a calcular (`_leer_varios`; `desde` es parte de su llave).
+    `vieja`: su último precio es de antes de la última semana (`con_su_veredicto`)."""
     from fechas import hoy_art_date
-    desde = desde or ((hoy or hoy_art_date()) - timedelta(days=DIAS_CAMBIOS)).isoformat()
+    hoy = hoy or hoy_art_date()
+    desde = desde or (hoy - timedelta(days=DIAS_CAMBIOS)).isoformat()
 
     def _armar(a, local, velas):
         if not velas:
@@ -1286,7 +1317,19 @@ def para_la_cartera(conn, activos: list, hoy: date = None, desde: str = None) ->
         return {"asset": a, "local": local, "disponible": True,
                 "lectura": lectura(velas, media(cierres, 50), media(cierres, 200)),
                 "cambios": cambios_desde(velas, desde)}
-    return _leer_varios(conn, "cartera", activos, desde, _armar)
+    return con_su_veredicto(_leer_varios(conn, "cartera", activos, desde, _armar), hoy)
+
+
+def con_su_veredicto(lecturas: list, hoy: date) -> list:
+    """Cada lectura con `vieja` (`lectura_vieja` contra `hoy`, el día argentino):
+    la Cartera y Tu lista la muestran «sin lectura» con lo que dice el servidor.
+    Antes la pantalla lo contaba con la fecha de la compu y 10 días de margen, y
+    el mismo papel salía «al día» ahí y «viejo» en Comparar (auditoría de «1 año»
+    06/11, H2). Va afuera de lo ya leído (`_leer_varios`): depende de hoy, no de
+    las velas. Cada pedido recibe su copia, así que se escribe en ella."""
+    for x in lecturas:
+        x["vieja"] = lectura_vieja(x.get("lectura"), hoy)
+    return lecturas
 
 
 def _claves(activos: list) -> list:
@@ -1436,9 +1479,10 @@ def para_la_lista(conn, activos: list) -> list:
     línea chica de la fila, cada uno con su promedio de 200 días (`m`), y `ultimo_cambio` (ver `_ultimo_cambio`). Sin
     velas: `disponible` False, nunca se inventa. Cuánto pesa cada uno lo pone
     la pantalla, con la valuación de la Cartera. Lo ya leído no se vuelve a
-    calcular (`_leer_varios`)."""
+    calcular (`_leer_varios`). `vieja`, como en la Cartera (`con_su_veredicto`)."""
     from fechas import hoy_art_date
-    desde = (hoy_art_date() - timedelta(days=DIAS_ULTIMO_CAMBIO)).isoformat()
+    hoy = hoy_art_date()
+    desde = (hoy - timedelta(days=DIAS_ULTIMO_CAMBIO)).isoformat()
 
     def _armar(a, local, velas):
         if not velas:
@@ -1455,7 +1499,7 @@ def para_la_lista(conn, activos: list) -> list:
         return {"asset": a, "local": local, "disponible": True,
                 "lectura": lectura(velas, media(cierres, 50), m200),
                 "linea": linea, "ultimo_cambio": _ultimo_cambio(velas, desde)}
-    return _leer_varios(conn, "lista", activos, desde, _armar)
+    return con_su_veredicto(_leer_varios(conn, "lista", activos, desde, _armar), hoy)
 
 
 # ─── Señales para las alertas técnicas ───────────────────────────────────────
@@ -1815,8 +1859,10 @@ def cambios_desde(velas: list, desde: str) -> list:
 # Movimientos dicen lo mismo del mismo día.
 
 # Si el día pedido no tiene vela (fin de semana, feriado) se usa la última de
-# antes. Más días que esto sin vela = no hay precio de ese día: «sin dato».
-DIAS_SIN_VELA = 7
+# antes, mientras no sea vieja contra ESE día (`es_vieja`, LA regla de «precio
+# viejo» con el día de la operación como «hoy»). Si lo es, no hay precio de ese
+# día: «sin dato». Hasta el 06/11 tenía su propio margen (`DIAS_SIN_VELA`), con
+# el mismo número por casualidad.
 
 
 def tendencia_de(precio, media200):
@@ -1834,7 +1880,7 @@ def tendencia_de(precio, media200):
 
 def tendencia_del_dia(velas: list, m200: list, fecha: str) -> dict:
     """{tendencia: 'alcista'|'bajista', fecha, precio, media200, dist} con la
-    vela del día `fecha` (o la última de antes, hasta `DIAS_SIN_VELA`). Sin
+    vela del día `fecha` (o la última de antes, si no es vieja: `es_vieja`). Sin
     lectura: {tendencia: None, motivo}:
       · 'sin_velas'   no hay precios guardados de este activo (bono, fondo…)
       · 'sin_precio'  hay precios, pero no de ese día (antes de la primera vela
@@ -1856,7 +1902,7 @@ def tendencia_del_dia(velas: list, m200: list, fecha: str) -> dict:
             i, lo = mid, mid + 1
         else:
             hi = mid - 1
-    if i < 0 or (dia - date.fromisoformat(velas[i]["date"])).days > DIAS_SIN_VELA:
+    if i < 0 or es_vieja(velas[i]["date"], dia):
         return {"tendencia": None, "motivo": "sin_precio"}
     v, m = velas[i], m200[i]
     if m is None:
