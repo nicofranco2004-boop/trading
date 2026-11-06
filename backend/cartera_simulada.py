@@ -159,7 +159,7 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
                 "faltan": [{"asset": s, "motivo": "vieja", "hasta": puntos[s][-1][0]} for s in viejas]}
 
     pedido = _primer_dia(hasta, anios)
-    primeras ={s: p[0][0] for s, p in puntos.items()}
+    primeras = {s: p[0][0] for s, p in puntos.items()}
     ultimo_en_llegar = max(primeras, key=lambda s: (primeras[s], s))
     # El primer día, con LA regla de Comparar (`comparar.dia_del_cien`): el primero
     # que tienen todos los activos, y si un índice empieza unos días después (con 5
