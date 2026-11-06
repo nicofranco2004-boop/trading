@@ -317,11 +317,12 @@ describe('Backtesting → Una cartera', () => {
     simulacion = () => ({ ...CASOS.tres_anios, curva: [] })
     montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera')
     const t = montado.t()
-    for (const parte of ['Año por año', 'Los 3 años', '01/11/23 → 30/10/26', 'Año 1', '01/11/23 → 31/10/24', 'Año 3',
-      '31/10/25 → 30/10/26', 'Por año, en promedio', porcentaje(CASOS.tres_anios.anio_por_anio.por_anio.cartera),
-      'De cada US$ 100, el año del 31/10/24 al 31/10/25 habría sumado',
-      'El S&P 500 le habría ganado a la cartera en 2 de los 3 años, y la cartera al S&P 500 en 1.',
-      'El Nasdaq le habría ganado a la cartera en 2 de los 3 años, y la cartera al Nasdaq en 1.']) {
+    // El lector de pantalla oye «del … al …»; la flecha es sólo para la vista (auditoría de pantalla 06/11, B5).
+    for (const parte of ['Año por año', 'Los 3\u00a0años', '01/11/23 → al 30/10/26', 'Año 1', '01/11/23 → al 31/10/24',
+      'Año 3', '31/10/25 → al 30/10/26', 'Por año, en promedio', porcentaje(CASOS.tres_anios.anio_por_anio.por_anio.cartera),
+      'El año que más habría subido la cartera es el 2 (del 31/10/24 al 31/10/25)',
+      'El S&P 500 le habría ganado a la cartera en 2 de los 3 años; la cartera al S&P 500, en el otro.',
+      'El Nasdaq le habría ganado a la cartera en 2 de los 3 años; la cartera al Nasdaq, en el otro.']) {
       expect(t, parte).toContain(parte)
     }
     // Entre la respuesta y el gráfico, afuera de la tarjeta de arriba.

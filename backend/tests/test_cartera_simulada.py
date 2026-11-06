@@ -330,6 +330,51 @@ class AnioPorAnio(unittest.TestCase):
         self.assertTrue(all("sp500" in t and "nasdaq" not in t for t in apa["tramos"]))
         self.assertEqual(set(apa["por_anio"]), {"cartera", "sp500"})
 
+    def test_sin_recorte_el_primero_es_un_anio_aunque_el_primer_dia_se_corra(self):
+        # El activo arranca hasta 7 días después del pedido (no es recorte) y los índices,
+        # 7 días después de él (corren el primer día): el primer año dura menos de 358
+        # días. Salía «12 meses» debajo de «Los 2 años» (auditoría de método 06/11, H2).
+        hasta = FIN.isoformat()
+        pedido = date.fromisoformat(cs._primer_dia(hasta, 2))
+        desde_idx = next(d for d in (pedido + timedelta(days=12 + k) for k in range(3)) if d.weekday() < 5)
+        activo = [v for v in _todos(900, lambda i: 100 + i * 0.1) if v["date"] >= (desde_idx - timedelta(days=7)).isoformat()]
+        idx = {c: [v for v in _habiles(800, f) if v["date"] >= desde_idx.isoformat()]
+               for c, f in (("sp500", lambda i: 4000 + i), ("nasdaq", lambda i: 12000 + 5 * i))}
+        r = cs.simular([_activo("A", 100, activo)], idx, 2)
+        self.assertEqual((r["recortado"], r["desde"], r["faltan"]), (False, desde_idx.isoformat(), []))
+        t = r["anio_por_anio"]["tramos"]
+        self.assertLess(t[0]["dias"], tecnico.DIAS_ANIO - comparar.DIAS_MARGEN)
+        self.assertEqual([x["completo"] for x in t], [True, True])
+
+    def test_con_recorte_un_anio_entero_es_desde_358_dias(self):
+        hasta = FIN.isoformat()
+        dos = date.fromisoformat(cs._primer_dia(hasta, 2))
+        for dias, completo in ((358, True), (357, False)):
+            with self.subTest(dias=dias):
+                desde = (dos - timedelta(days=dias)).isoformat()
+                a = [v for v in _todos(1500, lambda i: 100 + i * 0.1) if v["date"] >= desde]
+                r = self._cartera(anios=4, activos=[_activo("A", 100, a)])
+                self.assertTrue(r["recortado"])
+                t = r["anio_por_anio"]["tramos"][0]
+                self.assertEqual((t["desde"], t["dias"], t["completo"]), (desde, dias, completo))
+
+    def test_un_activo_que_se_va_a_cero_en_un_corte_no_rompe_la_simulacion(self):
+        # Con el redondeo de `comparar.base_cien` (4 decimales) vale 0 justo en el corte:
+        # el año que arranca ahí queda vacío. Dividía por cero y la ruta contestaba un
+        # error (auditoría de método 06/11, H1).
+        corte = cs._primer_dia(FIN.isoformat(), 1)
+        cerca = (date.fromisoformat(corte) - timedelta(days=6)).isoformat()
+        velas = [{**v, **dict.fromkeys(("open", "high", "low", "close"),
+                                       1e-5 if cerca <= v["date"] <= corte else 50.0 if v["date"] > corte else 100.0)}
+                 for v in _habiles(800, lambda i: 100.0)]
+        r = cs.simular([_activo("A", 100, velas)], _indices(), 2)
+        self.assertTrue(r["disponible"], r)
+        t = r["anio_por_anio"]["tramos"]
+        self.assertEqual([x["hasta"] for x in t], [corte, r["hasta"]])
+        self.assertAlmostEqual(t[0]["cartera"], -100.0, places=6)
+        self.assertIsNone(t[1]["cartera"])
+        self.assertAlmostEqual(t[1]["aporte"], 50.0, places=6)
+
 
 class DeHoy(unittest.TestCase):
     """«Mi cartera de hoy»: lo que se puede simular, sobre 100 entre ellos."""
@@ -723,9 +768,12 @@ class Ruta(unittest.TestCase):
         # Nico, 06/11: una acción argentina sube en pesos con la inflación aunque a la
         # empresa no le vaya mejor. Se mide en dólares, el precio de BYMA ÷ el MEP de
         # cada día, también el primero de cada año. Acá los pesos suben ~60 % por año
-        # y el MEP igual: en dólares no se movió.
+        # y el MEP igual: en dólares no se movió. Y el dólar salta 30 % justo en el
+        # corte de un año: con el MEP de otro día (el de antes o el de después), ese
+        # año daría ±30 % (auditoría de método 06/11, H5).
         ruedas = _ruedas(self.hoy, 760)
-        inflacion = lambda d: 1.04 ** ((d - ruedas[0]).days / 30)
+        borde = max(r for r in ruedas if r <= date.fromisoformat(cs._primer_dia(ruedas[-1].isoformat(), 1)))
+        inflacion = lambda d: 1.04 ** ((d - ruedas[0]).days / 30) * (1.3 if d >= borde else 1.0)
         with main.db_abierta() as conn:
             conn.execute("DELETE FROM fx_rates_daily")
             for d in ruedas:
@@ -738,6 +786,7 @@ class Ruta(unittest.TestCase):
         main._run_velas_diarias_job()
         res = self._get("activos=GGAL&pesos=100&local=GGAL&anios=2").json()
         self.assertTrue(res["disponible"], res)
+        self.assertEqual(res["hasta"], ruedas[-1].isoformat())
         with main.db_abierta() as conn:
             en_pesos = [r[0] for r in conn.execute(
                 "SELECT close FROM velas_diarias WHERE symbol='GGAL.BA' AND date BETWEEN ? AND ? ORDER BY date",
