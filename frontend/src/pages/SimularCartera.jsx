@@ -25,9 +25,10 @@
 // &activos=AAPL,GGAL&pesos=60,40&local=GGAL&anios=2): recargar o mandar el link
 // abre la misma cartera. «Mi cartera de hoy» NUNCA va en la dirección, tampoco
 // cambiada: dice qué tenés y cuánto pesa cada cosa, y la dirección se ve con el
-// ojito prendido, queda en el historial, viaja en cada link y se les manda a
-// Google y a Meta al cargar la página (auditorías del 05/11: A2, A3 y seguridad
-// 1). Con origen=hoy, recargar la vuelve a pedir; quien abre el link ve la suya.
+// ojito prendido, queda en el historial y viaja en cada link (auditorías del 05/11:
+// A2, A3 y seguridad 1). A Google y a Meta, en cambio, `activos`, `pesos` y `local`
+// no les llegan nunca: no están en la lista de permitidos (utils/rutasSensibles.js).
+// Con origen=hoy, recargar la vuelve a pedir; quien abre el link ve la suya.
 // «Ocultar saldos»: tu cartera de hoy no se trae con el ojito prendido (los
 // porcentajes dicen qué tenés); una armada de cero se ve igual.
 //
@@ -476,8 +477,11 @@ function Respuesta({ sim, vista, filas, estado, trayendoHoy, origen, cliente, on
     // Un aviso de otra cartera no queda en pantalla mientras se pide la nueva (M8).
     contenido = resumen || <EsperandoLaRespuesta />
   }
+  // En la compu, la rayita que la separa de la tabla va de arriba abajo
+  // (`self-stretch`): con 8 activos terminaba a la mitad de la tabla.
   return (
-    <div ref={zona} tabIndex={-1} className="min-w-0 focus:outline-none border-t border-line pt-4 lg:border-t-0 lg:pt-0 lg:border-l lg:pl-5">
+    <div ref={zona} tabIndex={-1}
+      className="min-w-0 focus:outline-none border-t border-line pt-4 lg:self-stretch lg:border-t-0 lg:pt-0 lg:border-l lg:pl-5">
       {contenido}
     </div>
   )
