@@ -3963,12 +3963,14 @@ def init_db():
         # terminan mostrándose "varias veces" aunque el código diga una sola.
         if user_cols_after and 'aviso_precios_oct26_at' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN aviso_precios_oct26_at TEXT")
-        # De qué post o campaña vino quien se registró (`?d=x-20261019` o
-        # `utm_*`, ver frontend/src/utils/origen.js) y cuándo abrió ese link.
-        # NULL = entró sin código (directo, buscador, o una cuenta de antes de
-        # que esto existiera). La escribe SÓLO /api/auth/register; la cuenta el
-        # panel de /admin (`_registros_por_origen`). Sin índice: el panel lee los
-        # registros de 30 días y agrupa en memoria de la base.
+        # De dónde vino quien se registró y cuándo abrió ese link: el código
+        # del link (`?d=x-20261019` o `utm_*`) o, si no traía, el sitio o la
+        # marca que reconoció el navegador (`sitio/t.co`, `clic/fbclid`; ver
+        # frontend/src/utils/origen.js y canal_de_origen.py). NULL = sin dato
+        # (entró directo, la app no dijo de dónde venía, o una cuenta de antes
+        # de que esto existiera). La escribe SÓLO /api/auth/register; la cuenta
+        # el panel de /admin (`_registros_por_origen`). Sin índice: el panel lee
+        # los registros de 30 días y agrupa en memoria de la base.
         if user_cols_after and 'origen' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN origen TEXT")
         if user_cols_after and 'origen_visto_at' not in user_cols_after:
@@ -5056,8 +5058,9 @@ class RegisterIn(BaseModel):
             raise ValueError('La contraseña debe tener al menos 10 caracteres')
         return v
 
-    # De qué post vino (`?d=x-20261019` o `utm_*`, ver frontend/src/utils/origen.js)
-    # y cuándo abrió ese link. Los dos son opcionales y NUNCA rechazan un
+    # De dónde vino (`?d=x-20261019`, `utm_*`, o el sitio o la marca que
+    # reconoció el navegador: ver frontend/src/utils/origen.js) y cuándo abrió
+    # ese link. Los dos son opcionales y NUNCA rechazan un
     # registro: un código raro se limpia o se descarta, nunca da 422. Perder
     # una cuenta por un dato de medición sería medir al revés.
     origen: Optional[Any] = None
@@ -5066,7 +5069,10 @@ class RegisterIn(BaseModel):
     @field_validator('origen', mode='before')
     @classmethod
     def origen_limpio(cls, v):
-        return _normalizar_origen(v)
+        # Del sitio o la app de donde venía se guarda el nombre sólo si es uno
+        # conocido; si no, «otro» (canal_de_origen.para_guardar).
+        from canal_de_origen import para_guardar
+        return para_guardar(_normalizar_origen(v))
 
     @field_validator('origen_visto', mode='before')
     @classmethod
@@ -5075,14 +5081,23 @@ class RegisterIn(BaseModel):
 
 
 _ORIGEN_LARGO_MAX = 60
+# Lo que se mira de lo que llega, antes de limpiar. El navegador nunca manda más
+# de 60; sin este corte, un origen de 40 MB pasaba entero por las dos limpiezas
+# en el pedido mismo (más de un segundo frenando al servidor para todos) antes
+# de quedar en 60.
+_ORIGEN_CRUDO_MAX = 256
 
 
 def _normalizar_origen(v) -> Optional[str]:
     """El código de origen limpio, con la MISMA regla que el navegador
     (`normalizarCodigo` en utils/origen.js): minúsculas, sólo letras, números y
-    `- _ . /`, hasta 60. None si no queda nada o no es texto."""
+    `- _ . /`, hasta 60. None si no queda nada, si no es texto o si trae una
+    arroba (es un mail, no un código)."""
     import re as _re
     if not isinstance(v, str):
+        return None
+    v = v[:_ORIGEN_CRUDO_MAX]
+    if "@" in v:
         return None
     limpio = _re.sub(r"\s+", "-", v.strip().lower())
     limpio = _re.sub(r"[^a-z0-9._/-]", "", limpio)[:_ORIGEN_LARGO_MAX]
@@ -5098,10 +5113,12 @@ def _normalizar_origen_visto(v) -> Optional[str]:
         return None
     try:
         t = _dt.fromisoformat(v.strip().replace("Z", "+00:00"))
-    except ValueError:
+        if t.tzinfo is not None:
+            # `9999-12-31T23:59:59-23:59` se entiende pero no entra en UTC
+            # (OverflowError): sin atraparlo, el registro entero daba 500.
+            t = t.astimezone(_tz.utc).replace(tzinfo=None)
+    except (ValueError, OverflowError):
         return None
-    if t.tzinfo is not None:
-        t = t.astimezone(_tz.utc).replace(tzinfo=None)
     if t > _dt.utcnow() + timedelta(minutes=5):
         return None
     return t.strftime("%Y-%m-%d %H:%M:%S")
@@ -29863,15 +29880,18 @@ _SQL_CARGO_CARTERA = (
 
 def _registros_por_origen(conn, desde, hasta) -> dict:
     """Cuántas cuentas se crearon entre dos días argentinos (los dos
-    incluidos), agrupadas por el post o campaña de donde vinieron
-    (`users.origen`, ver /api/auth/register). Por cada origen: cuántos se
-    registraron, cuántos confirmaron el mail y cuántos cargaron su cartera.
+    incluidos), agrupadas por de dónde vinieron (`users.origen`, ver
+    /api/auth/register): el código del link o, si no traía, el sitio o la
+    marca que reconoció el navegador. Por cada origen y por cada canal (IA, X,
+    Meta…, ver canal_de_origen.py): cuántos se registraron, cuántos
+    confirmaron el mail y cuántos cargaron su cartera.
 
     Cuenta registros, no usuarios confirmados: el que creó la cuenta y no
     confirmó el mail también vino por ese post, y ver cuántos se caen ahí es
     parte de lo que se mide. Afuera: admins, cuentas internas o de prueba
     (`_SQL_CUENTA_DE_AFUERA`) y los clientes que crea un asesor (no se
     registraron: los dio de alta otro)."""
+    from canal_de_origen import CANALES, canal_del_origen
     ini, fin = _rango_utc(desde, hasta)
     filas = conn.execute(
         f"""SELECT COALESCE(u.origen, '') AS origen,
@@ -29885,28 +29905,40 @@ def _registros_por_origen(conn, desde, hasta) -> dict:
             GROUP BY COALESCE(u.origen, '')""",
         (ini, fin),
     ).fetchall()
-    salida = [{
-        "origen": r["origen"] or None,
-        "registros": int(r["registros"] or 0),
-        "confirmaron": int(r["confirmaron"] or 0),
-        "cargaron": int(r["cargaron"] or 0),
-    } for r in filas]
-    # Los que tienen código primero (más registros arriba); "sin código" al final.
+    cuentas = ("registros", "confirmaron", "cargaron")
+    por_canal = {c: dict.fromkeys(cuentas, 0) for c, _, _ in CANALES}
+    salida = []
+    for r in filas:
+        f = {"origen": r["origen"] or None}
+        f.update({k: int(r[k] or 0) for k in cuentas})
+        f["canal"], f["fuente"] = canal_del_origen(f["origen"])
+        for k in cuentas:
+            por_canal[f["canal"]][k] += f[k]
+        salida.append(f)
+    # Los que tienen origen primero (más registros arriba); "sin dato" al final.
     salida.sort(key=lambda f: (f["origen"] is None, -f["registros"], f["origen"] or ""))
-    con_codigo = [f for f in salida if f["origen"]]
+    registros = sum(f["registros"] for f in salida)
+    con_dato = registros - por_canal["sin_dato"]["registros"]
     return {
         "desde": desde.isoformat(),
         "hasta": hasta.isoformat(),
-        "registros": sum(f["registros"] for f in salida),
-        "con_codigo": sum(f["registros"] for f in con_codigo),
+        "registros": registros,
+        "con_dato": con_dato,
+        # El mismo número con el nombre que lee el panel anterior (hasta el
+        # 06/11/2026): mientras se publica, o en una pestaña de /admin abierta
+        # desde antes, ése mostraba «0 vinieron por un link con código».
+        "con_codigo": con_dato,
+        # Todos los canales, también los que dan 0: «Meta · anuncios: 0» es un dato.
+        "canales": [{"canal": c, "nombre": nombre, "explica": explica, **por_canal[c]}
+                    for c, nombre, explica in CANALES],
         "origenes": salida,
     }
 
 
 @app.get("/api/admin/origenes")
 def admin_origenes(uid: int = Depends(get_admin_user)):
-    """Registros por origen (qué post los trajo), últimos 7 y 30 días
-    argentinos contando hoy."""
+    """Registros por origen (qué post, qué red o qué IA los trajo) y por
+    canal, últimos 7 y 30 días argentinos contando hoy."""
     hoy = _hoy_art_date()
     with db_abierta() as conn:
         return {

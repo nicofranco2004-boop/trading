@@ -2,14 +2,16 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import {
   anotarOrigen, origenParaElRegistro, olvidarOrigen, normalizarCodigo,
-  codigoDeLaDireccion, ORIGEN_KEY, ORIGEN_DURA_MS,
+  codigoDeLaDireccion, codigoDeLaVisita, MARCAS_DE_CLIC, ORIGEN_KEY, ORIGEN_DURA_MS,
 } from './origen'
+import { escenarios } from './origen.escenarios.json'
 
 afterEach(() => { vi.unstubAllGlobals() })
 
 // Un navegador de mentira con lo que usa origen.js: la dirección, el historial
-// (replaceState cambia la dirección de verdad) y un localStorage en memoria.
-function navegador(href, guardado = {}) {
+// (replaceState cambia la dirección de verdad), la página de donde venía
+// (document.referrer) y un localStorage en memoria.
+function navegador(href, guardado = {}, referrer = '') {
   const store = new Map(Object.entries(guardado))
   const win = {
     location: new URL(href),
@@ -19,6 +21,7 @@ function navegador(href, guardado = {}) {
     },
   }
   vi.stubGlobal('window', win)
+  vi.stubGlobal('document', { referrer })
   vi.stubGlobal('localStorage', {
     getItem: k => (store.has(k) ? store.get(k) : null),
     setItem: (k, v) => store.set(k, String(v)),
@@ -30,11 +33,36 @@ function navegador(href, guardado = {}) {
 const AHORA = Date.parse('2026-10-19T12:00:00Z')
 
 describe('al entrar con un código', () => {
-  it('se guarda con su fecha y la página donde entró', () => {
+  it('se guarda con su fecha, y nada más (ni la página donde entró)', () => {
     const n = navegador('https://rendi.finance/blog/brokers?d=x-1019')
     anotarOrigen(AHORA)
-    expect(n.guardado()).toEqual({ codigo: 'x-1019', visto: '2026-10-19T12:00:00.000Z', pagina: '/blog/brokers' })
+    expect(n.guardado()).toEqual({ codigo: 'x-1019', visto: '2026-10-19T12:00:00.000Z' })
     expect(origenParaElRegistro(AHORA)).toEqual({ origen: 'x-1019', origen_visto: '2026-10-19T12:00:00.000Z' })
+  })
+
+  it('el medio del utm viaja (dice si fue pago); solo no alcanza para un código', () => {
+    expect(codigoDeLaDireccion('?utm_source=fb&utm_medium=paid&utm_campaign=Promo')).toBe('fb/paid/promo')
+    expect(codigoDeLaDireccion('?utm_source=newsletter&utm_medium=email')).toBe('newsletter/email')
+    expect(codigoDeLaDireccion('?utm_medium=paid&utm_campaign=promo')).toBe('paid/promo')
+    expect(codigoDeLaDireccion('?utm_medium=paid')).toBe(null)
+    // Los de siempre, igual que antes.
+    expect(codigoDeLaDireccion('?utm_source=chatgpt.com')).toBe('chatgpt.com')
+    expect(codigoDeLaDireccion('?utm_source=meta-anuncios&utm_campaign=Promo%20Nov')).toBe('meta-anuncios/promo-nov')
+  })
+
+  it('un código del link no se hace pasar por uno reconocido solo', () => {
+    expect(codigoDeLaDireccion('?d=sitio/chatgpt.com')).toBe('sitio-chatgpt.com')
+    expect(codigoDeLaDireccion('?d=clic/gclid')).toBe('clic-gclid')
+    expect(codigoDeLaDireccion('?utm_source=app&utm_campaign=x')).toBe('app-x')
+    // Sólo el comienzo exacto: `sitios/…` o `x/sitio/…` quedan como vinieron.
+    expect(codigoDeLaDireccion('?d=sitios/a')).toBe('sitios/a')
+    expect(codigoDeLaDireccion('?d=x/sitio/a')).toBe('x/sitio/a')
+  })
+
+  it('un mail metido en el código se descarta', () => {
+    expect(codigoDeLaDireccion('?utm_source=juan.perez@gmail.com')).toBe(null)
+    expect(codigoDeLaDireccion('?utm_source=x&utm_campaign=ana%2Bpromo%40empresa.com.ar')).toBe('x')
+    expect(codigoDeLaDireccion('?d=a@b')).toBe(null)
   })
 
   it('se saca `d` de la dirección y lo demás queda', () => {
@@ -105,6 +133,135 @@ describe('manda el primero', () => {
   })
 })
 
+// Las mismas visitas que recorre backend/tests/test_origen_registros.py desde
+// el registro hasta el canal del panel: acá, de la visita al código que viaja.
+describe('sin código en el link: la marca del clic y el sitio de donde venía', () => {
+  it.each(escenarios.map(e => [e.caso, e]))('%s', (_caso, e) => {
+    const n = navegador(e.direccion, {}, e.referrer)
+    anotarOrigen(AHORA)
+    expect(origenParaElRegistro(AHORA)?.origen ?? null).toBe(e.codigo)
+    // Lo que viaja ya está limpio: el servidor lo guarda tal cual.
+    if (e.codigo) expect(normalizarCodigo(e.codigo)).toBe(e.codigo)
+    // La marca y los utm se quedan en la dirección (los leen Google y Meta).
+    for (const m of MARCAS_DE_CLIC) {
+      expect(n.win.location.searchParams.get(m)).toBe(new URL(e.direccion).searchParams.get(m))
+    }
+  })
+
+  it('de la página de donde venía se guarda SÓLO el sitio: ni la ruta ni lo que se buscó', () => {
+    const n = navegador('https://rendi.finance/', {},
+      'https://www.google.com/search?q=rendi+juan.perez%40mail.com&hl=es#arriba')
+    anotarOrigen(AHORA)
+    const guardado = JSON.stringify(n.guardado())
+    expect(n.guardado().codigo).toBe('sitio/google.com')
+    for (const pedazo of ['search', 'juan', 'perez', 'mail', 'q=', 'hl', 'arriba']) {
+      expect(guardado).not.toContain(pedazo)
+    }
+  })
+
+  it('de la marca se guarda el nombre, nunca el valor (identifica el clic)', () => {
+    const n = navegador('https://rendi.finance/?fbclid=IwAR0SecretoDelClic', {}, 'https://l.facebook.com/')
+    anotarOrigen(AHORA)
+    expect(n.guardado().codigo).toBe('sitio/l.facebook.com/fbclid')
+    expect(JSON.stringify(n.guardado())).not.toMatch(/secreto/i)
+  })
+
+  it('si vienen dos marcas se anota la primera de la lista', () => {
+    expect(codigoDeLaVisita('?gclid=a&fbclid=b', '')).toBe('clic/fbclid')
+    expect(codigoDeLaVisita('?msclkid=a&gclid=b', '')).toBe('clic/gclid')
+    // Una marca vacía no es una marca.
+    expect(codigoDeLaVisita('?fbclid=&gclid=b', '')).toBe('clic/gclid')
+    expect(codigoDeLaVisita('?fbclid=', '')).toBe(null)
+  })
+
+  it('el sitio donde está abierta la página tampoco cuenta (servidor local, vista previa)', () => {
+    navegador('http://localhost:5173/', {}, 'http://localhost:5173/login')
+    anotarOrigen(AHORA)
+    expect(origenParaElRegistro(AHORA)).toBe(null)
+    expect(codigoDeLaVisita('', 'https://app.rendi.finance/x', 'rendi.finance')).toBe(null)
+    expect(codigoDeLaVisita('', 'https://rendi-git-rama.vercel.app/', 'www.rendi-git-rama.vercel.app')).toBe(null)
+    // Rendi es Rendi aunque la página esté abierta en otro lado (una vista previa).
+    expect(codigoDeLaVisita('', 'https://rendi.finance/planes', 'rendi-git-rama.vercel.app')).toBe(null)
+  })
+
+  it('un sitio larguísimo se recorta por adelante: queda el sitio y entra en el servidor', () => {
+    const largo = `${'muy-largo.'.repeat(8)}foro.ejemplo.com.ar`
+    const codigo = codigoDeLaVisita('?fbclid=x', `https://${largo}/hilo/1`)
+    expect(codigo.length).toBeLessThanOrEqual(60)
+    expect(codigo).toMatch(/^sitio\/.*\.foro\.ejemplo\.com\.ar\/fbclid$/)
+    expect(normalizarCodigo(codigo)).toBe(codigo)
+  })
+
+  it('del nombre del sitio o de la app queda sólo lo que acepta el servidor', () => {
+    // Un sitio puede traer signos; una app de Android, mayúsculas y `%`.
+    expect(codigoDeLaVisita('', 'https://a!b.com/')).toBe('sitio/ab.com')
+    expect(codigoDeLaVisita('', 'android-app://Com.Example_App%2Fx/')).toBe('app/com.example_app2fx')
+    // Un sitio con ñ llega como se escribe en internet (xn--…).
+    expect(codigoDeLaVisita('?fbclid=x', 'https://ñandú.com/')).toBe('sitio/xn--and-6ma2c.com/fbclid')
+    for (const c of ['sitio/ab.com', 'app/com.example_app2fx']) expect(normalizarCodigo(c)).toBe(c)
+  })
+
+  it('una página de donde venía rara se ignora sin romper', () => {
+    for (const raro of ['::::', 'javascript:alert(1)', 'file:///etc/passwd', 'android-app://', 'https://', 'about:blank']) {
+      expect(() => codigoDeLaVisita('', raro)).not.toThrow()
+      expect(codigoDeLaVisita('', raro)).toBe(null)
+    }
+    // Sin document (el arranque en un lugar sin navegador) tampoco rompe.
+    navegador('https://rendi.finance/?fbclid=x')
+    vi.stubGlobal('document', undefined)
+    expect(() => anotarOrigen(AHORA)).not.toThrow()
+    expect(origenParaElRegistro(AHORA).origen).toBe('clic/fbclid')
+  })
+
+  it('un código le gana a lo reconocido solo aunque llegue después; al revés, nunca', () => {
+    // Entró desde Google y a la semana tocó el anuncio de «volvé» de Meta.
+    const n = navegador('https://rendi.finance/', {}, 'https://www.google.com.ar/')
+    anotarOrigen(AHORA)
+    expect(n.guardado().codigo).toBe('sitio/google.com.ar')
+    n.win.location = new URL('https://rendi.finance/?utm_source=meta-anuncios&utm_campaign=Volve')
+    vi.stubGlobal('document', { referrer: 'https://l.instagram.com/' })
+    anotarOrigen(AHORA + 6 * 864e5)
+    expect(n.guardado()).toEqual({ codigo: 'meta-anuncios/volve', visto: new Date(AHORA + 6 * 864e5).toISOString() })
+    // Después, ni un sitio ni otro código lo pisan.
+    n.win.location = new URL('https://rendi.finance/')
+    vi.stubGlobal('document', { referrer: 'https://t.co/' })
+    anotarOrigen(AHORA + 7 * 864e5)
+    n.win.location = new URL('https://rendi.finance/?d=x-1022')
+    anotarOrigen(AHORA + 8 * 864e5)
+    expect(n.guardado().codigo).toBe('meta-anuncios/volve')
+  })
+
+  it('entre sitios y marcas manda el primero; una visita sin nada no anota nada', () => {
+    const n = navegador('https://rendi.finance/', {}, 'https://t.co/')
+    anotarOrigen(AHORA)
+    n.win.location = new URL('https://rendi.finance/?fbclid=x')
+    vi.stubGlobal('document', { referrer: 'https://l.facebook.com/' })
+    anotarOrigen(AHORA + 864e5)
+    expect(n.guardado().codigo).toBe('sitio/t.co')
+    const m = navegador('https://rendi.finance/', {}, '')
+    anotarOrigen(AHORA)
+    expect(m.guardado()).toBe(null)
+  })
+
+  it('el anuncio del día 29 cuenta aunque el registro sea el día 30 (antes quedaba «Sin dato»)', () => {
+    const n = navegador('https://rendi.finance/', {}, 'https://www.google.com/')
+    anotarOrigen(AHORA)
+    n.win.location = new URL('https://rendi.finance/?utm_source=meta-anuncios&utm_campaign=promo')
+    vi.stubGlobal('document', { referrer: '' })
+    anotarOrigen(AHORA + 29 * 864e5)
+    expect(origenParaElRegistro(AHORA + 30.2 * 864e5)?.origen).toBe('meta-anuncios/promo')
+  })
+
+  it('en un informe público (/i/<llave>) la llave no queda guardada en ningún lado', () => {
+    const llave = 'k3Jx9QpLm2VwZr8TfYb4Nc7Hd1Ae6Gs5'
+    const n = navegador(`https://rendi.finance/i/${llave}`, {}, 'android-app://com.whatsapp/')
+    anotarOrigen(AHORA)
+    expect(n.guardado()).toEqual({ codigo: 'app/com.whatsapp', visto: '2026-10-19T12:00:00.000Z' })
+    expect([...n.store.values()].join(' ')).not.toContain(llave)
+    expect(n.win.location.pathname).toBe(`/i/${llave}`)
+  })
+})
+
 describe('nunca rompe la página', () => {
   it('con el almacenamiento bloqueado no tira y igual limpia la dirección', () => {
     const n = navegador('https://rendi.finance/?d=x-1019')
@@ -133,6 +290,7 @@ describe('la regla de limpieza es la misma que la del servidor', () => {
     ['<b>', 'b'],
     ['', null],
     ['!!!', null],
+    ['ana@x.com', null],
   ])('%j → %j', (entrada, esperado) => {
     expect(normalizarCodigo(entrada)).toBe(esperado)
   })

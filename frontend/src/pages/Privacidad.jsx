@@ -18,7 +18,7 @@ export default function Privacidad() {
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Política de Privacidad — Rendi"
-        description="Cómo Rendi maneja tus datos personales: qué recolectamos, para qué, con quién compartimos, transferencias internacionales, cookies, seguridad, conservación y tus derechos como titular. Compliance Ley 25.326 (Argentina). Última actualización octubre 2026."
+        description="Cómo Rendi maneja tus datos personales: qué recolectamos, para qué, con quién compartimos, transferencias internacionales, cookies, seguridad, conservación y tus derechos como titular. Compliance Ley 25.326 (Argentina). Última actualización noviembre 2026."
         canonical="/privacidad"
       />
 
@@ -32,7 +32,7 @@ export default function Privacidad() {
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Política de Privacidad</h1>
-        <p className="text-sm text-ink-3 mb-10">Última actualización: 22 de octubre de 2026</p>
+        <p className="text-sm text-ink-3 mb-10">Última actualización: 6 de noviembre de 2026</p>
 
         {/* Resumen prominente */}
         <div className="border border-data-violet/40 bg-data-violet/[0.06] rounded-lg p-5 mb-10">
@@ -108,6 +108,7 @@ export default function Privacidad() {
             <li>Tipo de dispositivo y navegador (User-Agent: Safari, Chrome, etc.).</li>
             <li>Logs de actividad: timestamps de login, creación de cuenta y eventos del sistema.</li>
             <li>Logs de errores (sin información personal sensible).</li>
+            <li>De qué red, sitio o campaña llegaste cuando creás la cuenta, si tu navegador lo informa (por ejemplo «X», «Instagram», «ChatGPT» o el código del link de un post), para saber qué canales traen gente. Sólo el nombre, y sólo si es uno conocido: nunca la dirección de la página de donde venías ni lo que buscaste.</li>
           </ul>
           <p className="mt-4"><strong className="text-ink-0">Datos de pago (procesados por Rebill):</strong></p>
           <p>
