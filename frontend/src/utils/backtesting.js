@@ -187,6 +187,9 @@ export function motivoEnPalabras(res, activo) {
       return 'Pediste muchos activos nuevos en poco tiempo: probá de nuevo en un rato.'
     case 'bajando':
       return `Estamos trayendo los precios de ${a}: probá de nuevo en unos segundos.`
+    case 'vieja':
+      return `Los precios de ${a} llegan hasta el ${fechaCorta(res.hasta)}: para probar una regla `
+        + 'hacen falta los de la última semana.'
     case 'demo':
       return 'En el modo demo no hay precios de todos los días para probar reglas.'
     case 'poca_historia': {

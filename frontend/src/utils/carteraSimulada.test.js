@@ -285,6 +285,12 @@ describe('por qué no se pudo simular', () => {
   it('cada motivo, en una oración entera', () => {
     // Sobre lo que tenemos: PARADA cotiza; la que está vieja es nuestra copia (M10).
     expect(motivoCartera(CASOS.vieja)).toBe('No tenemos precios de PARADA desde el 30/09/26: sacalo para simular el resto.')
+    // Vieja contra hoy (H9): un activo solo, o todos, ya no tienen «resto» que simular.
+    const parado = (asset) => ({ asset, motivo: 'vieja', hasta: '2026-09-04' })
+    expect(motivoCartera({ motivo: 'vieja', faltan: [parado('MU')] }, 1))
+      .toBe('No tenemos precios de MU desde el 04/09/26: cambialo por otro.')
+    expect(motivoCartera({ motivo: 'vieja', faltan: [parado('MU'), parado('AAPL')] }, 2))
+      .toBe('No tenemos precios de MU y AAPL desde el 04/09/26.')
     expect(motivoCartera({ motivo: 'sin_serie', faltan: [{ asset: 'AL30' }, { asset: 'ZZZ' }] }))
       .toBe('No tenemos los precios de cada día de AL30 y ZZZ: sacalos o cambialos por otros.')
     expect(motivoCartera({ motivo: 'poca_historia', recorte_por: 'NUEVITO', faltan: [] }))

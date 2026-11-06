@@ -350,8 +350,12 @@ export function motivoCartera(res, cuantos = 2) {
         + `${uno ? 'sacalo o cambialo por otro' : 'sacalos o cambialos por otros'}.`
     case 'vieja': {
       const hasta = faltan.map(f => f.hasta).filter(Boolean).sort()[0]
-      return `No tenemos precios de ${enLista(nombres)} desde el ${fechaCorta(hasta)}: `
-        + `${uno ? 'sacalo' : 'sacalos'} para simular el resto.`
+      const frase = `No tenemos precios de ${enLista(nombres)} desde el ${fechaCorta(hasta)}`
+      // Viejo se mide contra hoy (auditoría 05/11, H9): puede ser el único activo,
+      // o todos (la noche no trajo nada). Ahí no hay «resto» que simular.
+      if (cuantos === 1) return `${frase}: cambialo por otro.`
+      if (nombres.length >= cuantos) return `${frase}.`
+      return `${frase}: ${uno ? 'sacalo' : 'sacalos'} para simular el resto.`
     }
     case 'poca_historia':
       if (!res.recorte_por) {

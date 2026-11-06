@@ -350,6 +350,9 @@ describe('M3/M4: por qué no se pudo probar, en oraciones enteras', () => {
     expect(motivoEnPalabras({ motivo: 'sin_serie' }, 'AL30')).toBe('Para probar una regla hacen falta los precios de cada día '
       + '(apertura, máximo, mínimo y cierre), y de AL30 no los tenemos.')
     expect(motivoEnPalabras({ motivo: 'algo_nuevo' }, 'NVDA')).toBe('No encontramos los precios de NVDA.')
+    // Sin precios de la última semana, contada desde hoy (auditoría 05/11, H9).
+    expect(motivoEnPalabras({ motivo: 'vieja', hasta: '2026-09-04' }, 'MU'))
+      .toBe('Los precios de MU llegan hasta el 04/09/26: para probar una regla hacen falta los de la última semana.')
   })
 
   it('poca historia: dice qué regla necesita más días y, comparando, que se puede sacar', () => {
