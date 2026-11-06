@@ -26,8 +26,12 @@
 // abre la misma cartera. «Mi cartera de hoy» NUNCA va en la dirección, tampoco
 // cambiada: dice qué tenés y cuánto pesa cada cosa, y la dirección se ve con el
 // ojito prendido, queda en el historial y viaja en cada link (auditorías del 05/11:
-// A2, A3 y seguridad 1). A Google y a Meta, en cambio, `activos`, `pesos` y `local`
-// no les llegan nunca: no están en la lista de permitidos (utils/rutasSensibles.js).
+// A2, A3 y seguridad 1). A Google y a Meta, `activos`, `pesos` y `local` no se los
+// mandamos nosotros (no están en la lista de permitidos, utils/rutasSensibles.js) y
+// el píxel no sigue los cambios de dirección. PERO Google los lee solo si en Google
+// Analytics está prendida «Cambios de página basados en eventos del historial del
+// navegador»: la armada de cero cambia la dirección en cada tecla. Tiene que estar
+// apagada; el 06/11 a las 13:06 estaba prendida (auditoría de código 06/11, 1).
 // Con origen=hoy, recargar la vuelve a pedir; quien abre el link ve la suya.
 // «Ocultar saldos»: tu cartera de hoy no se trae con el ojito prendido (los
 // porcentajes dicen qué tenés); una armada de cero se ve igual.
@@ -61,7 +65,7 @@ import {
   COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, aLaDireccion, carteraDe, consultaDe,
   errorDeHoy, estadoDeLaCartera, filasDeHoy, lecturaCartera, limpiar, loQueFalta, motivoCartera, notaDeHoy,
   notaDeLosQueSobran, notaDelResumen, notaHoy, notaOjito, notaSinActivos, origenDe, origenes, pesoTxt, repartirIgual,
-  sobranDe, textoDe, tramosDeLaBarra, trayendoHoy,
+  rotuloDelAnterior, sobranDe, textoDe, tramosDeLaBarra, trayendoHoy,
 } from '../utils/carteraSimulada'
 import { marcaLocal } from '../utils/comparadorPrecio'
 import { fechaCorta } from '../utils/cuantoSeMueve'
@@ -104,7 +108,6 @@ export default function SimularCartera() {
   const [yaEsta, setYaEsta] = useState(null)
   const entradas = useRef({})
   const sumarBoton = useRef(null)
-  const totalRef = useRef(null)
   const origenRef = useRef(null)
   const enfocar = useRef(null)
 
@@ -157,7 +160,10 @@ export default function SimularCartera() {
         setFilas(nuevas)
         setCambiada(false)
       })
-      .catch(e => { if (vivo) setHoy({ estado: 'error', nota: null, detalle: e?.message || 'sin respuesta' }) })
+      .catch(e => {
+        // `estadoHttp`: con 429 (el freno) el servidor ya dice cuánto esperar.
+        if (vivo) setHoy({ estado: 'error', nota: null, detalle: e?.message || 'sin respuesta', estadoHttp: e?.status ?? null })
+      })
     return () => { vivo = false }
   }, [origen, hidden, vueltaHoy])
 
@@ -199,7 +205,12 @@ export default function SimularCartera() {
     else sumarBoton.current?.focus?.()
   }, [filas.length])
 
-  const ponerPeso = (i, txt) => cambiarFilas(filas.map((f, k) => (k === i ? { ...f, txt: limpiar(txt) } : f)))
+  const ponerPeso = (i, txt) => {
+    // Más de 100 no se acepta: queda lo que estaba (`limpiar`).
+    const limpio = limpiar(txt)
+    if (limpio == null) return
+    cambiarFilas(filas.map((f, k) => (k === i ? { ...f, txt: limpio } : f)))
+  }
   const sacar = (i) => {
     enfocar.current = filas[i + 1]?.asset || filas[i - 1]?.asset || true
     cambiarFilas(filas.filter((_, k) => k !== i))
@@ -261,11 +272,11 @@ export default function SimularCartera() {
             </div>
           </div>
         </div>
-        {origen === 'hoy' && (
-          <NotaDeHoy hoy={tapada ? { estado: 'oculto' } : hoy} cliente={cliente} cambiada={cambiada}
-            onReintentar={() => { origenRef.current?.focus?.(); setVueltaHoy(x => x + 1) }}
-            onArmarDeCero={() => elegirOrigen('cero')} />
-        )}
+        {/* Con el ojito prendido no hay tabla: la nota va acá, con su salida. Si no, va
+            debajo de la tabla de activos, de la que habla (auditoría de pantalla 06/11,
+            M1: arriba empujaba la respuesta hacia abajo del borde de la pantalla). */}
+        {tapada && <NotaDeHoy hoy={{ estado: 'oculto' }} cliente={cliente} cambiada={cambiada}
+          onReintentar={() => {}} onArmarDeCero={() => elegirOrigen('cero')} />}
         {origen === 'cero' && notaDeLosQueSobran(sobran) && (
           <p className="text-[12.5px] text-ink-2">{notaDeLosQueSobran(sobran)}</p>
         )}
@@ -301,32 +312,37 @@ export default function SimularCartera() {
             {!filas.length && !trayendo && (
               <p className="py-3 text-[13px] text-ink-1">Todavía no hay activos. Sumá el primero y poné cuánto de la cartera va en él.</p>
             )}
-            {filas.length > 0 && <BarraDelCien filas={filas} />}
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-3">
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Mientras se trae tu cartera de hoy no se suma: lo sumado quedaba debajo
-                    de «Trayendo…» para siempre (M6). Y espera tus lotes, que deciden la
-                    marca de lo que tenés (H1). */}
-                <button ref={sumarBoton} type="button" onClick={() => setSumando(s => !s)} aria-expanded={sumando}
-                  disabled={lleno || trayendo || !lotes}
-                  className="inline-flex items-center gap-1.5 min-h-11 sm:min-h-9 px-3.5 rounded-full border border-dashed border-line-3 text-[13px] font-medium text-ink-1 hover:text-ink-0 disabled:opacity-50 disabled:cursor-not-allowed">
-                  <Plus size={14} aria-hidden="true" />
-                  Sumar activo
-                </button>
-                {filas.length > 1 && (
-                  <button type="button" onClick={repartir}
-                    className="inline-flex items-center min-h-11 sm:min-h-9 px-3.5 rounded-full border border-line text-[13px] font-medium text-ink-1 hover:text-ink-0">
-                    Repartir en partes iguales
-                  </button>
-                )}
+            {/* La barra y, debajo, el total en su renglón: al lado de los botones,
+                «Total 82% · Faltan 18%» no entraba y bajaba de renglón en cada tecla
+                (auditoría de pantalla 06/11, M2). Sin activos no dice nada (en ámbar,
+                «Faltan 100%» antes de escribir nada parecía un error); con 100, sólo eso
+                (diseño 05/11, B12 y M10). */}
+            {filas.length > 0 && (
+              <div className="flex flex-col gap-1.5 pt-3">
+                <BarraDelCien filas={filas} />
+                <span role="status"
+                  className={`self-end text-[14px] font-semibold tabular ${estado.listo ? 'text-rendi-pos' : 'text-data-amber'}`}>
+                  {estado.listo ? estado.texto : `Total ${estado.totalTxt} · ${estado.texto}`}
+                </span>
               </div>
-              {/* Lo enfoca «Repartir» del aviso de al lado, que desaparece al tocarlo. Sin
-                  activos no dice nada (en ámbar, «Faltan 100%» antes de escribir nada
-                  parecía un error); con 100, sólo eso (diseño 05/11, B12 y M10). */}
-              <span ref={totalRef} tabIndex={-1} role="status"
-                className={`text-[14px] font-semibold tabular focus:outline-none ${estado.listo ? 'text-rendi-pos' : 'text-data-amber'} ${trayendo || !filas.length ? 'invisible' : ''}`}>
-                {trayendo || !filas.length ? '' : estado.listo ? estado.texto : `Total ${estado.totalTxt} · ${estado.texto}`}
-              </span>
+            )}
+            <div className="flex flex-wrap items-center gap-2 pt-3">
+              {/* Mientras se trae tu cartera de hoy no se suma: lo sumado quedaba debajo
+                  de «Trayendo…» para siempre (M6). Y espera tus lotes, que deciden la
+                  marca de lo que tenés (H1). */}
+              <button ref={sumarBoton} type="button" onClick={() => setSumando(s => !s)} aria-expanded={sumando}
+                disabled={lleno || trayendo || !lotes}
+                className="inline-flex items-center gap-1.5 min-h-11 sm:min-h-9 px-3.5 rounded-full border border-dashed border-line-3 text-[13px] font-medium text-ink-1 hover:text-ink-0 disabled:opacity-50 disabled:cursor-not-allowed">
+                <Plus size={14} aria-hidden="true" />
+                Sumar activo
+              </button>
+              {/* El único «Repartir»: el aviso de al lado tenía otro (pantalla 06/11, B5). */}
+              {filas.length > 1 && (
+                <button type="button" onClick={repartir}
+                  className="inline-flex items-center min-h-11 sm:min-h-9 px-3.5 rounded-full border border-line text-[13px] font-medium text-ink-1 hover:text-ink-0">
+                  Repartir en partes iguales
+                </button>
+              )}
             </div>
             {yaEsta && <p role="status" className="pt-2 text-[12.5px] text-ink-1">{yaEsta} ya está en la cartera: cambiá su porcentaje acá arriba.</p>}
             {lleno && <p className="pt-2 text-[12px] text-ink-2">Ya sumaste {MAX_ACTIVOS}, el máximo.</p>}
@@ -340,9 +356,16 @@ export default function SimularCartera() {
                 ) : <p role="status" className="text-[12.5px] text-ink-2">Un momento…</p>}
               </div>
             )}
+            {origen === 'hoy' && (
+              <div className="pt-3">
+                <NotaDeHoy hoy={hoy} cliente={cliente} cambiada={cambiada}
+                  onReintentar={() => { origenRef.current?.focus?.(); setVueltaHoy(x => x + 1) }}
+                  onArmarDeCero={() => elegirOrigen('cero')} />
+              </div>
+            )}
           </div>
           <Respuesta sim={sim} vista={vista} filas={filas} estado={estado} trayendoHoy={trayendo} origen={deDonde}
-            cliente={cliente} onRepartir={() => { totalRef.current?.focus?.(); repartir() }} />
+            cliente={cliente} />
         </div>}
       </section>
 
@@ -397,40 +420,53 @@ function NotaDeHoy({ hoy, cliente, cambiada, onReintentar, onArmarDeCero }) {
   }
   if (hoy.estado === 'vacia') return <p className="text-[12.5px] text-ink-1">{notaSinActivos(cliente)}</p>
   if (hoy.estado === 'error') {
-    return <Aviso error detalle={hoy.detalle} onReintentar={onReintentar}>{errorDeHoy(cliente)}</Aviso>
+    // Con el freno (429), sin «Reintentar» al lado de «Esperá un minuto»: lo mismo que
+    // la simulación desde el 05/11 (B2), que no había llegado acá (código 06/11).
+    return (
+      <Aviso error detalle={hoy.detalle} onReintentar={hoy.estadoHttp === 429 ? null : onReintentar}>
+        {errorDeHoy(cliente)}
+      </Aviso>
+    )
   }
   const nota = notaHoy(cliente, cambiada)
   return <p className="text-[12.5px] text-ink-2">{nota}{hoy.nota && !cambiada ? ` ${hoy.nota}` : ''}</p>
 }
 
 /** La barra del 100 % (`tramosDeLaBarra`): un tramo violeta por activo, en el orden
- *  de la tabla y cortados por una rayita; lo que falta, en ámbar tenue (como
- *  «Faltan 10%»); pasada de 100, toda en ámbar (como «Sobran 33,5%»). Al pasar el
+ *  de la tabla y cortados por una rayita; lo que falta, en ámbar (como «Faltan
+ *  10%»; al 30 % casi no se veía en claro, pantalla 06/11, B2); llena pero sin
+ *  estar lista (sobra, o un activo sin porcentaje), toda en ámbar. Al pasar el
  *  mouse, cada tramo dice de quién es. Lo que dice ya lo dicen la tabla y el total:
  *  el lector de pantalla no la lee. */
 function BarraDelCien({ filas }) {
-  const { tramos, falta, sobra } = tramosDeLaBarra(filas)
+  const { tramos, falta, ambar } = tramosDeLaBarra(filas)
   return (
-    <div data-barra="" aria-hidden="true" className="flex gap-0.5 h-2 mt-3 rounded-full overflow-hidden">
+    <div data-barra="" aria-hidden="true" className="flex gap-0.5 h-2 rounded-full overflow-hidden">
       {tramos.map(t => (
-        <span key={t.asset} title={`${t.asset} ${pesoTxt(t.peso)}`} className={sobra ? 'bg-data-amber' : 'bg-data-violet'}
+        <span key={t.asset} title={`${t.asset} ${pesoTxt(t.peso)}`} className={ambar ? 'bg-data-amber' : 'bg-data-violet'}
           style={{ flexGrow: t.peso, flexBasis: 0 }} />
       ))}
       {falta > 0 && (
-        <span title={`Falta repartir ${pesoTxt(falta)}`} className="bg-data-amber/30" style={{ flexGrow: falta, flexBasis: 0 }} />
+        <span title={`Falta repartir ${pesoTxt(falta)}`} className="bg-data-amber/60" style={{ flexGrow: falta, flexBasis: 0 }} />
       )}
     </div>
   )
 }
 
 /** Al lado de la tabla (en el celular, debajo): qué habría pasado, o por qué
- *  todavía no se ve. Mientras la suma no da 100, el aviso arriba y el último
- *  resultado tenue debajo (M2). */
-function Respuesta({ sim, vista, filas, estado, trayendoHoy, origen, cliente, onRepartir }) {
+ *  todavía no se ve. Mientras la cartera no está lista, el último resultado queda
+ *  tenue EN SU LUGAR, con un renglón que dice que es el anterior: el aviso que iba
+ *  arriba lo bajaba 68 px en cada tecla y lo volvía a subir (auditoría de pantalla
+ *  06/11, M2, B4 y B5; diseño 05/11, M2). Por qué no está lista lo dice el total de
+ *  la izquierda. */
+function Respuesta({ sim, vista, filas, estado, trayendoHoy, origen, cliente }) {
   // El teclado no se pierde cuando el botón que lo tenía desaparece: va acá.
   const zona = useRef(null)
   const otraVez = () => { zona.current?.focus?.(); sim.reintentar() }
-  const resumen = vista && <Resumen res={vista.res} atenuado={!sim.consulta} cargando={vista.cargando} origen={origen} cliente={cliente} />
+  const resumen = vista && (
+    <Resumen res={vista.res} anterior={sim.consulta ? null : rotuloDelAnterior(estado)} cargando={vista.cargando}
+      origen={origen} cliente={cliente} />
+  )
 
   let contenido
   if (!sim.consulta) {
@@ -441,21 +477,12 @@ function Respuesta({ sim, vista, filas, estado, trayendoHoy, origen, cliente, on
           Cuando los porcentajes sumen 100%, acá vas a ver cómo le habría ido a la cartera al lado del S&P 500 y del Nasdaq.
         </p>
       )
+    } else if (resumen) {
+      contenido = resumen
     } else {
-      contenido = (
-        <div className="flex flex-col gap-4">
-          <Aviso>
-            {estado.aviso}
-            {filas.length > 1 && (
-              <button type="button" onClick={onRepartir}
-                className="ml-1.5 inline-flex items-center min-h-11 sm:min-h-0 font-medium text-data-violet hover:underline">
-                Repartir en partes iguales
-              </button>
-            )}
-          </Aviso>
-          {resumen}
-        </div>
-      )
+      // Sin un resultado anterior, el aviso entero. No se lee solo: el total de la
+      // izquierda ya se lee en cada tecla (pantalla 06/11, B11).
+      contenido = <Aviso vivo={false}>{estado.aviso}</Aviso>
     }
   } else if (sim.error && sim.estadoHttp === 429) {
     // El freno: el servidor ya dice cuánto esperar; sin «Reintentar» que volvería a
@@ -497,28 +524,26 @@ function EsperandoLaRespuesta() {
   )
 }
 
-/** Qué habría pasado, primero (diseño 05/11, M1), y los números de la cartera y de
- *  los dos índices en una tabla: lo que decían las tres tarjetas, lado a lado. */
-function Resumen({ res, cargando = false, atenuado = false, origen, cliente }) {
+/** Qué habría pasado, primero (diseño 05/11, M1); si arrancó más tarde o falta un
+ *  índice, enseguida (pantalla 06/11, M3: iba último y afuera de la pantalla); los
+ *  números de la cartera y de los índices en una tabla, pegada al título para que
+ *  entre en la pantalla (M1); y después la aclaración y las notas. `anterior`: el
+ *  renglón que dice que es el resultado de antes (y queda tenue). */
+function Resumen({ res, cargando = false, anterior = null, origen, cliente }) {
   const lec = lecturaCartera(res, { origen, cliente })
   return (
     <div className="flex flex-col gap-3">
-      {/* «Actualizando…» en su renglón fijo (antes empujaba todo; diseño 05/11, B3), y
-          el resultado nuevo se anuncia al lector de pantalla (M9). */}
-      {!atenuado && (
-        <p role="status" className="text-[12.5px] text-ink-2 h-5 -mb-2">
-          {cargando ? 'Actualizando…' : <span className="sr-only">{`Listo: ${lec.titulo}.`}</span>}
-        </p>
-      )}
-      <div className={`flex flex-col gap-3 ${cargando || atenuado ? 'opacity-60' : ''} transition-opacity`}>
-        <h3 className="text-[16px] font-semibold text-ink-0 leading-snug">{lec.titulo}</h3>
-        <p className="text-[13px] text-ink-1 leading-relaxed">
-          {lec.aclaracion}
-          {origen === 'hoy' && (
-            <Link to="/analisis" className="ml-1.5 font-medium text-data-violet hover:underline">Ver Métricas →</Link>
-          )}
-        </p>
-        <table className="w-full tabular">
+      {/* Un renglón fijo arriba: «Actualizando…», «Es el resultado anterior: …» o,
+          para el lector de pantalla, el resultado nuevo. Antes «Actualizando…» empujaba
+          todo (diseño 05/11, B3 y M9). */}
+      <p role="status" className={`min-h-5 -mb-2 text-[12.5px] ${anterior ? 'font-medium text-data-amber' : 'text-ink-2'}`}>
+        {anterior || (cargando ? 'Actualizando…' : <span className="sr-only">{`Listo: ${lec.titulo}.`}</span>)}
+      </p>
+      <div className={`flex flex-col gap-3 ${cargando || anterior ? 'opacity-60' : ''} transition-opacity`}>
+        <h3 id="sc-respuesta" className="text-[16px] font-semibold text-ink-0 leading-snug">{lec.titulo}</h3>
+        {lec.avisos.map(a => <p key={a} className="text-[13px] text-ink-0 leading-relaxed">{a}</p>)}
+        {/* La tabla se llama como el título (pantalla 06/11, B12). */}
+        <table aria-labelledby="sc-respuesta" className="w-full tabular">
           <thead>
             <tr className="border-b border-line text-[12px] text-ink-2">
               <th scope="col" className="pb-1.5 text-left font-medium"><span className="sr-only">Cartera o índice</span></th>
@@ -540,8 +565,13 @@ function Resumen({ res, cargando = false, atenuado = false, origen, cliente }) {
             ))}
           </tbody>
         </table>
+        <p className="text-[13px] text-ink-1 leading-relaxed">
+          {lec.aclaracion}
+          {origen === 'hoy' && (
+            <Link to="/analisis" className="ml-1.5 font-medium text-data-violet hover:underline">Ver Métricas →</Link>
+          )}
+        </p>
         <p className="text-[12px] text-ink-2 leading-relaxed">{notaDelResumen(res)} {QUE_ES_LA_PEOR_CAIDA}</p>
-        {lec.avisos.map(a => <p key={a} className="text-[13px] text-ink-1 leading-relaxed">{a}</p>)}
       </div>
     </div>
   )

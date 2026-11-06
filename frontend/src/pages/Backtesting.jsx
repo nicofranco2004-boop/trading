@@ -122,7 +122,9 @@ export default function Backtesting() {
 /** «¿Qué querés probar?»: una regla o una cartera, con el rótulo a la vista y lo
  *  que es cada una debajo de su nombre. Era lo más chico de la zona (12 px, gris y
  *  sin rótulo) y en la compu «Una cartera» casi no se veía (producto 05/11, A6).
- *  El tutorial lo ilumina (`backtesting-modo`, components/tour/pasosTecnico.js). */
+ *  La elegida, con un borde violeta: el fondo solo apenas se distinguía (1,07 a 1;
+ *  pantalla 06/11, B1). El tutorial lo ilumina (`backtesting-modo`,
+ *  components/tour/pasosTecnico.js). */
 function ElegirModo({ valor, alElegir }) {
   return (
     <div data-tour="backtesting-modo" className="flex flex-col gap-1.5 sm:self-start">
@@ -131,7 +133,7 @@ function ElegirModo({ valor, alElegir }) {
         {MODOS.map(m => (
           <button key={m.id} type="button" onClick={() => alElegir(m.id)} aria-pressed={valor === m.id}
             className={`min-w-0 min-h-11 flex flex-col items-start gap-0.5 rounded-lg px-3 sm:px-4 py-2 text-left transition-colors ${
-              valor === m.id ? 'bg-bg-1 shadow-sm' : 'hover:bg-bg-1/60'}`}>
+              valor === m.id ? 'bg-bg-1 shadow-sm ring-1 ring-data-violet/70' : 'hover:bg-bg-1/60'}`}>
             <span className={`text-[14px] font-semibold ${valor === m.id ? 'text-ink-0' : 'text-ink-1'}`}>{m.nombre}</span>
             <span className="text-[12px] leading-snug text-ink-2">{m.detalle}</span>
           </button>

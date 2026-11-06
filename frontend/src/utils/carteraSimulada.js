@@ -51,8 +51,11 @@ export function notaHoy(cliente = null, cambiada = false) {
   return `Con ${cliente ? `los activos de ${cliente}` : 'tus activos'} y lo que pesa cada uno hoy. Quedan afuera los `
     + 'bonos y los fondos, porque no tenemos sus precios de cada día, y el efectivo. Cambiá lo que quieras.'
 }
+// Dónde se apaga: en esta pantalla no hay ojito; está en el Inicio y en Tu Cartera
+// («Ocultar saldos»). «Apagalo» solo no decía dónde (auditoría de pantalla 06/11).
 export const notaOjito = (cliente = null) => `Con «Ocultar saldos» prendido no traemos ${deQuien(cliente)}: los `
-  + `porcentajes dicen qué ${cliente ? 'tiene' : 'tenés'}. Apagalo, o armala de cero.`
+  + `porcentajes dicen qué ${cliente ? 'tiene' : 'tenés'}. Apagalo con el ojito del Inicio o de Tu Cartera, o armala `
+  + 'de cero.'
 export const notaSinActivos = (cliente = null) => `Todavía no ${cliente ? 'tiene' : 'tenés'} acciones, CEDEARs ni `
   + 'cripto para simular: armala de cero.'
 export const trayendoHoy = (cliente = null) => `Trayendo ${deQuien(cliente)}…`
@@ -76,14 +79,16 @@ export const textoDe = (n) => (n > 0 ? String(Math.round(n * 100) / 100).replace
 export const pesoTxt = (x) => `${(Math.round(x * 10) / 10).toLocaleString('es-AR', { maximumFractionDigits: 1 })}%`
 
 /** Lo que se acepta mientras se escribe: dígitos y una coma (el punto pasa a
- *  coma), hasta 2 decimales y nunca más de 100. */
+ *  coma) y hasta 2 decimales. Más de 100 no se acepta: null, y queda lo que
+ *  estaba. Antes se volvía 100: con «10» escrito y el cursor al final, un «5»
+ *  dejaba 100 sin avisar (auditoría de pantalla 06/11). */
 export function limpiar(txt) {
   let s = String(txt ?? '').replace('.', ',').replace(/[^0-9,]/g, '')
   const coma = s.indexOf(',')
   if (coma >= 0) s = s.slice(0, coma + 1) + s.slice(coma + 1).replace(/,/g, '').slice(0, 2)
   if (s.startsWith(',')) s = `0${s}`
   s = s.replace(/^0+(?=\d)/, '')
-  return numeroDe(s) > 100 ? '100' : s
+  return numeroDe(s) > 100 ? null : s
 }
 
 // La suma a centavos: el servidor la redondea igual antes de comparar con la
@@ -177,18 +182,29 @@ export function consultaDe(filas, anios) {
  *  torta (Nico, 06/11; diseño 05/11, M1 y M3): repetía la tabla, ocupaba el lugar
  *  de la respuesta y sus colores decían cuánto pesa cada porción, no quién es, así
  *  que cambiaban de activo mientras escribías. Pasada de 100, los tramos se
- *  reparten la barra entera y `sobra` lo dice; cada tramo dice lo ESCRITO (con
- *  GGAL 100 y AAPL 33,5, «100%» y «33,5%», no 74,9 y 25,1; M9). */
+ *  reparten la barra entera; cada tramo dice lo ESCRITO (con GGAL 100 y AAPL 33,5,
+ *  «100%» y «33,5%», no 74,9 y 25,1; M9). `ambar`: la barra está llena pero la
+ *  cartera no está lista (sobra, o un activo sin porcentaje: con 50 / 50 / 0 se
+ *  veía violeta y completa; auditoría de pantalla 06/11, B3). */
 export function tramosDeLaBarra(filas) {
   const total = totalDe(filas)
+  // El hueco, sólo si de verdad falta: con 33,33 × 3 decía «Falta repartir 0,0%» al
+  // lado de «Suma 100%» (verificación 05/11, V6).
+  const falta = 100 - total > TOLERANCIA ? Math.round((100 - total) * 100) / 100 : 0
   return {
     tramos: filas.map(f => ({ asset: f.asset, peso: numeroDe(f.txt) })).filter(t => t.peso > 0),
-    // El hueco, sólo si de verdad falta: con 33,33 × 3 decía «Falta repartir 0,0%» al
-    // lado de «Suma 100%» (verificación 05/11, V6).
-    falta: 100 - total > TOLERANCIA ? Math.round((100 - total) * 100) / 100 : 0,
-    sobra: total - 100 > TOLERANCIA,
+    falta,
+    ambar: !falta && !estadoDeLaCartera(filas).listo,
   }
 }
+
+/** Arriba del resultado anterior, tenue, mientras la cartera no está lista: que
+ *  es el de antes y por qué (auditorías de pantalla y de método 06/11, B4 y H6).
+ *  Corto, para que entre en un renglón y la respuesta no se corra (M2), y sin el
+ *  número que cambia en cada tecla: el total de la izquierda ya lo dice (B11). */
+export const rotuloDelAnterior = (estado) => (Math.abs(estado.total - 100) <= TOLERANCIA
+  ? 'Es el resultado anterior: falta un porcentaje'
+  : 'Es el resultado anterior: no suman 100%')
 
 /** «Mi cartera de hoy» (GET /backtest/cartera/hoy) como filas para editar. */
 export const filasDeHoy = (r) => (r?.activos || []).map(a => ({ asset: a.asset, local: !!a.local, txt: textoDe(a.peso) }))
@@ -313,9 +329,10 @@ export function lecturaCartera(res, { origen = 'cero', cliente = null } = {}) {
 }
 
 /** Debajo de los números de la respuesta: de cuándo a cuándo, y que los índices
- *  van sin dividendos, como la cartera (lo decía cada tarjeta de un índice). */
-export const notaDelResumen = (res) => `Del ${fechaCorta(res.desde)} al ${fechaCorta(res.hasta)}, en dólares. `
-  + 'Los índices, sin dividendos, como la cartera.'
+ *  van sin dividendos, como la cartera (lo decía cada tarjeta de un índice). Sin
+ *  ningún índice, lo de la cartera sola (método 06/11, H7). */
+export const notaDelResumen = (res) => `Del ${fechaCorta(res.desde)} al ${fechaCorta(res.hasta)}, en dólares`
+  + (res.indices?.length ? '. Los índices, sin dividendos, como la cartera.' : ' y sin dividendos.')
 
 /** Por qué no se pudo simular, en una oración entera. `cuantos`: los activos de
  *  la cartera (con uno solo no hay «resto» que simular). */
@@ -356,8 +373,10 @@ export function motivoCartera(res, cuantos = 2) {
  *  de 10 % a 8 %; auditoría 05/11, A4), y «el que baja lo pierde», también (BTC −22,6 %
  *  pasó de 50 % a 59,7 %, con GGAL bajando más; verificación 05/11, V1). Lo prueba
  *  utils/carteraSimulada.test.js contra lo que contesta el servidor. */
+// «Aportó», en condicional: la cartera no existió (auditoría de pantalla 06/11).
 export const NOTA_CADA_ACTIVO = 'Sin tocar la cartera, gana peso el que rinde más que el conjunto, aunque baje, y lo '
-  + 'pierde el que rinde menos, aunque suba. «Aportó»: cuánto de cada US$ 100 ganó o perdió la cartera por ese activo.'
+  + 'pierde el que rinde menos, aunque suba. «Aportó»: cuánto de cada US$ 100 habría ganado o perdido la cartera por '
+  + 'ese activo.'
 
 /** La aclaración de abajo: cómo se simula y que no es una recomendación. */
 export const COMO_SE_SIMULA_CARTERA = 'La simulación compra todo el primer día, al cierre, con los porcentajes que '

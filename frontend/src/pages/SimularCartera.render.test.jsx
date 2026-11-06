@@ -185,7 +185,7 @@ describe('Backtesting → Una cartera', () => {
       'Habría dado casi lo mismo que el S&P 500, y el Nasdaq le habría ganado',
       'Es tu cartera de hoy puesta en el pasado', 'No es lo que ganaste: eso está en Métricas.', 'Ver Métricas',
       'De cada US$ 100, AAPL habría sumado US$ 17,8', 'Sin tocarla, GGAL habría pasado de 30% a 19,7% de la cartera.',
-      'Los índices, sin dividendos, como la cartera.', 'Peor caída: lo más que llegó a bajar desde su mejor momento.',
+      'Los índices, sin dividendos, como la cartera.', 'Peor caída: lo más que habría bajado desde su mejor momento.',
       'Cada activo', 'Cómo habrían ido US$ 100', 'no es una recomendación']) {
       expect(r, parte).toContain(parte)
     }
@@ -215,9 +215,10 @@ describe('Backtesting → Una cartera', () => {
     await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '40')
     await esperar()
     expect(montado.t()).toContain('Total 90% · Faltan 10%')
-    expect(montado.t()).toContain('Para ver cómo le habría ido, los porcentajes tienen que sumar 100%: falta repartir 10%.')
+    // El resultado de antes queda en su lugar, diciendo que es el anterior (pantalla 06/11, M2 y B4).
+    expect(montado.t()).toContain('Es el resultado anterior: no suman 100%')
     expect(barra(montado.contenedor)).toEqual([['AAPL 40%', 40, 'bg-data-violet'], ['GGAL 30%', 30, 'bg-data-violet'],
-      ['BTC 20%', 20, 'bg-data-violet'], ['Falta repartir 10%', 10, 'bg-data-amber/30']])
+      ['BTC 20%', 20, 'bg-data-violet'], ['Falta repartir 10%', 10, 'bg-data-amber/60']])
     await pasaLaPausa()
     expect(simulaciones()).toHaveLength(1)   // con 90 % no se pide
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Repartir en partes iguales'))
@@ -424,15 +425,60 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
     expect(porEtiqueta(montado.contenedor, 'Buscar un activo para sumar a la cartera')).not.toBeNull()
   })
 
-  // M2: mientras la suma no da 100, el último resultado queda tenue, no desaparece.
-  it('mientras la suma no da 100, el último resultado queda a la vista, con el aviso arriba', async () => {
+  // M2: mientras la suma no da 100, el último resultado queda tenue, no desaparece. Y
+  // desde el 06/11 queda EN SU LUGAR: el aviso de arriba lo bajaba 68 px en cada tecla;
+  // un renglón fijo dice que es el anterior (pantalla 06/11, M2, B4 y B5).
+  it('mientras la suma no da 100, el último resultado queda en su lugar, diciendo que es el anterior', async () => {
     montado = await abrir(CARTERA)
     expect(montado.t()).toContain('+21,4%')
     await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '5')
     await pasaLaPausa()
-    expect(montado.t()).toContain('Para ver cómo le habría ido, los porcentajes tienen que sumar 100%: falta repartir 45%.')
-    expect(montado.t()).toContain('+21,4%')            // el de antes, tenue
+    const arriba = texto(laTarjeta(montado.contenedor))
+    expect(arriba).toContain('Es el resultado anterior: no suman 100%')
+    expect(arriba).toContain('+21,4%')                  // el de antes, tenue
+    expect(arriba).not.toContain('Para ver cómo le habría ido')
     expect(simulaciones()).toHaveLength(1)              // y no se pidió nada con 55 %
+    // Un solo «Repartir»: el aviso tenía otro (B5).
+    expect(todos(montado.contenedor, n => n.nodeName === 'BUTTON' && texto(n) === 'Repartir en partes iguales')).toHaveLength(1)
+  })
+
+  it('sin un resultado anterior, el aviso entero; y no se lee solo: el total ya se lee en cada tecla', async () => {
+    montado = await abrir(`${DE_CERO}&activos=AAPL,KO&pesos=60,30`)
+    expect(simulaciones()).toEqual([])
+    const aviso = todos(montado.contenedor, n => texto(n) === 'Para ver cómo le habría ido, los porcentajes tienen que sumar 100%: falta repartir 10%.'
+      && n.nodeName === 'DIV')[0]
+    expect(aviso).toBeDefined()
+    expect(aviso.atributos.role).toBeUndefined()        // B11: no se lee dos veces
+    expect(todos(montado.contenedor, n => n.atributos?.role === 'status' && texto(n) === 'Total 90% · Faltan 10%')).toHaveLength(1)
+  })
+
+  it('con un activo sin porcentaje la barra queda en ámbar: llena pero no lista', async () => {
+    // Con 50 / 50 / 0 se veía violeta y completa (pantalla 06/11, B3).
+    montado = await abrir(`${DE_CERO}&activos=AAPL,KO,MSFT&pesos=50,50,0`)
+    expect(montado.t()).toContain('Total 100% · Falta un porcentaje')
+    expect(barra(montado.contenedor)).toEqual([['AAPL 50%', 50, 'bg-data-amber'], ['KO 50%', 50, 'bg-data-amber']])
+  })
+
+  it('más de 100 en un porcentaje no se acepta: queda lo que estaba', async () => {
+    // Con «10» y el cursor al final, un «5» dejaba 100 sin avisar (pantalla 06/11).
+    montado = await abrir(CARTERA)
+    await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '505')
+    await esperar()
+    expect(porcentajes(montado.contenedor)[0]).toEqual(['AAPL', '50'])
+  })
+
+  it('la respuesta: el título, enseguida si arrancó más tarde, la tabla, y después la aclaración', async () => {
+    // M1 y M3 (pantalla 06/11): la tabla pegada al título para que entre en la pantalla, y
+    // «Tenemos precios de NUEVA desde…» enseguida del título (iba último, afuera).
+    simulacion = () => ({ ...CASOS.recortada, curva: [] })
+    montado = await abrir(CARTERA)
+    const arriba = texto(laTarjeta(montado.contenedor))
+    const donde = (x) => { const i = arriba.indexOf(x); expect(i, x).toBeGreaterThan(-1); return i }
+    const orden = ['Le habría ido mejor que el S&P 500 y que el Nasdaq', 'Tenemos precios de NUEVA desde el 26/01/26',
+      'Habría dadoPeor caída', 'Es tu cartera de hoy puesta en el pasado', 'Del 26/01/26 al 30/10/26'].map(donde)
+    expect(orden).toEqual([...orden].sort((a, b) => a - b))
+    // La nota de «Mi cartera de hoy», debajo de la tabla de activos de la que habla.
+    expect(donde('BTC%')).toBeLessThan(donde('Con tus activos y lo que pesa cada uno hoy'))
   })
 
   // B5: con el ojito prendido, la salida se puede tocar.
@@ -539,7 +585,7 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
   it('la tabla de al lado dice el resultado y la peor caída de cada uno, y la plata va en el gráfico', async () => {
     const r = CASOS.recortada
     simulacion = () => ({ ...r, curva: [] })
-    montado = await abrir(CARTERA)
+    montado = await abrir(`${DE_CERO}&activos=AAPL,GGAL,NUEVA&pesos=50,30,20&local=GGAL&anios=2`)
     const renglon = (nombre) => texto(todos(laTarjeta(montado.contenedor), x => x.nodeName === 'TH' && texto(x) === nombre)[0].parentNode)
     for (const [nombre, x] of [['Esta cartera', r.cartera], ['S&P 500', r.indices[0]], ['Nasdaq', r.indices[1]]]) {
       expect(renglon(nombre), nombre).toBe(`${nombre}${porcentaje(x.resultado)}${porcentaje(x.peor_caida, 0)}`)
@@ -640,14 +686,121 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
   // (`vitest -u`). Una lista de palabras prohibidas deja pasar lo que no está en
   // la lista («vas a ganar»).
   it('lo que dice la pantalla, caso por caso, es lo revisado', async () => {
+    // Cada caso con SU cartera: con la de hoy para todos, la foto mostraba la tabla con
+    // BTC y «Cada activo» con NUEVA, justo el error que esta pantalla no puede tener
+    // (auditoría de código 06/11, 8). «tres» y «sin_nasdaq» son la de hoy (HOY).
+    const DE = {
+      tres: CARTERA, sin_nasdaq: CARTERA,
+      recortada: `${DE_CERO}&activos=AAPL,GGAL,NUEVA&pesos=50,30,20&local=GGAL&anios=2`,
+      vieja: `${DE_CERO}&activos=AAPL,GGAL,PARADA&pesos=50,30,20&local=GGAL&anios=2`,
+      todos_restan: `${DE_CERO}&activos=BAJA1,BAJA2&pesos=60,40&anios=1`,
+    }
+    expect(Object.keys(DE).sort()).toEqual(Object.keys(CASOS).sort())
     const textos = {}
     for (const [caso, res] of Object.entries(CASOS)) {
       simulacion = () => ({ ...res, curva: [] })
-      montado = await abrir(CARTERA)
+      montado = await abrir(DE[caso])
+      if (res.disponible) {
+        expect(porcentajes(montado.contenedor).map(([a]) => a), caso).toEqual(res.activos.map(a => a.asset))
+      }
       textos[caso] = texto(laCartera(montado.contenedor))
       await montado.desmontar()
       montado = null
     }
     expect(textos).toMatchSnapshot()
+  })
+
+  // Las que siguen las propuso la auditoría de código del 06/11 (4 y 5): cada una da
+  // rojo con su copia rota de la pantalla, y la de antes de ellas quedaba en verde.
+  const elTitulo = (c) => todos(c, n => n.atributos?.id === 'sc-respuesta')[0] || null
+  const elGrafico = (c) => todos(c, n => n.atributos?.['aria-label'] === 'Cómo habrían ido US$ 100')[0] || null
+  function tenue(nodo) {
+    for (let n = nodo; n; n = n.parentNode) if ((n.atributos?.class || '').split(/\s+/).includes('opacity-60')) return true
+    return false
+  }
+
+  it('mientras la suma no da 100, el anterior queda tenue al lado y abajo, y es el mismo', async () => {
+    montado = await abrir(CARTERA)
+    expect([tenue(elTitulo(montado.contenedor)), tenue(elGrafico(montado.contenedor))]).toEqual([false, false])
+    await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '5')
+    await pasaLaPausa()
+    const c = montado.contenedor
+    expect([tenue(elTitulo(c)), tenue(elGrafico(c))]).toEqual([true, true])
+    // Al lado y abajo, el MISMO resultado: +21,4 % en la tabla y US$ 121,4 en el gráfico.
+    expect(texto(elTitulo(c).parentNode)).toContain('Esta cartera+21,4%')
+    expect(texto(elGrafico(c))).toContain('Esta carteraUS$ 121,4')
+  })
+
+  it('mientras llega la respuesta nueva, «Actualizando…» y lo de antes tenue desde el primer momento', async () => {
+    montado = await abrir(CARTERA)
+    let soltar
+    simulacion = () => new Promise(r => { soltar = r })
+    // «Repartir» de una cartera que ya sumaba 100: el resultado viejo se veía como el
+    // nuevo durante la pausa de 0,4 s (código 06/11, 5).
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Repartir en partes iguales'))
+    await esperar()
+    const c = montado.contenedor
+    expect(texto(laTarjeta(c))).toContain('Actualizando…')
+    expect([tenue(elTitulo(c)), tenue(elGrafico(c))]).toEqual([true, true])
+    await pasaLaPausa()
+    expect(texto(laTarjeta(c))).toContain('Actualizando…')
+    await enActo(async () => { soltar({ ...CASOS.todos_restan, curva: [] }) })
+    await esperar()
+    expect(texto(laTarjeta(c))).not.toContain('Actualizando…')
+    expect([tenue(elTitulo(c)), tenue(elGrafico(c))]).toEqual([false, false])
+  })
+
+  it('al volver a sumar 100 después de no sumarlo, «Actualizando…» y el anterior tenue mientras llega', async () => {
+    montado = await abrir(CARTERA)
+    let soltar
+    simulacion = () => new Promise(r => { soltar = r })
+    await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '40')   // suma 90
+    await pasaLaPausa()
+    await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de GGAL en la cartera'), '40')   // otra vez 100
+    await pasaLaPausa()
+    const c = montado.contenedor
+    expect(simulaciones().at(-1)).toBe('GET /backtest/cartera?activos=AAPL,GGAL,BTC&pesos=40,40,20&local=GGAL&anios=2')
+    expect(texto(laTarjeta(c))).toContain('Actualizando…')
+    expect(texto(laTarjeta(c))).not.toContain('Es el resultado anterior')
+    expect([tenue(elTitulo(c)), tenue(elGrafico(c))]).toEqual([true, true])
+    await enActo(async () => { soltar(delServidor()) })
+    await esperar()
+    expect([tenue(elTitulo(c)), tenue(elGrafico(c))]).toEqual([false, false])
+  })
+
+  it('al cambiar el período, «Actualizando…» desde el primer momento', async () => {
+    montado = await abrir(CARTERA)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, '5 años'))
+    await esperar()
+    expect(texto(laTarjeta(montado.contenedor))).toContain('Actualizando…')
+    expect(tenue(elTitulo(montado.contenedor))).toBe(true)
+  })
+
+  it('al sacar todos los activos no queda ningún resultado, ni al lado ni abajo', async () => {
+    montado = await abrir(`${DE_CERO}&activos=KO&pesos=100`)
+    expect(elTitulo(montado.contenedor)).not.toBeNull()
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Sacar KO'))
+    await esperar()
+    const c = montado.contenedor
+    expect([elTitulo(c), elGrafico(c)]).toEqual([null, null])
+    expect(montado.t()).toContain('Cuando los porcentajes sumen 100%')
+    // Y el que se suma después no hereda el de antes mientras llega el suyo.
+    simulacion = () => new Promise(() => {})
+    await sumarConElBuscador(montado, 'MSFT')
+    await pasaLaPausa()
+    expect([elTitulo(c), elGrafico(c)]).toEqual([null, null])
+    expect(todos(c, n => n.atributos?.['aria-busy'] === 'true').length).toBeGreaterThan(0)
+  })
+
+  it('si el servidor frena al traer tu cartera de hoy, no ofrece «Reintentar»; con otro error, sí', async () => {
+    hoyDelServidor = () => { const e = new Error('Pediste muchas lecturas seguidas. Esperá un minuto.'); e.status = 429; throw e }
+    montado = await abrir(CARTERA)
+    expect(montado.t()).toContain('No pudimos traer tu cartera de hoy.')
+    expect(montado.t()).toContain('Esperá un minuto')
+    expect(buscarBoton(montado.contenedor, 'Reintentar')).toBeNull()
+    await montado.desmontar()
+    hoyDelServidor = () => { const e = new Error('Internal Server Error'); e.status = 500; throw e }
+    montado = await abrir(CARTERA)
+    expect(buscarBoton(montado.contenedor, 'Reintentar')).not.toBeNull()
   })
 })

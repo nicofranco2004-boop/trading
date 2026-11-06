@@ -120,8 +120,11 @@ export const PASOS_TECNICO = [
     // Las cuentas y las palabras: backend/backtest.py y utils/backtesting.js; la
     // cartera, backend/cartera_simulada.py y utils/carteraSimulada.js. Lo que
     // muestra es el pasado: el paso lo dice, como la pantalla.
-    texto: 'Acá elegís qué probar: una regla técnica en un activo —o hasta 3—, al lado de comprar y no tocar '
-      + 'nada, o una cartera entera contra el S&P 500 y el Nasdaq. Muestra el pasado: no dice qué va a pasar.',
+    // «—o hasta 3—» junto a «regla»: pegado a «un activo» se leía «hasta 3 activos»;
+    // y «una cartera entera» se podía leer «toda tu plata» (auditorías 06/11).
+    texto: 'Acá elegís qué probar: una regla técnica —o hasta 3— en un activo, al lado de comprar y no tocar '
+      + 'nada, o una cartera de varios activos al lado del S&P 500 y del Nasdaq. Muestra el pasado: no dice qué va '
+      + 'a pasar.',
   },
   {
     id: 'comparar',

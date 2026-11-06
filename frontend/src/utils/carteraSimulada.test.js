@@ -21,7 +21,8 @@ import {
   COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, TOLERANCIA,
   aLaDireccion, aclaracionDeLaCartera, carteraDe, consultaDe, errorDeHoy, estadoDeLaCartera, filasDeHoy, lecturaCartera,
   limpiar, loQueFalta, motivoCartera, notaDeHoy, notaDeLosQueSobran, notaDelResumen, notaHoy, notaOjito, notaSinActivos,
-  numeroDe, origenDe, origenes, repartirIgual, sobranDe, textoDe, totalDe, tramosDeLaBarra, trayendoHoy,
+  numeroDe, origenDe, origenes, repartirIgual, rotuloDelAnterior, sobranDe, textoDe, totalDe, tramosDeLaBarra,
+  trayendoHoy,
 } from './carteraSimulada'
 import { modoDe, porcentaje } from './backtesting'
 
@@ -51,9 +52,12 @@ describe('cada porcentaje', () => {
     expect([textoDe(40), textoDe(33.3), textoDe(33.333), textoDe(0)]).toEqual(['40', '33,3', '33,33', ''])
   })
 
-  it('mientras se escribe: dígitos y una coma, hasta 2 decimales y no más de 100', () => {
-    expect(['30', '33,3', '33.3', '33,333', '3,3,3', 'a5', '150', ',5', '007', '100,5'].map(limpiar))
-      .toEqual(['30', '33,3', '33,3', '33,33', '3,33', '5', '100', '0,5', '7', '100'])
+  it('mientras se escribe: dígitos y una coma, hasta 2 decimales; más de 100 no se acepta', () => {
+    expect(['30', '33,3', '33.3', '33,333', '3,3,3', 'a5', ',5', '007', '100', '100,0'].map(limpiar))
+      .toEqual(['30', '33,3', '33,3', '33,33', '3,33', '5', '0,5', '7', '100', '100,0'])
+    // Más de 100: null, y la pantalla deja lo que estaba. Antes se volvía 100: con «10»
+    // y el cursor al final, un «5» dejaba 100 sin avisar (auditoría de pantalla 06/11).
+    expect(['150', '105', '100,5', '1000'].map(limpiar)).toEqual([null, null, null, null])
   })
 
   it('cuánto falta, cuánto sobra, y que cada uno tenga el suyo', () => {
@@ -119,7 +123,7 @@ describe('la barra del 100 %', () => {
     // colores cambiaban de activo mientras escribías (diseño 05/11, M3).
     const b = tramosDeLaBarra([fila('KO', '10'), fila('AAPL', '50'), fila('GGAL', '25'), fila('X', '')])
     expect(b).toEqual({ tramos: [{ asset: 'KO', peso: 10 }, { asset: 'AAPL', peso: 50 }, { asset: 'GGAL', peso: 25 }],
-      falta: 15, sobra: false })
+      falta: 15, ambar: false })
     expect(tramosDeLaBarra([fila('A', '33,33'), fila('B', '33,33'), fila('C', '33,33')]).falta).toBe(0)   // V6
     expect(tramosDeLaBarra([]).tramos).toEqual([])
   })
@@ -127,7 +131,25 @@ describe('la barra del 100 %', () => {
   it('pasada de 100, cada tramo dice lo escrito y la barra lo marca', () => {
     // Con 80 y 40 la torta decía 66,7 % y 33,3 %: números que nadie escribió (M9).
     expect(tramosDeLaBarra([fila('A', '80'), fila('B', '40')]))
-      .toEqual({ tramos: [{ asset: 'A', peso: 80 }, { asset: 'B', peso: 40 }], falta: 0, sobra: true })
+      .toEqual({ tramos: [{ asset: 'A', peso: 80 }, { asset: 'B', peso: 40 }], falta: 0, ambar: true })
+  })
+
+  it('llena pero con un activo sin porcentaje también la marca: no está lista', () => {
+    // Con 50 / 50 / 0 se veía violeta y completa, y abajo decía «Falta un porcentaje»
+    // (auditoría de pantalla 06/11, B3).
+    expect(tramosDeLaBarra([fila('A', '50'), fila('B', '50'), fila('C', '')]))
+      .toEqual({ tramos: [{ asset: 'A', peso: 50 }, { asset: 'B', peso: 50 }], falta: 0, ambar: true })
+    expect(tramosDeLaBarra([fila('A', '50'), fila('B', '50')]).ambar).toBe(false)
+  })
+
+  it('el resultado anterior dice que es el anterior, en un renglón y sin el número que cambia', () => {
+    // B4 y H6: tenue al lado de los porcentajes nuevos, se leía como el de lo escrito.
+    expect(rotuloDelAnterior(estadoDeLaCartera([fila('A', '50'), fila('B', '40')])))
+      .toBe('Es el resultado anterior: no suman 100%')
+    expect(rotuloDelAnterior(estadoDeLaCartera([fila('A', '80'), fila('B', '40')])))
+      .toBe('Es el resultado anterior: no suman 100%')
+    expect(rotuloDelAnterior(estadoDeLaCartera([fila('A', '50'), fila('B', '50'), fila('C', '')])))
+      .toBe('Es el resultado anterior: falta un porcentaje')
   })
 })
 
@@ -159,7 +181,7 @@ describe('mi cartera de hoy', () => {
     expect(notaHoy('Ana')).toMatch(/^Con los activos de Ana y lo que pesa cada uno hoy/)
     expect(notaHoy()).toMatch(/^Con tus activos y lo que pesa cada uno hoy/)
     expect(notaOjito('Ana')).toBe('Con «Ocultar saldos» prendido no traemos la cartera de hoy de Ana: los porcentajes '
-      + 'dicen qué tiene. Apagalo, o armala de cero.')
+      + 'dicen qué tiene. Apagalo con el ojito del Inicio o de Tu Cartera, o armala de cero.')
     expect(notaSinActivos('Ana')).toBe('Todavía no tiene acciones, CEDEARs ni cripto para simular: armala de cero.')
     expect([trayendoHoy('Ana'), errorDeHoy()]).toEqual(['Trayendo la cartera de hoy de Ana…', 'No pudimos traer tu cartera de hoy.'])
     expect(aclaracionDeLaCartera('hoy', 'Ana')).toMatch(/^Es la cartera de hoy de Ana puesta en el pasado: .+ No es lo que ganó/)
@@ -195,6 +217,8 @@ describe('lo que dicen los números', () => {
     expect([l.titulo, l.aclaracion, ...l.deLosActivos].join(' ')).not.toMatch(/peor caída/i)
     // Debajo de la tabla: de cuándo a cuándo, y los índices sin dividendos como la cartera.
     expect(notaDelResumen(CASOS.tres)).toBe('Del 31/10/24 al 30/10/26, en dólares. Los índices, sin dividendos, como la cartera.')
+    // Sin ningún índice, lo de la cartera sola (método 06/11, H7).
+    expect(notaDelResumen({ ...CASOS.tres, indices: [] })).toBe('Del 31/10/24 al 30/10/26, en dólares y sin dividendos.')
     // Armada de cero: el diario del lunes.
     expect(lecturaCartera(CASOS.tres, { origen: 'cero' }).aclaracion)
       .toBe('Elegir los porcentajes mirando este resultado es elegir con el diario del lunes.')

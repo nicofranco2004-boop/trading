@@ -196,7 +196,7 @@ describe('Análisis técnico → Backtesting', () => {
       'Esto prueba una forma de usar el indicador: comprar todo cuando da la señal y vender todo cuando se da vuelta. '
         + 'El indicador es el mismo de la ficha.',
       '−35,9%', '−59%', '−63%', '3 · 2 ganaron', '223 de 501 días de mercado', 'Le habría ido mejor que comprar y mantener',
-      'Habría dado', 'Peor caída: lo más que llegó a bajar desde su mejor momento.',
+      'Habría dado', 'Peor caída: lo más que habría bajado desde su mejor momento.',
       'GGAL bajó 35% en los últimos 2 años', 'En el camino llegó a caer 59% desde su mejor momento.',
       'Sin la compra del 05/05/26 (+32,6%), la regla habría terminado en pérdida: −7,6%.',
       'Cada operación', '10/04/25 → 10/11/25', '24/08/26 → seguía comprada', 'US$ 41,12 → US$ 35,14 (último cierre)',

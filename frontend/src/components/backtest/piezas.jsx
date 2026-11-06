@@ -102,7 +102,13 @@ export function usePedidoDePrueba(url, { pausa = 0 } = {}) {
         })
     }
     if (primera.current || !pausa || yaMismo.current) pedir()
-    else espera = setTimeout(pedir, pausa)
+    else {
+      // Durante la pausa lo que se ve ya es de la consulta anterior: «cargando» desde
+      // ya, para que quede tenue y diga «Actualizando…». Se veía como el nuevo 0,4 s
+      // al cambiar el período o repartir (auditoría de código 06/11, 5).
+      setEstado(e => ({ ...e, cargando: true }))
+      espera = setTimeout(pedir, pausa)
+    }
     primera.current = false
     yaMismo.current = false
     return () => { vivo = false; if (espera) clearTimeout(espera) }
@@ -121,9 +127,12 @@ export const mesCorto = (iso) => {
   return `${MONTHS[Number(m) - 1]?.slice(0, 3).toLowerCase()} ${y.slice(2)}`
 }
 
-export function Aviso({ children, error = false, detalle = null, onReintentar = null }) {
+/** `vivo`: el lector de pantalla lo lee solo cuando cambia. No, si al lado ya hay
+ *  algo que dice lo mismo y cambia en cada tecla (el total de «Una cartera»): se
+ *  oía dos veces (auditoría de pantalla 06/11, B11). */
+export function Aviso({ children, error = false, detalle = null, onReintentar = null, vivo = true }) {
   return (
-    <div role="status" className={`flex items-start gap-2 rounded-xl border px-4 py-4 text-[14px] ${
+    <div role={vivo ? 'status' : undefined} className={`flex items-start gap-2 rounded-xl border px-4 py-4 text-[14px] ${
       error ? 'border-rendi-neg/30 bg-rendi-neg/5 text-ink-0' : 'border-line bg-bg-1 text-ink-1'}`}>
       {error && <AlertCircle size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-rendi-neg" />}
       <div>
@@ -153,7 +162,8 @@ export function Dato({ etiqueta, children }) {
 
 // Lo que es «peor caída», una sola vez: debajo de las tarjetas de «Una regla» y de
 // la tabla de «Una cartera» (diseño 05/11, M7: la tarjeta lo decía sin explicarlo).
-export const QUE_ES_LA_PEOR_CAIDA = 'Peor caída: lo más que llegó a bajar desde su mejor momento.'
+// En condicional, como «Habría dado»: la regla y la cartera no pasaron (método 06/11, H5).
+export const QUE_ES_LA_PEOR_CAIDA = 'Peor caída: lo más que habría bajado desde su mejor momento.'
 
 /**
  * La tarjeta de un resultado de «Una regla» (la de cada regla y la de comprar y
@@ -258,10 +268,11 @@ export function GraficoDeCien({ curva, lineas, desde, hasta, nota = '', franjas 
               <ReferenceArea key={o.compra} x1={o.compra} x2={o.venta} fill={colorFranjas} fillOpacity={0.12}
                 stroke="none" ifOverflow="hidden" />
             ))}
-            {/* La vara de no hacer nada, con nombre, como en Comparar: lo que termina
-                abajo de esta línea perdió dólares (producto 05/11, A2). */}
+            {/* La vara de no hacer nada, con nombre: lo que termina abajo de esta línea
+                perdió dólares (producto 05/11, A2). «Sin invertir» y no «Guardar
+                dólares»: suelto, en el gráfico, se leía como una indicación (pantalla 06/11). */}
             <ReferenceLine y={100} stroke={chartReferenceStroke}
-              label={{ value: 'Guardar dólares', position: 'insideBottomRight', fill: v('ink-2'), fontSize: 11 }} />
+              label={{ value: 'Sin invertir', position: 'insideBottomRight', fill: v('ink-2'), fontSize: 11 }} />
             <Tooltip cursor={chartTooltip.cursor} content={<GloboDeCien lineas={lineas} />} />
             {[...lineas].reverse().map(l => (
               <Line key={l.clave} dataKey={l.clave} name={l.nombre} type="linear" dot={false} stroke={l.color}
