@@ -95,14 +95,15 @@ TOLERANCIA_ESCALA = 0.15
 # escala conocida que se mira sólo por sus variaciones (`escala_obligatoria`).
 # Con el MEP (una base sin el contado con liqui guardado), las de `NOTAS_MEP`.
 NOTA_ESTIMADO = ("Los precios en pesos son un estimado del CEDEAR: la acción de Nueva York pasada a pesos "
-                 "con el contado con liqui de cada día, en la escala del CEDEAR. Pueden estar alrededor de "
-                 "1 % lejos de su precio en la Bolsa.")
-NOTA_SIN_ESCALA = ("Los precios en pesos son los de la acción de Nueva York pasados con el contado con liqui "
-                   "de cada día, no los del CEDEAR: no sabemos con certeza cuántos CEDEARs hacen una acción.")
+                 "con el dólar contado con liqui (CCL) de cada día y llevada al precio de un CEDEAR. Pueden "
+                 "quedar alrededor de 1 % arriba o abajo de su precio en la Bolsa.")
+NOTA_SIN_ESCALA = ("Los precios en pesos son los de la acción de Nueva York pasados con el dólar contado con "
+                   "liqui (CCL) de cada día, no los del CEDEAR: no sabemos con certeza cuántos CEDEARs hacen una "
+                   "acción.")
 NOTAS_MEP = {
     NOTA_ESTIMADO: ("Los precios en pesos son un estimado del CEDEAR: la acción de Nueva York pasada a pesos "
-                    "con el MEP de cada día, en la escala del CEDEAR. Pueden estar unos pocos % lejos de su "
-                    "precio en la Bolsa."),
+                    "con el MEP de cada día y llevada al precio de un CEDEAR. Pueden quedar unos pocos % lejos "
+                    "de su precio en la Bolsa."),
     NOTA_SIN_ESCALA: ("Los precios en pesos son los de la acción de Nueva York pasados con el MEP de cada día, "
                       "no los del CEDEAR: no sabemos con certeza cuántos CEDEARs hacen una acción."),
 }
@@ -692,25 +693,40 @@ def a_la_moneda(x, tc: float, por: str, escala: float = None):
     return y / escala if escala else y
 
 
-def _convertir(conn, velas: list, por: str, escala: float = None, dolar: str = "mep") -> list:
+def _convertir(conn, velas: list, por: str, escala: float = None, dolar: str = "mep", de_hoy: float = None) -> list:
     """Pasa una serie de moneda: `por`='dividir' (pesos → dólares) o
     'multiplicar' (dólares → pesos), con el dólar `dolar` de cada día
     (`fx.serie_diaria`: el MEP con la regla de `fx.fx_for_date`, o el contado
     con liqui de un CEDEAR, `_dolar_de_los_cedears`), y la divide por `escala` si
     viene (`a_la_moneda`). Si el último dólar conocido tiene más de una semana, la
-    vela se saltea: no se inventa con un dólar viejo."""
+    vela se saltea: no se inventa con un dólar viejo.
+
+    `de_hoy`: el dólar de ahora (`_dolar_de_hoy`), para las velas de HOY que no
+    tienen el suyo guardado: las de 1 y 4 horas de hoy (velas_horarias). Sin él
+    iban con el último guardado (el de ayer) y la vela de hoy del gráfico diario
+    con el de ahora: al pasar de 1D a 1H el último precio saltaba lo que se movió
+    el dólar desde ayer (auditoría del contado con liqui, H4 del servidor). El de
+    hoy no se guarda hasta el cierre (`fx.HORA_CIERRE_CCL`)."""
     from fx import serie_diaria
     if not velas:
         return []
     dolares = serie_diaria(conn, velas[0]["date"], dolar)
+    hoy = None
+    if de_hoy:
+        from fechas import hoy_art
+        hoy = hoy_art()
     out, j, actual = [], 0, None
     for v in velas:
         while j < len(dolares) and dolares[j][0] <= v["date"]:
             actual = dolares[j]
             j += 1
-        if not actual or (date.fromisoformat(v["date"]) - date.fromisoformat(actual[2])).days > MAX_DIAS_SIN_DOLAR:
+        if hoy and v["date"] >= hoy and not (actual and actual[2] == v["date"]):
+            tc = de_hoy
+        elif not actual or (date.fromisoformat(v["date"]) - date.fromisoformat(actual[2])).days > MAX_DIAS_SIN_DOLAR:
             continue
-        out.append({**v, **{k: a_la_moneda(v.get(k), actual[1], por, escala)
+        else:
+            tc = actual[1]
+        out.append({**v, **{k: a_la_moneda(v.get(k), tc, por, escala)
                              for k in ("open", "high", "low", "close")}})
     return out
 
@@ -933,20 +949,34 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False, escala_obl
     return {"velas": []}
 
 
-def indice(conn, simbolo: str, moneda: str = "usd") -> list:
+def indice(conn, simbolo: str, moneda: str = "usd", dolar: str = None) -> list:
     """Las velas de un índice de los que se guardan todas las noches
-    (`velas_diarias.INDICES`: el S&P 500 y el Nasdaq) en `moneda` (en pesos,
-    × el MEP de cada día, con la misma regla que una acción de EE.UU. vista en
-    pesos: un índice no es un CEDEAR y no se lleva a ninguna escala). Precio
-    solo, sin dividendos, como las velas de cada papel."""
+    (`velas_diarias.INDICES`: el S&P 500 y el Nasdaq) en `moneda`. Precio solo,
+    sin dividendos, como las velas de cada papel. En pesos: `indice_con_dolar`."""
+    return indice_con_dolar(conn, simbolo, moneda, dolar)[0]
+
+
+def indice_con_dolar(conn, simbolo: str, moneda: str = "usd", dolar: str = None) -> tuple:
+    """(velas del índice en `moneda`, con qué dólar se pasó a pesos: 'ccl' | 'mep'
+    | None en dólares). En pesos, × el dólar `dolar` de cada día; sin decirlo, el
+    de los CEDEARs (`_dolar_de_los_cedears`: el contado con liqui si su historia
+    alcanza): el S&P 500 en pesos es el que se compra en la Bolsa, con el CEDEAR de
+    SPY. Con el MEP, en Comparar SPY le «ganaba» 4,45 % en un año al S&P 500 sin
+    que se moviera distinto (auditoría del contado con liqui, H2 del servidor). Un
+    índice no se lleva a ninguna escala: todo lo que lo usa arranca en 100 o mira
+    cuánto se mueve."""
     import velas_diarias
     velas = velas_diarias.serie(conn, simbolo)
-    return _convertir(conn, velas, "multiplicar") if moneda == "ars" else velas
+    if moneda != "ars" or not velas:
+        return velas, None
+    if dolar not in ("ccl", "mep"):
+        dolar = _dolar_de_los_cedears(conn, velas[0]["date"])
+    return _convertir(conn, velas, "multiplicar", dolar=dolar), dolar
 
 
-def sp500(conn, moneda: str = "usd") -> list:
+def sp500(conn, moneda: str = "usd", dolar: str = None) -> list:
     """Las velas del S&P 500 en `moneda` (`indice`)."""
-    return indice(conn, SP500, moneda)
+    return indice(conn, SP500, moneda, dolar)
 
 
 def ticker_de_la_empresa(conn, asset: str, local: bool = False):
@@ -1002,14 +1032,27 @@ def preparar_vela_de_hoy(conn, asset: str, moneda: str = "usd", local: bool = Fa
 
 def _dolar_de_hoy(dolar: str = "mep", ahora=None):
     """El dólar `dolar` de ahora ('mep', o 'ccl' para un CEDEAR: el de su serie,
-    `convertida`) para convertir la vela de hoy: el medio con la misma regla que
-    la historia (`fx.punta_media`, con su filtro de puntas raras) y no más viejo
-    que `MAX_DIAS_SIN_DOLAR` (la caché del dólar conserva el último que llegó
-    aunque la fuente esté caída días: auditoría 30/10)."""
+    `convertida`) para convertir la vela de hoy, de la caché del dólar (que se
+    renueva si venció: puede salir a dolarapi). La regla: `dolar_de_la_cache`."""
     import main
+    return dolar_de_la_cache(main._get_dolar_data(), dolar, ahora)
+
+
+def dolar_de_la_cache(datos, dolar: str = "mep", ahora=None):
+    """El dólar `dolar` de ahora ('mep' | 'ccl') de lo que dio dolarapi ({casa:
+    {compra, venta, updated_at}}: la caché del servidor o una respuesta de
+    `main._fetch_dolar`): el medio con la misma regla que la historia
+    (`fx.punta_media`, con su filtro de puntas raras) y no más viejo que
+    `MAX_DIAS_SIN_DOLAR` (la caché del dólar conserva el último que llegó aunque
+    la fuente esté caída días: auditoría 30/10). None si no hay.
+
+    LA definición de «el dólar de ahora»: la vela de hoy del gráfico en pesos, las
+    de 1 hora de hoy, BAC en la Cartera y en la foto de la noche. Antes la Cartera
+    y la foto tomaban el `medio` redondeado de `_fetch_dolar`, sin el filtro ni la
+    edad: el mismo momento, dos precios de BAC (auditoría del contado con liqui, S3)."""
     from datetime import datetime, timezone
     from fx import punta_media
-    m = (main._get_dolar_data() or {}).get("ccl" if dolar == "ccl" else "mep")
+    m = (datos or {}).get("ccl" if dolar == "ccl" else "mep")
     if not isinstance(m, dict):
         return None
     tc = punta_media(m.get("compra"), m.get("venta"))
@@ -1043,7 +1086,7 @@ def vela_de_hoy(prep) -> dict:
     """Las ruedas que la noche todavía no guardó, con la de HOY mientras se
     mueve, de la serie que preparó `preparar_vela_de_hoy`:
     {velas: [{d, o, h, l, c, v, hoy}], en_rueda, demora_min, actualizada,
-    ultima_guardada, mercado, contra_el_cierre}. `hoy`: es la rueda de hoy (la última). `ultima_guardada`:
+    ultima_guardada, mercado, contra_el_cierre, convertida, escala}. `hoy`: es la rueda de hoy (la última). `ultima_guardada`:
     la vela guardada que siguen: si la pantalla tiene otra (quedó abierta de un
     día para el otro y la noche guardó una más), tiene que pedir la serie de nuevo. `en_rueda`: la rueda todavía manda
     precios (`velas_diarias.en_rueda`, con la demora): la pantalla sigue pidiendo
@@ -1055,7 +1098,12 @@ def vela_de_hoy(prep) -> dict:
     que todavía no se guardó, en curso o ya cerrado (`contra_el_cierre`,
     `hoy_contra_el_cierre`): la pantalla lo pone como aviso abajo de la tarjeta.
     `mercado`: 'us', 'byma' o 'cripto' (en la cripto «hoy» es el día UTC, que
-    cierra a las 21 de la Argentina: la pantalla lo dice).
+    cierra a las 21 de la Argentina: la pantalla lo dice). `convertida` y
+    `escala`: con qué dólar y en qué escala vienen, los de la serie (`serie`):
+    la pantalla no pega una vela de otra cuenta sobre la que tiene (la ficha
+    abierta mientras se publica un cambio de dólar o se borra una serie vieja:
+    la vela de hoy saltaba ~6 % sin que se moviera el mercado; auditoría del
+    contado con liqui, 06/11, H3 de la pantalla) y vuelve a pedir la serie.
 
     Sin velas ([]) —nunca una vela que no sigue a lo guardado— si:
       · Yahoo no tiene nada después de la última guardada;
@@ -1069,12 +1117,12 @@ def vela_de_hoy(prep) -> dict:
     from home.market import mercado_de
     if not prep:
         return {"velas": [], "en_rueda": False, "demora_min": 0, "actualizada": None, "ultima_guardada": None,
-                "mercado": None, "contra_el_cierre": []}
+                "mercado": None, "contra_el_cierre": [], "convertida": None, "escala": None}
     ticker = prep["ticker"]
     respuesta = {"velas": [], "en_rueda": velas_diarias.en_rueda(ticker),
                  "demora_min": velas_diarias.DEMORA_MIN.get(mercado_de(ticker), 0), "actualizada": None,
                  "ultima_guardada": prep["ultima"]["date"], "mercado": mercado_de(ticker),
-                 "contra_el_cierre": []}
+                 "contra_el_cierre": [], "convertida": prep["convertida"], "escala": prep.get("escala")}
     tanda = velas_diarias.ruedas_recientes(ticker)
     if not tanda or prep["pendiente"]:
         return respuesta
@@ -1290,8 +1338,9 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         # picos y pozos del Fibonacci y la misma serie.
         "elliott": ell,
         # «Cuánto se mueve este papel» (movimiento.py), sobre esta misma serie y
-        # en su moneda; el S&P 500 en la misma moneda para comparar.
-        "movimiento": movimiento.calcular(velas, sp500(conn, moneda), lect),
+        # en su moneda; el S&P 500 en la misma moneda para comparar, y en pesos con
+        # el mismo dólar que la serie (un CEDEAR estimado, el contado con liqui).
+        "movimiento": movimiento.calcular(velas, sp500(conn, moneda, s.get("convertida")), lect),
     }
 
 

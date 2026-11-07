@@ -18,6 +18,9 @@
 //   · `enCurso`: es la de hoy y la rueda sigue mandando precios (con su demora);
 //   · `demora`: minutos que tardan en llegar los precios de esa bolsa (BYMA, 20);
 //   · `base`: la vela guardada que siguen (el gráfico las dibuja sólo si es la suya);
+//   · `cuenta`: { convertida, escala } con que vienen, los de la serie del
+//     servidor; undefined si el servidor no los manda (uno de antes). El gráfico
+//     no las pega sobre una serie de otra cuenta (utils/tecnico.js `mismaCuenta`);
 //   · `mercado`: 'us', 'byma' o 'cripto';
 //   · `contra`: qué lectura de las tarjetas da vuelta lo que todavía no se guardó, en curso o ya cerrado
 //     (`contra_el_cierre`, tecnico.hoy_contra_el_cierre; utils/tecnico.js
@@ -50,9 +53,10 @@ export function useVelaDeHoy(asset, moneda, local, activo = true) {
             ...x, vivo: true, hoy: !!x.hoy, enCurso: !!x.hoy && enRueda,
             actualizada: r.actualizada || null, demora: r.demora_min || 0,
           }))
+          const cuenta = 'convertida' in r ? { convertida: r.convertida ?? null, escala: r.escala ?? null } : undefined
           setEstado(prev => (!velas.length && enRueda && prev?.clave === clave
             ? { ...prev, enRueda }
-            : { clave, velas, base: r.ultima_guardada || null, enRueda, mercado: r.mercado || null,
+            : { clave, velas, base: r.ultima_guardada || null, cuenta, enRueda, mercado: r.mercado || null,
                 contra: r.contra_el_cierre || [] }))
         })
         .catch(() => {})

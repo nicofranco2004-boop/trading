@@ -45,13 +45,19 @@ def correr(backend, ccl_json):
     from fastapi.testclient import TestClient
     from pricing import data912
 
+    filas_ccl = [(it["fecha"], it.get("compra"), it.get("venta")) for it in json.load(open(ccl_json))]
+    if hasattr(main, "_actualizar_ccl"):
+        # El código que lo guarda: por su escritor, como en producción (la fecha de
+        # argentinadatos corregida y el cierre de hoy de dolarapi, de verdad).
+        with mock.patch("main._bajar_ccl", lambda: filas_ccl):
+            main._actualizar_ccl()
     with main.db_abierta() as conn:
-        for it in json.load(open(ccl_json)):
-            v = _fx.punta_media(it.get("compra"), it.get("venta"))
+        for f, c, v in filas_ccl if not hasattr(main, "_actualizar_ccl") else []:
+            v = _fx.punta_media(c, v)
             if v:
                 conn.execute("INSERT INTO bond_indices_daily (index_name, date, value, source, updated_at) "
                              "VALUES ('CCL', ?, ?, 'argentinadatos', 'medicion') "
-                             "ON CONFLICT(index_name, date) DO NOTHING", (it["fecha"], v))
+                             "ON CONFLICT(index_name, date) DO NOTHING", (f, v))
         cur = conn.execute("INSERT INTO users (email, password_hash, approved, email_verified, tier) "
                            "VALUES ('medir-ccl@rendi.test', 'x', 1, 1, 'pro')")
         uid = cur.lastrowid

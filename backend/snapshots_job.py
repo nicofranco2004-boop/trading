@@ -620,20 +620,14 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict,
     # ARS → historia de portfolio subvaluada. Lazy import para evitar el ciclo
     # snapshots_job ↔ main.
     try:
-        from main import (CEDEAR_USD_RATIOS as _CED_RATIOS,
-                          _current_ccl as _cur_ccl, _fetch_dolar as _fd)
+        from main import (CEDEAR_USD_RATIOS as _CED_RATIOS, _ccl_de_las_fechas as _ccls_de,
+                          _fetch_dolar as _fd, get_db as _get_db)
     except Exception:
-        _CED_RATIOS, _cur_ccl, _fd = {}, (lambda: None), (lambda casa: None)
+        _CED_RATIOS, _ccls_de, _fd, _get_db = {}, None, (lambda casa: None), None
     cedear_usd = {s: s[:-3] for s in symbols
                   if s.endswith('.BA') and s[:-3] in _CED_RATIOS}
-    _ccl = None
-    if cedear_usd:
-        _ccl = _cur_ccl()
-        if not _ccl:
-            _d = _fd("contadoconliqui")  # cron sin caché de dólar → fetch directo
-            # medio, igual que la valuación live: `_fetch_dolar` lo estampa, con
-            # fallback a venta para caché/casas sin compra.
-            _ccl = (_d or {}).get("medio") or (_d or {}).get("venta")
+    # La fecha de cada cierre de Yahoo: con ella, el contado con liqui de SU día.
+    _fecha_de = {}
 
     def _to_yf_us(s):
         # Acción US: yfinance cotiza las CLASES con guión ('BRK-B'). Un import US
@@ -683,20 +677,43 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict,
         cierres = _yahoo.ultimos_cierres(data, yf_tickers)
         for sym, yf_t in sym_to_yf.items():
             if yf_t in cierres:
-                result[sym] = cierres[yf_t][0]
+                result[sym], _fecha_de[sym] = cierres[yf_t]
     except Exception as e:
         log.warning(f"descarga de Yahoo falló para el lote: {e}")
 
     # CEDEARs USD-cotizados: el precio fetcheado es el del subyacente US (USD) →
     # a pesos (× CCL ÷ ratio, `tecnico.a_la_moneda`: LA cuenta del gráfico en
-    # pesos y de /api/prices). Es el precio de AHORA (la foto de la noche, las
-    # alertas de precio): con el contado con liqui de ahora, como /api/prices. Sin
-    # CCL los dejamos en None (no persistimos el valor en USD roto; el chequeo de
-    # cobertura del snapshot decide qué hacer).
+    # pesos y de /api/prices), con el contado con liqui de la fecha de ese cierre
+    # (`main._ccl_de_las_fechas`, la regla de /api/prices: el de hoy, el de ahora;
+    # el de un día anterior, el de su día). Si no hay ninguno (el cron con el caché
+    # frío y nada guardado), dolarapi directo. Sin CCL los dejamos en None (no
+    # persistimos el valor en USD roto; el chequeo de cobertura del snapshot decide
+    # qué hacer). La base, después de Yahoo y cerrada antes de salir otra vez.
     if cedear_usd:
         import tecnico as _tec
+        _ccls = {}
+        if _ccls_de and _get_db:
+            try:
+                _c = _get_db()
+                try:
+                    _ccls = _ccls_de(_c, [_fecha_de.get(s) for s in cedear_usd])
+                finally:
+                    _c.close()
+            except Exception as e:
+                # Sin la base, dolarapi directo (abajo): un error acá no deja la
+                # foto de todos sin precios.
+                log.warning(f"contado con liqui de los CEDEAR en dólares para la foto: {e}")
+                _ccls = {}
+        _directo = None
         for _csym, _base in cedear_usd.items():
             if result.get(_csym) is not None:
+                _ccl = _ccls.get(_fecha_de.get(_csym))
+                if not _ccl:
+                    if _directo is None:
+                        _d = _fd("contadoconliqui")  # cron sin caché de dólar → fetch directo
+                        # Con la regla de la Cartera y del gráfico (`dolar_de_la_cache`).
+                        _directo = _tec.dolar_de_la_cache({"ccl": _d}, "ccl") or 0
+                    _ccl = _directo
                 _r = _CED_RATIOS.get(_base) or 1
                 result[_csym] = (round(_tec.a_la_moneda(result[_csym], _ccl, "multiplicar", _r), 4)
                                  if (_ccl and _ccl > 0) else None)

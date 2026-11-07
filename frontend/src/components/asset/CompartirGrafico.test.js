@@ -114,7 +114,7 @@ describe('Compartir el gráfico técnico', () => {
     for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL' }))
     const spec = await compartir()
     expect(spec.pie.join(' ')).toContain('Precio estimado del CEDEAR')
-    expect(spec.pie.join(' ')).toContain('con el contado con liqui de cada día')
+    expect(spec.pie.join(' ')).toContain('con el dólar contado con liqui (CCL) de cada día')
     expect(spec.pie.join(' ')).not.toContain('está pasado a pesos con el MEP de ese día')
   })
 

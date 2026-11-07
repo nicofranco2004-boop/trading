@@ -2057,6 +2057,10 @@ _mirada_en_rueda: dict = {}
 # pedido de la ficha) guardó velas, se lee de nuevo. Si la historia se
 # reescribiera en el día con la misma última fecha, la vela de hoy no empalma
 # con lo leído y `vela_de_hoy` no devuelve nada: no avisa, no inventa.
+# Y lo guardado del contado con liqui (`fx.huella_del_dolar`): un CEDEAR
+# estimado en pesos leído antes de que llegara (al arrancar lo baja
+# `main._actualizar_ccl`, unos segundos después) quedaba con el MEP, ~6 % más
+# abajo que la ficha, hasta el día siguiente (auditoría del contado con liqui, S2).
 _preparadas: dict = {}
 
 
@@ -2143,11 +2147,13 @@ def _evaluar_en_la_rueda(conn, alerts, tickers: dict, ultimas: dict, now, pendie
     # y las marcas.
     vistos = _vistos_tecnicos(conn, candidatas)
     avisados = _vistos_tecnicos(conn, candidatas, _clave_rueda)
+    from fx import huella_del_dolar
+    ccl = huella_del_dolar(conn, "ccl")
     trabajo = []
     for clave in turno:
         sym, ccy, local = clave
         primera = por_serie[clave][0]
-        llave = (hoy_ar, tuple(sorted((t, ultimas.get(t)) for t in tickers.get(primera["id"], ()) if t)))
+        llave = (hoy_ar, ccl, tuple(sorted((t, ultimas.get(t)) for t in tickers.get(primera["id"], ()) if t)))
         guardada = _preparadas.get(clave)
         if guardada and guardada[0] == llave:
             prep = guardada[1]

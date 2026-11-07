@@ -135,7 +135,7 @@ from snapshots_job import (
 )
 from passlib.context import CryptContext
 from jose import JWTError, jwt
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 import math
 
 # ─── Config ──────────────────────────────────────────────────────────────────
@@ -7979,26 +7979,68 @@ def _bajar_ccl() -> list:
         return []
 
 
+def _ccl_cerrado_de_dolarapi(ahora):
+    """(fecha, compra, venta) del contado con liqui que da dolarapi si es el CIERRE
+    de un día: el de un día anterior a hoy (lo último que publicó ese día) o el de
+    hoy desde `fx.HORA_CIERRE_CCL`. Con la fecha del DATO (`updated_at`), no la del
+    reloj: la corrida de la noche puede terminar pasada la medianoche, y dolarapi
+    puede haber quedado sin actualizar días. None si no hay. `ahora`: la hora
+    argentina (`fechas.ahora_art`)."""
+    from fechas import en_art
+    d = _fetch_dolar("contadoconliqui")
+    if not d or not d.get("venta") or not d.get("updated_at"):
+        return None
+    try:
+        cuando = datetime.fromisoformat(str(d["updated_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if cuando.tzinfo is not None:
+        cuando = cuando.astimezone(timezone.utc).replace(tzinfo=None)
+    dia = en_art(cuando).date()
+    if dia > ahora.date() or (dia == ahora.date() and ahora.hour < _fx.HORA_CIERRE_CCL):
+        return None
+    return (dia.isoformat(), d.get("compra"), d.get("venta"))
+
+
 def _actualizar_ccl() -> int:
-    """Guarda el contado con liqui de cada día, el dólar de los CEDEARs (ver «El
-    dólar de los CEDEARs» en fx.py): lo que falta y los últimos días. Lo usan el
-    gráfico en pesos de un CEDEAR sin su precio de BYMA (`tecnico.serie`) y el
-    precio en pesos de BAC (`_ccl_del_dia`). Corre al arrancar (`_backfill_fx_rates_on_boot`)
-    y cada noche antes de las velas (`_run_velas_diarias_job`). Si la fuente no
-    contesta queda lo guardado, y cada vela usa el último día que haya (hasta
-    `tecnico.MAX_DIAS_SIN_DOLAR`, como el MEP). La red ANTES de abrir la base: en
-    Postgres leer abre una transacción que queda abierta mientras se espera.
-    Devuelve cuántos días escribió."""
-    filas = _bajar_ccl()
-    if not filas:
+    """Guarda el contado con liqui de cada día que cerró, el dólar de los CEDEARs
+    (ver «El dólar de los CEDEARs» en fx.py). Dos fuentes:
+      · el cierre de cada día lo anota el propio servidor de dolarapi, con la fecha
+        del dato (`_ccl_cerrado_de_dolarapi`): manda (`fx.FUENTE_PROPIA`);
+      · la historia y lo que falte, de argentinadatos, con la fecha corregida
+        (`fx.fechas_de_argentinadatos`: desde septiembre de 2026 fecha cada cierre
+        con el día siguiente; auditoría del contado con liqui, H1 del servidor).
+    Lo usan el gráfico en pesos de un CEDEAR sin su precio de BYMA
+    (`tecnico.serie`) y el precio en pesos de BAC (`_ccl_de_las_fechas`). Corre al
+    arrancar (`_backfill_fx_rates_on_boot`) y cada noche antes de las velas
+    (`_run_velas_diarias_job`). Si las dos fallan, queda lo guardado y cada vela
+    usa el último día que haya (hasta `tecnico.MAX_DIAS_SIN_DOLAR`, como el MEP).
+    La red ANTES de abrir la base: en Postgres leer abre una transacción que queda
+    abierta mientras se espera. Devuelve cuántos días escribió."""
+    from fechas import ahora_art
+    ahora = ahora_art()
+    hoy = ahora.date().isoformat()
+    # Sólo los días cerrados: el de hoy, recién después del cierre
+    # (`fx.HORA_CIERRE_CCL`); antes, las fuentes publican el valor del momento.
+    hasta = hoy if ahora.hour >= _fx.HORA_CIERRE_CCL else (ahora.date() - timedelta(days=1)).isoformat()
+    crudas = _bajar_ccl()
+    filas = _fx.fechas_de_argentinadatos(crudas, hoy)
+    if crudas and not filas:
+        # Sin esta línea, si la fuente cambiaba su forma, todos los CEDEAR volvían
+        # al MEP sin dejar rastro (auditoría de las pruebas, 06/11, hallazgo 1).
+        log.warning("contado con liqui: argentinadatos mandó %d renglones y ninguno se entendió", len(crudas))
+    propia = _ccl_cerrado_de_dolarapi(ahora)
+    if not filas and not propia:
+        log.warning("contado con liqui: ni argentinadatos ni dolarapi dieron un cierre; queda lo guardado")
         return 0
     conn = None
     try:
         conn = get_db()
-        n = _fx.guardar_ccl(conn, filas, "argentinadatos")
+        n = _fx.guardar_ccl(conn, filas, "argentinadatos", hasta=hasta) if filas else 0
+        n += _fx.guardar_ccl(conn, [propia], _fx.FUENTE_PROPIA, hasta=hasta) if propia else 0
         conn.commit()
-        if n:
-            log.info("contado con liqui: %d días guardados", n)
+        log.info("contado con liqui: %d días guardados%s", n,
+                 f" (el cierre del {propia[0]}, de dolarapi)" if propia else " (dolarapi no dio un cierre)")
         return n
     except Exception as e:
         log.warning("contado con liqui: no se pudo guardar: %s", e)
@@ -8113,8 +8155,15 @@ def _ccl_de_las_fechas(conn, fechas, uid=None) -> dict:
     cotizan en dólares (BAC, `CEDEAR_USD_RATIOS`), con el MISMO dólar del gráfico
     en pesos (`tecnico.serie`): el guardado de ese día (`fx.ccl_de_las_fechas`, la
     regla del gráfico); para hoy, sin fecha (None), o si ese día todavía no se
-    guardó, el de ahora (`_display_ccl` con usuario, `_current_ccl` sin él; None
-    si tampoco hay). La cuenta es `tecnico.a_la_moneda`.
+    guardó, el de ahora. La cuenta es `tecnico.a_la_moneda`.
+
+    «El de ahora»: el contado con liqui del caché de dolarapi; si el caché está
+    frío (recién publicado, hasta el primer /api/dolar), el último guardado, que es
+    de ayer como mucho; recién después, lo de siempre (`_display_ccl` con usuario,
+    `_current_ccl` sin él: el MEP, la cripto, el blue de la configuración). Con el
+    caché frío, el precio de ahora caía al blue de la configuración (1.415) y el
+    cierre anterior iba con el guardado: la variación del día de BAC marcaba −14,8 %
+    sin que se moviera nada (auditoría del contado con liqui, H3 del servidor).
 
     Así el cierre anterior de BAC en la Cartera es la última vela de su gráfico
     (antes iba × el de HOY: 1 % de diferencia el 06/11/2026) y su mini-gráfico
@@ -8127,10 +8176,25 @@ def _ccl_de_las_fechas(conn, fechas, uid=None) -> dict:
     out = _fx.ccl_de_las_fechas(conn, [f for f in claves if f and f < hoy], tecnico.MAX_DIAS_SIN_DOLAR)
     faltan = [f for f in claves if out.get(f) is None]
     if faltan:
-        vivo = _display_ccl(conn, uid) if uid is not None else _current_ccl()
+        vivo = _ccl_en_memoria()
+        if not vivo:
+            vivo = _fx.ccl_de_las_fechas(conn, [hoy], tecnico.MAX_DIAS_SIN_DOLAR).get(hoy)
+        if not vivo:
+            vivo = _display_ccl(conn, uid) if uid is not None else _current_ccl()
         for f in faltan:
             out[f] = vivo
     return out
+
+
+def _ccl_en_memoria():
+    """El contado con liqui del caché de dolarapi, sin salir a la red y sin caer a
+    otro dólar (el MEP, la cripto): None si el caché está frío o es de hace días.
+    Con la regla de la vela de hoy del gráfico (`tecnico.dolar_de_la_cache`)."""
+    import tecnico
+    try:
+        return tecnico.dolar_de_la_cache(_dolar_cache.get("data") if _dolar_cache else None, "ccl")
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def _ccl_del_dia(conn, fecha=None, uid=None):
@@ -12008,18 +12072,10 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
 
     # CEDEARs que las fuentes cotizan en USD (ej. BAC): fetcheamos el subyacente
     # US ('<BASE>.BA' → '<BASE>') y después computamos el precio en pesos =
-    # US × CCL ÷ ratio. NO usamos el valor '.BA' roto. El precio de AHORA va con
-    # el contado con liqui de ahora (`_ccl_del_dia` sin fecha): el último de
-    # Nueva York × el dólar de hoy es lo que valdría el CEDEAR en la Bolsa.
+    # US × CCL ÷ ratio (más abajo, con la fecha de ese precio). NO usamos el
+    # valor '.BA' roto.
     cedear_usd = {s: s[:-3] for s in yf_targets
                   if s.endswith('.BA') and s[:-3] in CEDEAR_USD_RATIOS}
-    _ccl_ars = None
-    if cedear_usd:
-        _cdb2 = get_db()
-        try:
-            _ccl_ars = _ccl_del_dia(_cdb2, None, uid)
-        finally:
-            _cdb2.close()
 
     sym_to_yf = {}
     for sym in yf_targets:
@@ -12135,13 +12191,27 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
 
     # CEDEARs USD-cotizados: el precio fetcheado es el subyacente US (USD).
     # Precio en pesos del cedear = US × CCL ÷ ratio (`tecnico.a_la_moneda`, LA
-    # cuenta del gráfico en pesos). Antes de persistir/last-known.
-    if cedear_usd and _ccl_ars and _ccl_ars > 0:
+    # cuenta del gráfico en pesos), con el contado con liqui de la FECHA de ese
+    # precio (`_ccl_de_las_fechas`): el de hoy, con el de ahora; el de una rueda
+    # anterior (Nueva York todavía no abrió, o un feriado de allá con la Bolsa
+    # abierta), con el de su día, como su cierre anterior y su gráfico. Con el de
+    # ahora, esos ratos BAC tenía dos precios: −0,60 % en Posiciones y −1,68 % en
+    # el inicio (auditoría del contado con liqui, H5 de la pantalla). Sin dólar,
+    # sin precio: nunca el de dólares como si fuera en pesos. Antes de
+    # persistir/last-known.
+    if cedear_usd:
         import tecnico as _tec
+        _cdb2 = get_db()
+        try:
+            _ccls = _ccl_de_las_fechas(_cdb2, [px_as_of.get(s) for s in cedear_usd], uid)
+        finally:
+            _cdb2.close()
         for _csym, _base in cedear_usd.items():
             if result.get(_csym) is not None:
+                _ccl = _ccls.get(px_as_of.get(_csym))
                 _ratio = CEDEAR_USD_RATIOS.get(_base) or 1
-                result[_csym] = round(_tec.a_la_moneda(result[_csym], _ccl_ars, "multiplicar", _ratio), 4)
+                result[_csym] = (round(_tec.a_la_moneda(result[_csym], _ccl, "multiplicar", _ratio), 4)
+                                 if _ccl and _ccl > 0 else None)
 
     # Último precio conocido: completa los que quedaron en None (yfinance/data912
     # fallaron) con su último precio real → el frontend no cae a cost basis.
@@ -13016,7 +13086,7 @@ def get_tecnico_horas(asset: str, request: Request, cada: str = "1h", moneda: st
     """Las velas de 1 hora o de 4 horas (`cada`) del gráfico técnico, con la
     vela en curso al final (`enCurso`), sus medias de 50 y 200 VELAS, RSI,
     Bollinger, ADX y Squeeze. La misma serie que el gráfico diario (qué ticker
-    y si va convertida con el MEP: tecnico.serie). No se guarda en la base: en
+    y con qué dólar va convertida: tecnico.serie). No se guarda en la base: en
     memoria y compartido entre usuarios (velas_horarias.py). `desde`: sólo
     las velas que empiezan en ese momento o después (segundos UTC), para el
     refresco de cada minuto. La primera descarga de un ticker que no está en
@@ -13361,7 +13431,8 @@ def get_tecnico_hoy(asset: str, request: Request, moneda: str = "usd", local: in
                     uid: int = Depends(get_effective_user)):
     """Las ruedas que la noche todavía no guardó, con la de HOY mientras se
     mueve, del gráfico de la ficha (`tecnico.vela_de_hoy`): {velas: [{d,o,h,l,c,v,hoy}],
-    en_rueda, demora_min, actualizada, ultima_guardada, mercado, contra_el_cierre}
+    en_rueda, demora_min, actualizada, ultima_guardada, mercado, contra_el_cierre,
+    convertida, escala}
     (`contra_el_cierre`: qué lectura de las tarjetas da vuelta el precio de hoy). La pantalla la vuelve a pedir cada minuto
     con la ficha a la vista; Yahoo recibe un pedido por minuto por activo, no
     por persona (`velas_diarias.ruedas_recientes`). No baja historia: si el

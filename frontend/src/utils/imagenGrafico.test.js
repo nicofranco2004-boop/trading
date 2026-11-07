@@ -47,7 +47,7 @@ describe('specDelGrafico: qué lleva la imagen', () => {
     // Con el contado con liqui de cada día (el estimado de siempre desde el
     // 06/11/2026): la imagen nombra ese dólar, como la pantalla.
     expect(specDelGrafico(base({ moneda: 'ars', convertida: 'ccl', escala: 20 })).pie.join(' '))
-      .toContain('pasada a pesos con el contado con liqui de cada día')
+      .toContain('pasada a pesos con el dólar contado con liqui (CCL) de cada día')
     expect(specDelGrafico(base({ moneda: 'ars', convertida: 'mep' })).pie)
       .toContain('El precio en dólares de cada día está pasado a pesos con el MEP de ese día.')
     expect(specDelGrafico(base()).pie.join(' ')).not.toMatch(/MEP|estimado/)

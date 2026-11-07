@@ -376,12 +376,14 @@ def _serie_elegida(conn, asset: str, moneda: str, local: bool):
     return {"ticker": s["ticker"], "convertida": s["convertida"], "escala": s.get("escala")}
 
 
-def _armar(abrir, ticker: str, crudas: list, cada: str, mercado: str, por, escala=None, dolar="mep"):
+def _armar(abrir, ticker: str, crudas: list, cada: str, mercado: str, por, escala=None, dolar="mep",
+           de_hoy=None):
     """Las velas de `cada` y sus puntos para la pantalla (las últimas
     VELAS_A_LA_PANTALLA, con sus cuentas). `por`: None, 'dividir' (pesos →
     dólares) o 'multiplicar', con el dólar `dolar` de cada día (el de la serie
-    diaria: `convertida`). `escala`: el estimado de un CEDEAR en pesos (la de la
-    serie diaria, `tecnico.serie`). None si no queda nada."""
+    diaria: `convertida`) y, las de hoy, con el de ahora (`de_hoy`). `escala`: el
+    estimado de un CEDEAR en pesos (la de la serie diaria, `tecnico.serie`). None
+    si no queda nada."""
     import tecnico
     import velas_diarias
     velas = [_como_vela(x) for x in crudas]
@@ -390,7 +392,7 @@ def _armar(abrir, ticker: str, crudas: list, cada: str, mercado: str, por, escal
             import cambios_ratio
             velas = velas_diarias._empalmar(velas, cambios_ratio.para_el_grafico(conn, ticker))
         if por:
-            velas = tecnico._convertir(conn, velas, por, escala, dolar)
+            velas = tecnico._convertir(conn, velas, por, escala, dolar, de_hoy)
     velas = bloques(velas, cada, mercado)
     velas = velas[-(VELAS_A_LA_PANTALLA + VELAS_DE_CALENTAMIENTO):]
     if not velas:
@@ -433,6 +435,12 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
     base = {"asset": (asset or "").upper(), "moneda": moneda, "cada": cada}
     with abrir() as conn:
         eleccion = _serie_elegida(conn, asset, moneda, local)
+        # Lo guardado del dólar de la serie: si la noche lo reescribe (el contado
+        # con liqui de los últimos días), lo armado se vuelve a armar aunque Yahoo
+        # no haya traído nada nuevo (auditoría del contado con liqui, H6 del servidor).
+        if eleccion and eleccion["convertida"]:
+            from fx import huella_del_dolar
+            eleccion["huella"] = huella_del_dolar(conn, eleccion["convertida"])
     if not eleccion:
         return {**base, "disponible": False, "motivo": "sin_serie"}
     ticker = eleccion["ticker"]
@@ -446,13 +454,22 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
     por = ("dividir" if moneda == "usd" else "multiplicar") if eleccion["convertida"] else None
     escala = eleccion.get("escala") if por else None
     dolar = eleccion["convertida"] if por else None
+    # Las velas de HOY, con el dólar de ahora (el de la vela de hoy del gráfico
+    # diario: `tecnico._dolar_de_hoy`), sin la base abierta: puede salir a dolarapi.
+    if por:
+        import tecnico
+        de_hoy = tecnico._dolar_de_hoy(dolar)
+    else:
+        de_hoy = None
     # La escala y el dólar van en la clave: lo armado de AAPL en pesos para la
     # serie de la tabla no sirve para la medida con la serie que quedó guardada,
-    # ni lo armado con el MEP (una base sin el contado con liqui) para el CCL.
+    # ni lo armado con el MEP (una base sin el contado con liqui) para el CCL. Y se
+    # vuelve a armar si cambia lo guardado del dólar o el de ahora.
     clave = (ticker, cada, por, escala, dolar)
+    version = (version, eleccion.get("huella"), de_hoy)
     hecha = _ARMADAS.get(clave)
     if not hecha or hecha["version"] != version:
-        hecha = _armar(abrir, ticker, crudas, cada, mercado, por, escala, dolar or "mep")
+        hecha = _armar(abrir, ticker, crudas, cada, mercado, por, escala, dolar or "mep", de_hoy)
         if not hecha:
             return {**base, "disponible": False, "motivo": "sin_datos", "ticker": ticker}
         hecha["version"] = version

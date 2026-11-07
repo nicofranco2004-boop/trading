@@ -43,9 +43,23 @@ import tecnico
 # La de verdad: la suite la reemplaza en cada prueba por una vacía (conftest,
 # `_byma_en_memoria_vacio`); acá se toma antes, para probarla a ella.
 _DATA912_EN_MEMORIA = getattr(main, "_data912_en_memoria", None)
+# Lo mismo con la lectura del contado con liqui de argentinadatos (conftest, `_ccl_sin_red`).
+_BAJAR_CCL = getattr(main, "_bajar_ccl", None)
+# Y con el cierre del día que anota el servidor de dolarapi (conftest, `_ccl_sin_red`).
+_CCL_DE_DOLARAPI = getattr(main, "_ccl_cerrado_de_dolarapi", None)
 from fechas import hoy_art_date
 import velas_diarias
 from velas_diarias import PERIODO_COMPLETO
+
+
+def _ccl_en_la_cache(medio):
+    """El contado con liqui como lo tiene la caché del dólar del servidor
+    (`main._fetch_dolar`): las dos puntas, el medio y cuándo lo publicó dolarapi.
+    Sin la hora, la regla de «el dólar de ahora» (`tecnico.dolar_de_la_cache`) no
+    lo usa: no se sabe si es de hoy."""
+    from datetime import datetime, timezone
+    return {"compra": medio - 1, "venta": medio + 1, "medio": medio,
+            "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
 
 
 def _dt_utc(*a):
@@ -1099,8 +1113,10 @@ class FichaTest(unittest.TestCase):
 
     def test_lo_que_no_es_cedear_sigue_con_el_mep(self):
         # Lo que no es un CEDEAR no se paga con el contado con liqui: SCHD (un ETF
-        # que no es CEDEAR), Bitcoin y el S&P 500 en pesos siguen × el MEP de cada
-        # día aunque el contado con liqui esté guardado.
+        # que no es CEDEAR) y Bitcoin en pesos siguen × el MEP de cada día aunque
+        # el contado con liqui esté guardado. El S&P 500 en pesos, en cambio, va con
+        # el dólar de los CEDEARs: es contra lo que se los compara, y en la Bolsa se
+        # compra con el CEDEAR de SPY (auditoría del contado con liqui, H2 del servidor).
         self._mep(lambda i: 1000.0)
         self._ccl(lambda i: 1100.0)
         self.yahoo.precios["SCHD"] = lambda i, d: 30.0
@@ -1111,7 +1127,8 @@ class FichaTest(unittest.TestCase):
             self.assertAlmostEqual(ars["puntos"][-1]["c"], esperado, places=3)
         main._run_velas_diarias_job()                          # guarda el S&P 500
         with main.db_abierta() as conn:
-            self.assertEqual({v["close"] for v in tecnico.sp500(conn, "ars")}, {5_000_000.0})
+            self.assertEqual({v["close"] for v in tecnico.sp500(conn, "ars")}, {5_500_000.0})
+            self.assertEqual({v["close"] for v in tecnico.sp500(conn, "ars", "mep")}, {5_000_000.0})
 
     def test_sin_el_contado_con_liqui_guardado_sigue_con_el_mep_toda_la_serie(self):
         # Una base que todavía no lo bajó (recién publicado, argentinadatos caído):
@@ -1177,8 +1194,11 @@ class FichaTest(unittest.TestCase):
         for cache in (main._PRICE_CACHE, main._PREVCLOSE_CACHE, main._PREVCLOSE_RUEDA,
                       main._PREVCLOSE_ULTIMO, main._history_cache):
             cache.clear()
-        vivo = {"compra": ccl_ahora - 1, "venta": ccl_ahora + 1, "medio": ccl_ahora}
-        with mock.patch.dict(main._dolar_cache, {"data": {"ccl": vivo}, "ts": 9e18}):
+        vivo = _ccl_en_la_cache(ccl_ahora)
+        # Sin red: un '.BA' se busca también entre los bonos y letras (data912,
+        # argentinadatos): sin esto la prueba les pedía la lista de verdad.
+        with mock.patch.dict(main._dolar_cache, {"data": {"ccl": vivo}, "ts": 9e18}), \
+                mock.patch("main._resolve_ar_bond_price", lambda *a, **k: None):
             precio = self.client.get("/api/prices?symbols=BAC.BA", headers=self.h).json()["BAC.BA"]
             anterior = self.client.get("/api/prices/prev-close?symbols=BAC.BA", headers=self.h).json()["BAC.BA"]
             variacion = main._variacion_del_dia(["BAC.BA"], self.uid)["BAC.BA"]
@@ -1208,7 +1228,11 @@ class FichaTest(unittest.TestCase):
 
         precio, anterior, variacion = self._precios_de_bac(1200.0)
         self.assertAlmostEqual(anterior, vela[dia(n - 2)], places=2, msg="el cierre anterior = la vela del gráfico")
-        self.assertAlmostEqual(precio, (50.0 + (n - 1) * 0.01) * 1200.0 / 4, places=2)
+        # Nueva York todavía no operó hoy (la última rueda de Yahoo es la de ayer):
+        # el precio de ahora es el de esa rueda con el dólar de SU día, la última
+        # vela del gráfico, y el mismo número que la variación del inicio. Con el
+        # dólar de ahora, esos ratos BAC tenía dos precios (H5 de la pantalla).
+        self.assertAlmostEqual(precio, vela[dia(n - 1)], places=2)
         # La variación de la rueda de ayer (la última con precio de Nueva York): la
         # vela de ese día contra la anterior, con el dólar que se movió entre las dos.
         self.assertAlmostEqual(variacion["price"], vela[dia(n - 1)], places=2)
@@ -1227,7 +1251,7 @@ class FichaTest(unittest.TestCase):
                                     index=pd.DatetimeIndex([pd.Timestamp(d) for d in ruedas]))
         main._history_cache.clear()
         with mock.patch("main.yf.Ticker", _Ticker), \
-                mock.patch.dict(main._dolar_cache, {"data": {"ccl": {"medio": 1200.0}}, "ts": 9e18}):
+                mock.patch.dict(main._dolar_cache, {"data": {"ccl": _ccl_en_la_cache(1200.0)}, "ts": 9e18}):
             mini = self.client.get("/api/prices/history?symbol=BAC.BA&period=1m", headers=self.h).json()
         self.assertEqual(len(mini["points"]), 22)
         for p in mini["points"]:
@@ -1269,6 +1293,332 @@ class FichaTest(unittest.TestCase):
         self.assertEqual(guardado(dias[-1]), 2005.0)
         with main.db_abierta() as conn:
             self.assertGreater(conn.execute("SELECT COUNT(*) FROM velas_diarias WHERE symbol='SPY'").fetchone()[0], 0)
+
+    # ─── Bordes del contado con liqui que no veía ninguna prueba (auditoría de las pruebas, 06/11) ───
+
+    def _cierres_de_bac(self, ccl_ahora):
+        """El cierre anterior (`/api/prices/prev-close`) y la variación del día de
+        BAC.BA con `ccl_ahora` de contado con liqui de ahora, sin lo que guardaron
+        pedidos anteriores (como `_precios_de_bac`, sin /api/prices)."""
+        for cache in (main._PRICE_CACHE, main._PREVCLOSE_CACHE, main._PREVCLOSE_RUEDA,
+                      main._PREVCLOSE_ULTIMO, main._history_cache):
+            cache.clear()
+        vivo = _ccl_en_la_cache(ccl_ahora)
+        # Sin red: un '.BA' se busca también entre los bonos y letras (data912,
+        # argentinadatos); BAC no es ninguno.
+        with mock.patch.dict(main._dolar_cache, {"data": {"ccl": vivo}, "ts": 9e18}), \
+                mock.patch("main._resolve_ar_bond_price", lambda *a, **k: None):
+            anterior = self.client.get("/api/prices/prev-close?symbols=BAC.BA", headers=self.h).json()["BAC.BA"]
+            variacion = main._variacion_del_dia(["BAC.BA"], self.uid)["BAC.BA"]
+        return anterior, variacion
+
+    def _bac_con_su_grafico(self, ccl):
+        """BAC en la Cartera, con el MEP de 1000, el contado con liqui `ccl(i)` de
+        cada rueda y la noche corrida. Devuelve {fecha: vela del gráfico en pesos}."""
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "BAC", "CEDEAR")
+        self._mep(lambda i: 1000.0)
+        if ccl:
+            self._ccl(ccl)
+        self.yahoo.precios["BAC"] = lambda i, d: 50.0 + i * 0.01
+        self.yahoo.precios["BAC.BA"] = lambda i, d: 9.0          # el roto, en dólares
+        main._run_velas_diarias_job()
+        return {p["d"]: p["c"] for p in self._ficha("BAC", "ars")["puntos"]}
+
+    def test_el_contado_con_liqui_tiene_que_cubrir_desde_la_primera_vela(self):
+        # `_dolar_de_los_cedears`, el borde de afuera: guardado desde UNA rueda
+        # después de la primera vela, es MEP para toda la serie (ninguna vela se
+        # pierde ni se mezcla). Desde la primera, contado con liqui de punta a punta.
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["AAPL"] = lambda i, d: 250.0
+        self._ccl(lambda i: 1100.0, desde=1)
+        ars = self._ficha("AAPL", "ars")
+        self.assertEqual((ars["convertida"], {p["c"] for p in ars["puntos"]}), ("mep", {12_500.0}))
+        self.assertEqual(ars["puntos"][0]["d"], self.dias[0].isoformat())
+        self._ccl(lambda i: 1100.0)                       # ahora también el de la primera
+        ars = self._ficha("AAPL", "ars")
+        self.assertEqual((ars["convertida"], {p["c"] for p in ars["puntos"]}), ("ccl", {13_750.0}))
+        self.assertEqual(ars["puntos"][0]["d"], self.dias[0].isoformat())
+
+    def test_el_contado_con_liqui_de_hace_una_semana_todavia_vale_y_el_de_hace_ocho_dias_no(self):
+        # Si argentinadatos deja de publicar, cada vela usa el último contado con
+        # liqui guardado de hasta `tecnico.MAX_DIAS_SIN_DOLAR` (7) días antes; más
+        # viejo, la vela no se dibuja (no se inventa con un dólar viejo). Era la regla
+        # del MEP y desde el 06/11 es también la del contado con liqui. Bordes: a 7
+        # días todavía; a 8, ya no. (El corte, un día con otro 8 días después.)
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["AAPL"] = lambda i, d: 250.0
+        hay = set(self.dias)
+        j = max(i for i, d in enumerate(self.dias) if d + timedelta(days=8) in hay)
+        tope = self.dias[j]
+        filas = [(d.isoformat(), 1099.0, 1101.0) for d in self.dias[:j + 1]]
+        with mock.patch("main._bajar_ccl", lambda: filas):
+            main._actualizar_ccl()
+        ars = self._ficha("AAPL", "ars")
+        fechas = [p["d"] for p in ars["puntos"]]
+        self.assertEqual(ars["convertida"], "ccl")
+        self.assertEqual(fechas[-1], (tope + timedelta(days=7)).isoformat(), "a 7 días del último guardado, todavía")
+        self.assertNotIn((tope + timedelta(days=8)).isoformat(), fechas, "a 8, ya no")
+
+    def test_el_cer_de_la_misma_tabla_no_cuenta_como_contado_con_liqui(self):
+        # `bond_indices_daily` guarda también el CER y la UVA de cada día (los bajan
+        # los bonos y Comparar): para saber desde cuándo hay contado con liqui
+        # cuentan SÓLO sus filas. Sin esta prueba, el único que lo veía era
+        # `test_sin_escala_lo_que_mira_variaciones_sigue_mirando`, y sólo cuando
+        # argentinadatos le contestaba la UVA de verdad en medio de la prueba.
+        import fx
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["AAPL"] = lambda i, d: 250.0
+        with main.db_abierta() as conn:
+            for i, d in enumerate(self.dias):
+                conn.execute(fx.SQL_GUARDAR_INDICE, ("CER", d.isoformat(), 700.0 + i, "prueba", "x"))
+            conn.commit()
+        ars = self._ficha("AAPL", "ars")
+        self.assertEqual((ars["convertida"], {p["c"] for p in ars["puntos"]}), ("mep", {12_500.0}))
+
+    def test_bac_el_cierre_anterior_con_un_contado_con_liqui_de_hasta_una_semana(self):
+        # `fx.ccl_de_las_fechas` (el cierre anterior y el último de BAC) usa el último
+        # guardado de hasta 7 días antes (`tecnico.MAX_DIAS_SIN_DOLAR`, como el
+        # gráfico); más viejo ya no es «el de ese día» y va el de ahora. Bordes: de
+        # 7 días justos entra; de 8 o más, no.
+        n = len(self.dias)
+        ccl = lambda i: 1050.0 + i * 0.5
+        tope = self.dias[n - 2] - timedelta(days=7)        # el mismo día, una semana antes
+        k = self.dias.index(tope)
+        self._bac_con_su_grafico(None)
+        filas = [(d.isoformat(), ccl(i) - 5, ccl(i) + 5) for i, d in enumerate(self.dias) if i <= k]
+        with mock.patch("main._bajar_ccl", lambda: filas):
+            main._actualizar_ccl()
+        anterior, variacion = self._cierres_de_bac(1200.0)
+        self.assertAlmostEqual(anterior, (50.0 + (n - 2) * 0.01) * ccl(k) / 4, places=2,
+                               msg="el cierre anterior, con el guardado de hace 7 días justos")
+        self.assertAlmostEqual(variacion["price"], (50.0 + (n - 1) * 0.01) * 1200.0 / 4, places=2,
+                               msg="el último, a 8 o más días del guardado: el de ahora")
+
+    def test_bac_el_cierre_anterior_del_respaldo_de_a_uno_va_con_el_dolar_de_su_dia(self):
+        # Si la bajada en lote no trae BAC, el respaldo de a uno
+        # (`_fetch_prev_close_one`) da el cierre anterior SIN su fecha: va con el
+        # contado con liqui del día antes del último (`_dia_antes`: la vela anterior
+        # del gráfico) y el último con el de SU día.
+        n = len(self.dias)
+        vela = self._bac_con_su_grafico(lambda i: 1050.0 + i * 0.5)
+        ultimo = self.dias[n - 1].isoformat()
+        del self.yahoo.precios["BAC"]                      # el lote no la trae
+        with mock.patch("main._fetch_prev_close_one",
+                        lambda t: (50.0 + (n - 2) * 0.01, 50.0 + (n - 1) * 0.01, ultimo)):
+            anterior, variacion = self._cierres_de_bac(1200.0)
+        self.assertAlmostEqual(anterior, vela[self.dias[n - 2].isoformat()], places=2)
+        self.assertAlmostEqual(variacion["price"], vela[ultimo], places=2)
+
+    def test_bac_el_mini_grafico_de_un_anio_cada_semana_con_el_dolar_de_su_cierre(self):
+        # El mini-gráfico de 1 año va en velas SEMANALES (Yahoo las fecha el lunes y
+        # cierran el último día de su semana): cada una con el contado con liqui del
+        # cierre de su semana (`_cierra`: el lunes + 6, el último guardado hasta ese
+        # domingo), o sea la vela del viernes del gráfico. Como en producción, la
+        # tabla tiene además el CER de todos los días corridos.
+        import fx
+        vela = self._bac_con_su_grafico(lambda i: 1050.0 + i * 0.5)
+        with main.db_abierta() as conn:
+            d = self.dias[0]
+            while d <= self.hoy:
+                conn.execute(fx.SQL_GUARDAR_INDICE, ("CER", d.isoformat(), 700.0, "prueba", "x"))
+                d += timedelta(days=1)
+            conn.commit()
+        lunes_de_hoy = self.hoy - timedelta(days=self.hoy.weekday())
+        viernes = [d for d in self.dias[-250:] if d.weekday() == 4 and d < lunes_de_hoy]
+        semanas = [(v - timedelta(days=4), 50.0 + self.dias.index(v) * 0.01) for v in viernes]
+
+        class _Ticker:
+            def __init__(self, sym):
+                self.sym = sym
+
+            def history(self, period, interval, auto_adjust):
+                return pd.DataFrame({"Close": [c for _, c in semanas]},
+                                    index=pd.DatetimeIndex([pd.Timestamp(l) for l, _ in semanas]))
+        main._history_cache.clear()
+        with mock.patch("main.yf.Ticker", _Ticker), \
+                mock.patch.dict(main._dolar_cache, {"data": {"ccl": _ccl_en_la_cache(1200.0)}, "ts": 9e18}):
+            mini = self.client.get("/api/prices/history?symbol=BAC.BA&period=1y", headers=self.h).json()
+        self.assertEqual(len(mini["points"]), len(semanas))
+        for (lunes, _), v, p in zip(semanas, viernes, mini["points"]):
+            self.assertEqual(p["date"], lunes.isoformat())
+            self.assertAlmostEqual(p["close"] / vela[v.isoformat()], 1.0, places=4, msg=p["date"])
+
+    def test_bac_hoy_va_con_el_contado_con_liqui_de_ahora_aunque_haya_uno_guardado_de_hoy(self):
+        # Al arrancar durante la rueda, argentinadatos ya publica el de HOY (en vivo):
+        # no se guarda (`fx.fechas_de_argentinadatos`), y aunque hubiera uno guardado
+        # de hoy, el punto de hoy del mini-gráfico va con el de AHORA
+        # (`_ccl_de_las_fechas`: sólo lo de ANTES de hoy sale de lo guardado); el de
+        # ayer, con el guardado de ayer.
+        hoy = self.hoy.isoformat()
+        filas = [(d.isoformat(), 1049.0, 1051.0) for d in self.dias] + [(hoy, 1110.0, 1112.0)]
+        with mock.patch("main._bajar_ccl", lambda: filas):
+            main._actualizar_ccl()
+        ruedas = self.dias[-21:] + [self.hoy]
+
+        class _Ticker:
+            def __init__(self, sym):
+                self.sym = sym
+
+            def history(self, period, interval, auto_adjust):
+                return pd.DataFrame({"Close": [50.0] * len(ruedas)},
+                                    index=pd.DatetimeIndex([pd.Timestamp(d) for d in ruedas]))
+        main._history_cache.clear()
+        with mock.patch("main.yf.Ticker", _Ticker), \
+                mock.patch.dict(main._dolar_cache, {"data": {"ccl": _ccl_en_la_cache(1200.0)}, "ts": 9e18}):
+            mini = self.client.get("/api/prices/history?symbol=BAC.BA&period=1m", headers=self.h).json()
+        por_dia = {p["date"]: p["close"] for p in mini["points"]}
+        self.assertAlmostEqual(por_dia[hoy], 50.0 * 1200.0 / 4, places=4, msg="hoy: el de ahora")
+        self.assertAlmostEqual(por_dia[self.dias[-1].isoformat()], 50.0 * 1050.0 / 4, places=4, msg="ayer: el guardado")
+
+    def test_la_noche_reescribe_los_ultimos_diez_dias_y_ni_uno_mas(self):
+        # `fx.guardar_ccl`: además de lo que falta, vuelve a escribir desde el último
+        # guardado menos 10 días (`DIAS_CCL_REVISAR`), ese día incluido. Borde: el de
+        # hace 10 días justos se reescribe; el de hace 11, no. (Con días corridos, para
+        # que el borde exista cualquier día de la semana.)
+        ultimo = self.dias[-1]
+        dias = [ultimo - timedelta(days=k) for k in range(30, -1, -1)]
+        with mock.patch("main._bajar_ccl", lambda: [(d.isoformat(), 999.0, 1001.0) for d in dias]):
+            main._actualizar_ccl()
+        with mock.patch("main._bajar_ccl", lambda: [(d.isoformat(), 1999.0, 2001.0) for d in dias]):
+            main._run_velas_diarias_job()
+        with main.db_abierta() as conn:
+            valor = {r["date"]: r["value"] for r in conn.execute(
+                "SELECT date, value FROM bond_indices_daily WHERE index_name='CCL'").fetchall()}
+        self.assertEqual(valor[(ultimo - timedelta(days=10)).isoformat()], 2000.0, "el de hace 10 días justos")
+        self.assertEqual(valor[(ultimo - timedelta(days=11)).isoformat()], 1000.0, "el de hace 11, no")
+        self.assertEqual(valor[ultimo.isoformat()], 2000.0)
+
+    def test_el_contado_con_liqui_se_lee_como_lo_publica_argentinadatos(self):
+        # La lectura de la fuente (`main._bajar_ccl`, que la suite reemplaza en todas
+        # las demás pruebas: conftest, `_ccl_sin_red`): la lista de argentinadatos tal
+        # como la publica, y lo guardado es el MEDIO de compra y venta.
+        pedidos = []
+
+        class _Respuesta:
+            status_code = 200
+
+            def json(self):
+                return [{"casa": "contadoconliqui", "compra": 1490.0, "venta": 1510.0, "fecha": "2026-11-04"},
+                        {"casa": "contadoconliqui", "compra": 1500.0, "venta": 1520.0, "fecha": "2026-11-05"}]
+
+        def _get(url, timeout=None, **kw):
+            pedidos.append(url)
+            return _Respuesta()
+        with mock.patch("main._bajar_ccl", _BAJAR_CCL), mock.patch("main.requests.get", _get):
+            self.assertEqual(main._actualizar_ccl(), 2)
+        self.assertEqual(pedidos, ["https://api.argentinadatos.com/v1/cotizaciones/dolares/contadoconliqui"])
+        with main.db_abierta() as conn:
+            filas = conn.execute("SELECT date, value FROM bond_indices_daily WHERE index_name='CCL' "
+                                 "ORDER BY date").fetchall()
+        self.assertEqual([(r["date"], r["value"]) for r in filas], [("2026-11-04", 1500.0), ("2026-11-05", 1510.0)])
+
+    @staticmethod
+    def _como_argentinadatos(cierres: dict, corrida, hoy: date, en_vivo: float) -> list:
+        """Las filas que publicaría argentinadatos para los cierres de cada día hábil
+        (`cierres`: {día: valor}), todos los días del calendario hasta `hoy` (la de
+        hoy, el valor del momento: `en_vivo`). `corrida(día)`: si esa fila lleva la
+        fecha del día SIGUIENTE al cierre que trae, como desde septiembre de 2026."""
+        filas, ultimo, d = [], None, min(cierres)
+        while d < hoy:
+            if d in cierres:
+                ultimo_antes, ultimo = ultimo, cierres[d]
+            else:
+                ultimo_antes = ultimo
+            # Corrida: el lunes trae el cierre del viernes; el sábado, también.
+            valor = (ultimo_antes if d in cierres else ultimo) if corrida(d) else ultimo
+            if valor is not None:
+                filas.append((d.isoformat(), valor - 1, valor + 1))
+            d += timedelta(days=1)
+        filas.append((hoy.isoformat(), en_vivo - 1, en_vivo + 1))
+        return filas
+
+    def test_la_fecha_de_argentinadatos_se_corrige_cuando_la_corre(self):
+        # Desde septiembre de 2026 argentinadatos fecha cada cierre con el día
+        # siguiente: la fila del lunes trae el del viernes (auditoría del contado con
+        # liqui, H1 del servidor: medido contra el dólar que implican los CEDEARs). Lo
+        # dicen los fines de semana: el sábado igual al viernes, alineada; igual al
+        # lunes, corrida. Sin corregirlo, cada vela iba con el dólar de la rueda
+        # anterior. Seis semanas: dos alineadas, dos corridas y otras dos alineadas
+        # (la fuente puede volver a cambiar). La fila de hoy, el valor del momento,
+        # no se usa nunca.
+        import fx
+        lunes = date(2026, 8, 17)
+        habiles = [lunes + timedelta(days=k) for k in range(42) if (lunes + timedelta(days=k)).weekday() < 5]
+        cierres = {d: 1500.0 + 3 * i for i, d in enumerate(habiles)}
+        corridas = lambda d: date(2026, 8, 31) <= d < date(2026, 9, 14)
+        hoy = lunes + timedelta(days=42)
+        filas = self._como_argentinadatos(cierres, corridas, hoy, en_vivo=9999.0)
+        bien = {f: (c + v) / 2 for f, c, v in fx.fechas_de_argentinadatos(filas, hoy.isoformat())}
+        for d, c in cierres.items():
+            self.assertEqual(bien.get(d.isoformat()), c, f"{d}: el cierre de ESE día")
+        self.assertNotIn(9999.0, bien.values(), "la fila de hoy es el valor del momento")
+        # Sin corregir, en las semanas corridas el lunes traía el del viernes.
+        crudas = {f: (c + v) / 2 for f, c, v in filas}
+        self.assertEqual(crudas["2026-09-07"], cierres[date(2026, 9, 4)])
+        # Con datos reales de la fuente (06/11/2026): la fila del martes 27/10 trae
+        # el cierre del lunes 26 (el que implican los CEDEARs: 1.678,3).
+        reales = [("2026-10-16", 1614.9, 1616.6), ("2026-10-17", 1618.6, 1620.3), ("2026-10-18", 1618.6, 1620.3),
+                  ("2026-10-19", 1618.6, 1620.3), ("2026-10-20", 1623.7, 1625.5), ("2026-10-23", 1637.9, 1639.5),
+                  ("2026-10-24", 1650.7, 1652.5), ("2026-10-25", 1650.7, 1652.5), ("2026-10-26", 1650.7, 1652.5),
+                  ("2026-10-27", 1680.2, 1682.0)]
+        reales = {f: (c + v) / 2 for f, c, v in fx.fechas_de_argentinadatos(reales, "2026-11-06")}
+        self.assertAlmostEqual(reales["2026-10-26"], 1681.1, places=6)
+        self.assertAlmostEqual(reales["2026-10-23"], 1651.6, places=6)
+        # En una semana corrida la fila de HOY es el cierre de AYER: queda con la
+        # fecha de ayer. Antes se descartaba por tener la de hoy ANTES de corregirla,
+        # y el 05/11 quedaba sin su dólar hasta la noche siguiente (la vela de ese
+        # día iba con el cierre del 04/11; medido el 06/11 a las 21, con la fuente de
+        # esa hora).
+        fuente = [("2026-10-30", 1649.8, 1650.3), ("2026-10-31", 1655.3, 1658.5), ("2026-11-01", 1655.3, 1658.5),
+                  ("2026-11-02", 1655.3, 1658.5), ("2026-11-03", 1663.2, 1670.0), ("2026-11-04", 1667.2, 1668.8),
+                  ("2026-11-05", 1676.7, 1680.4), ("2026-11-06", 1658.4, 1664.9)]
+        dias = {f: (c + v) / 2 for f, c, v in fx.fechas_de_argentinadatos(fuente, "2026-11-06")}
+        self.assertEqual(max(dias), "2026-11-05", "hoy no: todavía no cerró")
+        self.assertAlmostEqual(dias["2026-11-05"], 1661.65, places=6)
+        self.assertAlmostEqual(dias["2026-11-04"], 1678.55, places=6)
+
+    def test_el_cierre_de_cada_dia_lo_anota_el_servidor_y_argentinadatos_no_lo_pisa(self):
+        # El cierre de cada día lo anota el servidor de dolarapi con la fecha del
+        # DATO (no la del reloj ni la de argentinadatos) y manda: la noche siguiente,
+        # argentinadatos vuelve a escribir sus últimos 10 días y no lo pisa.
+        ayer = self.dias[-1]
+        filas = [(d.isoformat(), 1499.0, 1501.0) for d in self.dias[-20:]]
+        dolarapi = {"compra": 1599.0, "venta": 1601.0, "medio": 1600.0, "updated_at": f"{ayer.isoformat()}T21:00:00Z"}
+        guardado = lambda d: self._valor_ccl(d.isoformat())
+        with mock.patch("main._bajar_ccl", lambda: filas), \
+                mock.patch("main._ccl_cerrado_de_dolarapi", _CCL_DE_DOLARAPI), \
+                mock.patch("main._fetch_dolar", lambda casa: dolarapi if casa == "contadoconliqui" else None):
+            main._actualizar_ccl()
+            self.assertEqual((guardado(ayer), guardado(self.dias[-2])), (1600.0, 1500.0))
+            main._run_velas_diarias_job()                      # la noche siguiente
+        self.assertEqual(guardado(ayer), 1600.0, "argentinadatos no pisa el cierre que anotó el servidor")
+        with main.db_abierta() as conn:
+            fuente = conn.execute("SELECT source FROM bond_indices_daily WHERE index_name='CCL' AND date=?",
+                                  (ayer.isoformat(),)).fetchone()["source"]
+        self.assertEqual(fuente, "dolarapi")
+
+    def _valor_ccl(self, d):
+        with main.db_abierta() as conn:
+            r = conn.execute("SELECT value FROM bond_indices_daily WHERE index_name='CCL' AND date=?", (d,)).fetchone()
+        return r["value"] if r else None
+
+    def test_al_arrancar_se_baja_el_contado_con_liqui_aunque_falle_lo_del_mep(self):
+        # Una base recién publicada no tiene el contado con liqui: lo baja el arranque
+        # (`_backfill_fx_rates_on_boot`, en su hilo), aunque lo del MEP falle, y no
+        # hay que esperar a la noche con todos los CEDEARs en el MEP.
+        import threading
+        filas = [(d.isoformat(), 1099.0, 1101.0) for d in self.dias]
+        with mock.patch("main._bajar_ccl", lambda: filas), \
+                mock.patch("main._backfill_fx_rates_if_empty", side_effect=RuntimeError("argentinadatos caído")), \
+                mock.patch("main._backfill_mep_rates_if_missing"), mock.patch("main._backfill_compras_if_missing"):
+            main._backfill_fx_rates_on_boot()
+            for t in threading.enumerate():
+                if t.name == "fx-backfill":
+                    t.join(timeout=30)
+        with main.db_abierta() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM bond_indices_daily WHERE index_name='CCL'")
+                             .fetchone()[0], len(self.dias))
 
     def test_sin_saber_la_escala_del_cedear_no_hay_grafico_en_pesos(self):
         # Mejor sin gráfico en pesos que uno veinte veces más alto.
@@ -1461,8 +1811,14 @@ class FichaTest(unittest.TestCase):
         self.assertIsNone(usd.precio_de)
         ev = {"fecha": self.dias[-1].isoformat(), "sentido": "arriba", "cierre": 100.0, "referencia": 95.0}
         alerta = {"currency": "ARS", "senal": "media200", "accion_local": 0}
-        self.assertIn(tecnico.NOTA_SIN_ESCALA, ae._detalle_tecnico(alerta, "NET", {**ev, "precio_de": "afuera"}))
-        self.assertIn(tecnico.NOTA_ESTIMADO, ae._detalle_tecnico(alerta, "AAPL", {**ev, "precio_de": "estimado"}))
+        # El aviso lleva lo que el motor le pone (`_VelasDeAlerta`): de dónde sale el
+        # precio y con qué dólar. Esta base no tiene el contado con liqui: el MEP.
+        self.assertEqual((net.dolar, aapl.dolar), ("mep", "mep"))
+        del_net = ae._detalle_tecnico(alerta, "NET", {**ev, "precio_de": net.precio_de, "dolar": net.dolar})
+        del_aapl = ae._detalle_tecnico(alerta, "AAPL", {**ev, "precio_de": aapl.precio_de, "dolar": aapl.dolar})
+        self.assertIn("los de la acción de Nueva York pasados con el MEP de cada día, no los del CEDEAR", del_net)
+        self.assertIn("un estimado del CEDEAR: la acción de Nueva York pasada a pesos con el MEP de cada día", del_aapl)
+        self.assertNotIn("contado con liqui", del_net + del_aapl)
         self.assertNotIn("CEDEAR", ae._detalle_tecnico(alerta, "AAPL", ev))
         # Y el chat de Mervall-E no dice «no hay historia de precios»: dice qué falta.
         lect = main._lectura_tecnica_para_el_chat({"ticker": "NET.BA", "moneda": "ars"}, self.uid)

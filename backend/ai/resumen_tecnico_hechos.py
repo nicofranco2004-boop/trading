@@ -132,10 +132,10 @@ def hechos(nombre, r, todos_los_indicadores=False):
         # lejos de los de la Bolsa. El pie del gráfico lo dice; el texto que dé un
         # precio, también.
         h["los_precios_en_pesos_son"] = (
-            "un estimado del CEDEAR hecho con la acción de Nueva York y el MEP: pueden estar unos pocos % "
+            "un estimado del CEDEAR hecho con la acción de Nueva York y el MEP: pueden quedar unos pocos % "
             "lejos de su precio en la Bolsa" if r.get("convertida") == "mep" else
-            "un estimado del CEDEAR hecho con la acción de Nueva York y el contado con liqui: pueden estar "
-            "alrededor de 1 % lejos de su precio en la Bolsa")
+            "un estimado del CEDEAR hecho con la acción de Nueva York y el dólar contado con liqui: pueden "
+            "quedar alrededor de 1 % arriba o abajo de su precio en la Bolsa")
     # El dato del titular lo elige una regla fija (v7: dejarlo al modelo hizo que contrapusiera
     # plazos en casi todos los textos y, una vez, que se corrigiera en voz alta).
     var = {}

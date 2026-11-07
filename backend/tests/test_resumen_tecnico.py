@@ -336,6 +336,10 @@ class ResumenTest(unittest.TestCase):
         self.assertEqual((f["escala"], f["convertida"]), (20, "mep"))
         r = self.client.post("/api/tecnico/AAPL/resumen?moneda=ars", headers=self.h)
         self.assertEqual(r.json()["texto"], f"{BUENO} {tecnico.nota_de(tecnico.NOTA_ESTIMADO, 'mep')}")
+        # Lo esperado no sale sólo de `tecnico.nota_de` (la función que se prueba):
+        # el texto que se publica nombra el MEP y no el contado con liqui.
+        self.assertIn("con el MEP de cada día", r.json()["texto"])
+        self.assertNotIn("contado con liqui", r.json()["texto"])
         self.assertNotIn("contado con liqui", self.claude.pedidos[0]["messages"][0]["content"])
         self.assertEqual(self._fila("AAPL÷20")["estado"], "listo")
 

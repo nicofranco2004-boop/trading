@@ -52,6 +52,12 @@ RUEDAS = tecnico.RUEDAS_ESCALA
 
 def dolar(nombre):
     filas = json.load(open(os.path.join(DATOS, f"ad_{nombre}.json")))
+    if nombre == "contadoconliqui" and os.environ.get("CCL_CORREGIDO"):
+        # Con la fecha como la guarda la app (`fx.fechas_de_argentinadatos`: desde
+        # septiembre de 2026 la fuente fecha cada cierre con el día siguiente).
+        from fx import fechas_de_argentinadatos
+        return {f: punta_media(c, v) for f, c, v in fechas_de_argentinadatos(
+            [(x.get("fecha"), x.get("compra"), x.get("venta")) for x in filas], "2026-11-06")}
     return {f["fecha"]: punta_media(f.get("compra"), f.get("venta")) for f in filas if f.get("fecha")}
 
 
@@ -190,6 +196,26 @@ for mes in sorted(por_mes):
     xs = por_mes[mes]
     print(f"   {mes:8s} {pct(med([x[0] for x in xs])):>8s} {pct(med([x[1] for x in xs])):>8s} {pct(med([x[2] for x in xs])):>8s}")
 
+
+# ── 1b. Desde septiembre de 2026 ──────────────────────────────────────────────
+# Desde ahí la fuente fecha cada cierre con el día siguiente (`fx.fechas_de_argentinadatos`;
+# con CCL_CORREGIDO=1 se corrige como en la app). La variación del día no depende de
+# la escala: dice si cada vela va con el dólar de SU día.
+print("\n1b. DESDE SEPTIEMBRE DE 2026, con el CCL " + ("con la fecha corregida" if os.environ.get("CCL_CORREGIDO")
+                                                     else "con la fecha de la fuente"))
+errs, variaciones = [], []
+for k, f in buenos.items():
+    r = CEDEAR_RATIOS[k]
+    antes = None
+    for d, u, b, m, c in f:
+        if d >= "2026-09-01":
+            errs.append(abs(u * c / r / b - 1))
+            if antes:
+                variaciones.append(abs((u * c) / (antes[0] * antes[2]) - b / antes[1]))
+        antes = (u, b, c)
+print(f"   {len(errs)} ruedas de {len({k for k, f in buenos.items() if f[-1][0] >= '2026-09-01'})} CEDEARs: "
+      f"|estimado/BYMA − 1| mediana {pct(med(errs), 2)} · la variación del día, mediana de cuánto "
+      f"se aleja de la de BYMA: {pct(med(variaciones), 2)} (puntos)")
 
 # ── 2. Saltos ─────────────────────────────────────────────────────────────────
 def escala_medida(f, cortar, fx):
