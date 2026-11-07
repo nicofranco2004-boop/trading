@@ -27,7 +27,9 @@ QUÉ SERIE. La misma que el gráfico diario: `tecnico.serie` decide qué ticker
 (la acción de afuera o la de BYMA), si se convierte y con qué dólar (el MEP, o
 el contado con liqui de un CEDEAR) y en qué escala (el estimado de un CEDEAR en
 pesos: la acción de afuera ÷ cuántas veces entra el CEDEAR en ella; sin eso, la
-acción entera). Acá no se copia esa decisión. Las
+acción entera). Acá no se copia esa decisión (salvo que la serie diaria sea la
+de un papel que sólo tiene la Bolsa, BAC: de ése no hay velas por hora en
+ninguna fuente, y se dibuja su estimado: `tecnico.serie(para_horas=True)`). Las
 de BYMA ('.BA') pasan por la MISMA lista de cambios de ratio que las diarias
 (`velas_diarias._empalmar`): Yahoo tampoco corrige el ratio de un CEDEAR en las
 de 1 hora. La conversión, con el dólar de CADA día
@@ -368,9 +370,11 @@ def _fin_de(v: dict, cada: str, mercado: str) -> int:
 
 def _serie_elegida(conn, asset: str, moneda: str, local: bool):
     """Qué ticker, si se convierte y en qué escala: lo que decide `tecnico.serie`
-    para el gráfico diario (no se copia esa regla). None si el activo no tiene serie."""
+    para el gráfico diario (no se copia esa regla), pedida `para_horas`: de un
+    papel que sólo tiene la Bolsa (BAC: 'BA.C') Yahoo no tiene velas por hora, y
+    se dibuja su estimado. None si el activo no tiene serie."""
     import tecnico
-    s = tecnico.serie(conn, asset, moneda, local)
+    s = tecnico.serie(conn, asset, moneda, local, para_horas=True)
     if not s.get("velas"):
         return None
     return {"ticker": s["ticker"], "convertida": s["convertida"], "escala": s.get("escala")}

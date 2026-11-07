@@ -531,7 +531,11 @@ class FichaTest(unittest.TestCase):
                    # sin red, la prueba da lo mismo todos los días.
                    mock.patch("cambios_ratio._splits_de_yahoo", lambda t: []),
                    mock.patch("cambios_ratio._historia_byma", lambda c: {}),
-                   mock.patch("main._fetch_data912_equities", lambda: {})]
+                   mock.patch("main._fetch_data912_equities", lambda: {}),
+                   # La historia de la Bolsa (data912): la de BAC.BA ('BA.C') la baja
+                   # la noche. Acá no contesta nada: el gráfico en pesos de BAC es
+                   # el estimado, su respaldo (BA.C: test_bac_con_ba_c.py).
+                   mock.patch("pricing.data912.filas", lambda tipo, papel, timeout=10: [])]
         for p in self._p:
             p.start()
         # El cupo de la hora de las fichas a pedido vive en memoria: cada
@@ -1066,11 +1070,12 @@ class FichaTest(unittest.TestCase):
         self.assertEqual((usd.get("escala"), ars.get("escala")), (None, 20))
         self.assertEqual(self._pedidos("AAPL.BA"), [])
 
-    def test_bac_en_pesos_es_el_cedear_estimado_tambien_para_quien_lo_tiene(self):
-        # El '.BA' de BAC cotiza en dólares y roto: la noche baja sólo la acción
-        # de afuera aunque alguien lo tenga (velas_diarias._yahoo_de). El gráfico
-        # en pesos era BAC × el MEP: 4 veces el CEDEAR, para todos. Ahora ÷ 4, el
-        # MISMO ratio con que se valúa (main.CEDEAR_USD_RATIOS sale de la tabla).
+    def test_bac_en_pesos_sin_su_serie_de_la_bolsa_es_el_cedear_estimado(self):
+        # El '.BA' de BAC en Yahoo es otro papel (en dólares): a Yahoo nunca se le
+        # pide. Su serie en pesos es la de la Bolsa ('BA.C', test_bac_con_ba_c.py);
+        # sin ella (data912 no contestó), el estimado. El gráfico en pesos era BAC
+        # × el MEP: 4 veces el CEDEAR, para todos. Ahora ÷ 4, el MISMO ratio con
+        # que se valúa (main.CEDEAR_USD_RATIOS sale de la tabla).
         self._broker("IOL", "ARS")
         self._posicion("IOL", "BAC", "CEDEAR")
         self._mep(lambda i: 1000.0)
@@ -1078,8 +1083,8 @@ class FichaTest(unittest.TestCase):
         self.yahoo.precios["BAC.BA"] = lambda i, d: 9.0           # el roto, en dólares
         main._run_velas_diarias_job()
         self.assertEqual(self._pedidos("BAC.BA"), [])
-        # Lo que BYMA dice de BAC es su precio roto en dólares (≈ 7): no sirve para
-        # controlar la escala y no se usa (`tecnico._escalas_de_hoy`).
+        # El 'BAC' de la Bolsa es otro papel, en dólares (≈ 7): no sirve para
+        # controlar la escala y no se usa (`tecnico._escalas_de_hoy` mira 'BA.C').
         with self._bolsa({"BAC": {"mercado": "arg_cedears", "c": 7.06, "pct": 0.5}}):
             ars = self._ficha("BAC", "ars")
         self.assertEqual((ars["ticker"], ars["convertida"]), ("BAC", "mep"))
@@ -1205,12 +1210,13 @@ class FichaTest(unittest.TestCase):
         return precio, anterior, variacion
 
     def test_bac_el_grafico_y_la_cartera_con_el_mismo_contado_con_liqui(self):
-        # BYMA cotiza BAC roto (en dólares): la Cartera lo valúa con la acción de
-        # Nueva York × el contado con liqui ÷ 4, y el gráfico en pesos lo dibujaba
-        # × el MEP ÷ 4: dos «BAC en pesos» en la misma ficha (auditoría 06/11, H3 de
-        # la serie y H5 de la pantalla). Ahora: el gráfico, cada día con su contado
-        # con liqui; el cierre anterior de la Cartera, la vela de ESE día del
-        # gráfico (antes, × el de hoy); el precio de ahora, × el de ahora.
+        # El respaldo de BAC, sin su CEDEAR de la Bolsa ('BA.C': ni en el feed ni
+        # su historia): la Cartera lo valúa con la acción de Nueva York × el
+        # contado con liqui ÷ 4, y el gráfico en pesos lo dibujaba × el MEP ÷ 4:
+        # dos «BAC en pesos» en la misma ficha (auditoría 06/11, H3 de la serie y
+        # H5 de la pantalla). Ahora: el gráfico, cada día con su contado con liqui;
+        # el cierre anterior de la Cartera, la vela de ESE día del gráfico (antes,
+        # × el de hoy); el precio de ahora, × el de ahora.
         self._broker("IOL", "ARS")
         self._posicion("IOL", "BAC", "CEDEAR")
         n = len(self.dias)

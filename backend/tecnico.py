@@ -776,10 +776,12 @@ def _en_la_bolsa(codigo: str):
     """Lo que data912 dijo del papel `codigo` de BYMA ({c, pct, mercado, …}), de
     lo que el servidor ya tiene en memoria (`main._data912_en_memoria`, la misma
     lista con que se valúan los CEDEARs), o None. Sin salir a la red: `serie`
-    corre adentro de las alertas y de pedidos con la base abierta."""
+    corre adentro de las alertas y de pedidos con la base abierta. Por su código
+    en la Bolsa (`snapshots_job.codigo_en_byma`): 'BAC' es 'BA.C'."""
     try:
         import main
-        return (main._data912_en_memoria() or {}).get(codigo)
+        from snapshots_job import codigo_en_byma
+        return (main._data912_en_memoria() or {}).get(codigo_en_byma(codigo))
     except Exception:
         return None
 
@@ -829,13 +831,12 @@ def _escalas_de_hoy(asset: str, en_pesos: list) -> list:
     la acción de afuera en pesos de su última rueda ÷ el CEDEAR. Con el último
     precio y con el cierre anterior: el de data912 puede ser de la rueda de hoy o
     de la de ayer, y la última vela de afuera, de cualquiera de las dos. [] si no
-    se sabe: sin precio en memoria, o un CEDEAR que las fuentes de BYMA cotizan en
-    dólares y roto (`main.CEDEAR_USD_RATIOS`: BAC ≈ 9)."""
-    from main import CEDEAR_USD_RATIOS
+    se sabe (sin precio en memoria). El de BAC es el de su CEDEAR en pesos, 'BA.C'
+    (`_en_la_bolsa`): el 'BAC' de la Bolsa es otro papel, en dólares."""
     from snapshots_job import simbolo_byma
     codigo = simbolo_byma(asset)[:-3]
     b = _en_la_bolsa(codigo) or {}
-    if not en_pesos or codigo in CEDEAR_USD_RATIOS or b.get("mercado") != "arg_cedears":
+    if not en_pesos or b.get("mercado") != "arg_cedears":
         return []
     try:
         c = float(b.get("c") or 0)
@@ -897,7 +898,8 @@ def _escala_en_bolsa(asset: str, en_pesos: list, guardada: list):
 
 
 @pesado
-def serie(conn, asset: str, moneda: str = "usd", local: bool = False, escala_obligatoria: bool = True) -> dict:
+def serie(conn, asset: str, moneda: str = "usd", local: bool = False, escala_obligatoria: bool = True,
+          para_horas: bool = False) -> dict:
     """La serie de `asset` en `moneda` ('usd' | 'ars') con lo que hay guardado.
     {velas, ticker, convertida, por, escala} o {velas: [], motivo?} si no hay.
     `convertida`: con qué dólar de cada día se pasó de moneda ('mep'; 'ccl', el
@@ -914,13 +916,17 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False, escala_obl
     no dependen de la escala (auditoría 06/11, H4 de la serie). Una alerta de
     línea también: su línea se dibujó sobre ESA serie.
 
+    `para_horas`: la piden las velas de 1 y 4 horas (velas_horarias). Cambia una
+    sola cosa: un papel que sólo tiene la Bolsa (BAC, 'BA.C') no tiene velas por
+    hora en ninguna fuente, y en pesos se dibuja su estimado.
+
     `local`: es una acción ARGENTINA (lo sabe la ficha por tus lotes). Entonces
     en dólares se usa SU precio de BYMA ÷ el MEP, aunque haya guardado un ticker
     pelado igual: GGAL "de afuera" es el ADR (10 acciones), que otro usuario
     puede tener en Schwab, y su precio no es el de tu acción. Sin la serie de
     BYMA, no hay serie: nunca la de otro papel."""
     from cripto import yahoo_de_cripto
-    from snapshots_job import simbolo_byma
+    from snapshots_job import simbolo_byma, solo_en_byma
     import velas_diarias
 
     a = (asset or "").strip().upper()
@@ -950,6 +956,13 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False, escala_obl
         if byma and afuera and _atrasada(velas_diarias.ultima_fecha(conn, simbolo_byma(a)) or byma[-1]["date"],
                                          afuera):
             byma, guardada = [], byma
+        # Las velas de 1 y 4 horas (`para_horas`, velas_horarias) de un papel que
+        # sólo tiene la Bolsa (BAC: su CEDEAR en pesos es 'BA.C' y el 'BAC.BA' de
+        # Yahoo es otro papel, `snapshots_job.solo_en_byma`) no existen en ninguna
+        # fuente: se dibuja el estimado, en la escala medida contra su serie
+        # diaria (`_escala_en_bolsa`), así arranca donde termina el precio real.
+        if byma and afuera and para_horas and solo_en_byma(simbolo_byma(a)):
+            byma, guardada = [], byma
         if byma:
             return {"velas": byma, "ticker": simbolo_byma(a), "convertida": None}
         if not afuera:
@@ -960,11 +973,12 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False, escala_obl
             return {"velas": _convertir(conn, afuera, "multiplicar"), "ticker": de_afuera,
                     "convertida": "mep", "por": "multiplicar"}
         # Un CEDEAR: la acción de afuera en pesos es la acción ENTERA, el CEDEAR ×
-        # su ratio (Apple ×20, Mercado Libre ×120, BAC ×4 siempre: su '.BA' no se
-        # baja). Se lleva a la escala del CEDEAR; si no se sabe cuál es, en pesos
-        # no hay gráfico (Nico, 06/11/2026). Y con el dólar con que se pagan los
-        # CEDEARs, el contado con liqui de cada día (Nico, 06/11/2026: con el MEP
-        # quedaba ~5 % abajo de la Bolsa y saltaba sin que se moviera el mercado).
+        # su ratio (Apple ×20, Mercado Libre ×120, BAC ×4 cuando no está su serie
+        # de la Bolsa, y en sus velas por hora). Se lleva a la escala del CEDEAR;
+        # si no se sabe cuál es, en pesos no hay gráfico (Nico, 06/11/2026). Y con
+        # el dólar con que se pagan los CEDEARs, el contado con liqui de cada día
+        # (Nico, 06/11/2026: con el MEP quedaba ~5 % abajo de la Bolsa y saltaba
+        # sin que se moviera el mercado).
         dolar = _dolar_de_los_cedears(conn, afuera[0]["date"])
         en_pesos = _convertir(conn, afuera, "multiplicar", dolar=dolar)
         escala = _escala_en_bolsa(a, en_pesos, guardada)

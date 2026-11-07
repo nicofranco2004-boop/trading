@@ -132,6 +132,9 @@ from snapshots_job import (
     # necesita. Estaba escrito a mano acá abajo (48 * 3600) y allá no existía:
     # un solo número, un solo lugar.
     MAX_PRICE_AGE_HOURS,
+    # El código con que la Bolsa (data912) lista la especie en pesos de un
+    # símbolo: 'BAC.BA' → 'BA.C'. Todo lo que lee el feed por símbolo pasa por él.
+    codigo_en_byma,
 )
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -11076,9 +11079,15 @@ def crypto_broker_factor(asset, broker_name, has_override, cripto_rate, mep_rate
 # data poco confiable, en vez del precio en PESOS del cedear. Caso reportado:
 # BAC (Bank of America) → yfinance devuelve ~9 USD (currency=USD) y data912 igual,
 # cuando el cedear vale ~20.570 ARS. Multiplicar ese ~9 por un dólar NO reconcilia
-# (no hay dólar de ~2275). El precio en pesos correcto se computa del subyacente
-# US: ARS = precio_US × CCL ÷ ratio_cedear (cantidad de cedears por acción US).
+# (no hay dólar de ~2275). El precio en pesos se ESTIMA del subyacente US:
+# ARS = precio_US × CCL ÷ ratio_cedear (cantidad de cedears por acción US).
 # Verificado 11/06/2026: BAC 55.16 USD × CCL 1495 ÷ 4 ≈ 20.617 ARS ✓.
+# Desde el 06/11/2026 (Nico) es el RESPALDO: el CEDEAR de BAC en pesos SÍ cotiza
+# en la Bolsa, con otro código ('BA.C', `snapshots_job.EN_DATA912`), y el precio
+# de ahora, el cierre anterior, la foto de la noche y los gráficos leen ése. El
+# estimado entra sólo si la Bolsa no lo tiene (y en las velas de 1 y 4 horas,
+# que de BA.C no existen en ninguna fuente). Medido: a 0,09 % de BA.C el último
+# año, pero hasta 15 % abajo en 2021 y 2023 (audit/_scripts/medir_ba_c.out).
 # Mapa: ticker base (sin .BA) → ratio del cedear. Extensible si aparecen otros.
 # El ratio sale de LA tabla (`ratios_cedear`, la copia de la de la pantalla), la
 # misma con que el gráfico en pesos divide la acción de afuera: si Comafi lo
@@ -11419,22 +11428,24 @@ def _resolve_ar_equity_price(symbol):
     sufijo viene de un broker en dólares: devolver ahí el precio en pesos de BYMA
     sería un error de ~1500×.
 
-    Se saltean dos familias a propósito, que tienen su propio camino más abajo en
-    `get_prices` y que este prefetch les robaría:
-      • cripto en broker ARS (`BTC.BA`): no cotiza en BYMA, se resuelve por
-        `<COIN>-USD` × dólar cripto — y un ticker de coin podría colisionar con el
-        de un CEDEAR.
-      • CEDEARs que las fuentes cotizan en USD (`CEDEAR_USD_RATIOS`): se derivan
-        del subyacente US × CCL ÷ ratio.
+    Se saltea la cripto en broker ARS (`BTC.BA`), que tiene su propio camino más
+    abajo en `get_prices` y que este prefetch le robaría: no cotiza en BYMA, se
+    resuelve por `<COIN>-USD` × dólar cripto — y un ticker de coin podría
+    colisionar con el de un CEDEAR.
+
+    El papel se busca por su código en la Bolsa (`codigo_en_byma`): 'BAC.BA' es
+    'BA.C', el CEDEAR de Bank of America en pesos (el 'BAC' del feed es otro
+    papel, en dólares). Si la Bolsa no lo tiene, el caller cae a yfinance — y
+    BAC, a su estimado (`CEDEAR_USD_RATIOS`).
 
     Devuelve None si no está en el universo de data912 → el caller cae a yfinance.
     """
     if not symbol or not symbol.endswith('.BA'):
         return None
     base = symbol[:-3]
-    if base in CRYPTO_SYMBOLS or base in CEDEAR_USD_RATIOS:
+    if base in CRYPTO_SYMBOLS:
         return None
-    row = (_fetch_data912_equities() or {}).get(base)
+    row = (_fetch_data912_equities() or {}).get(codigo_en_byma(symbol))
     if not row:
         return None
     px = row.get('c')
@@ -12026,8 +12037,8 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     #     13.840). Como yfinance devuelve UN número —no None—, el fallback de más
     #     abajo no se disparaba y se servía el precio viejo. Por eso data912 va
     #     PRIMERO; yfinance queda de respaldo para lo que data912 no tenga
-    #     (`_resolve_ar_equity_price` ya excluye cripto y los CEDEAR cotizados en
-    #     USD, que tienen su propio camino).
+    #     (`_resolve_ar_equity_price` ya excluye la cripto, que tiene su propio
+    #     camino, y busca cada papel por su código en la Bolsa: BAC.BA es 'BA.C').
     # Lo que no resuelva data912 cae al path yfinance de abajo.
     yf_targets = []
     for sym in uncached_symbols:
@@ -12070,7 +12081,8 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
         finally:
             _cdb.close()
 
-    # CEDEARs que las fuentes cotizan en USD (ej. BAC): fetcheamos el subyacente
+    # CEDEARs que las fuentes cotizan en USD (ej. BAC) y que la Bolsa NO resolvió
+    # arriba (BA.C sin precio en el feed): el respaldo. Fetcheamos el subyacente
     # US ('<BASE>.BA' → '<BASE>') y después computamos el precio en pesos =
     # US × CCL ÷ ratio (más abajo, con la fecha de ese precio). NO usamos el
     # valor '.BA' roto.
@@ -12197,8 +12209,9 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     # abierta), con el de su día, como su cierre anterior y su gráfico. Con el de
     # ahora, esos ratos BAC tenía dos precios: −0,60 % en Posiciones y −1,68 % en
     # el inicio (auditoría del contado con liqui, H5 de la pantalla). Sin dólar,
-    # sin precio: nunca el de dólares como si fuera en pesos. Antes de
-    # persistir/last-known.
+    # sin precio: nunca el de dólares como si fuera en pesos. Sólo lo que vino de
+    # Yahoo: si el feed de la Bolsa se renovó en el medio y el reintento de arriba
+    # trajo BA.C, ese precio ya está en pesos. Antes de persistir/last-known.
     if cedear_usd:
         import tecnico as _tec
         _cdb2 = get_db()
@@ -12207,7 +12220,7 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
         finally:
             _cdb2.close()
         for _csym, _base in cedear_usd.items():
-            if result.get(_csym) is not None:
+            if result.get(_csym) is not None and px_src.get(_csym) == 'yf':
                 _ccl = _ccls.get(px_as_of.get(_csym))
                 _ratio = CEDEAR_USD_RATIOS.get(_base) or 1
                 result[_csym] = (round(_tec.a_la_moneda(result[_csym], _ccl, "multiplicar", _ratio), 4)
@@ -12389,8 +12402,8 @@ def _byma_sin_operar_hoy(symbol) -> bool:
     if not symbol:
         return False
     if symbol.endswith('.BA'):
-        fila = (_fetch_data912_equities() or {}).get(symbol[:-3])
-        clave = symbol[:-3]
+        clave = codigo_en_byma(symbol)       # BAC.BA → 'BA.C', su CEDEAR en pesos
+        fila = (_fetch_data912_equities() or {}).get(clave)
     else:
         fila, clave = None, symbol + 'D'
     if fila is not None:
@@ -12498,9 +12511,11 @@ def _prev_close_y_ultimo(sym_list, uid, *, ttl=None, tope=None):
         if not sym.endswith('.BA') or result.get(sym) is not None:
             continue
         base = sym[:-3]
-        if base in CRYPTO_SYMBOLS or base in CEDEAR_USD_RATIOS:
-            continue  # su propio camino (cripto USD / subyacente US)
-        row = (_fetch_data912_equities() or {}).get(base)
+        if base in CRYPTO_SYMBOLS:
+            continue  # su propio camino (cripto USD)
+        # Por su código en la Bolsa: BAC.BA es 'BA.C'. Si no está, BAC cae abajo
+        # a su estimado (subyacente US × CCL de cada día ÷ ratio).
+        row = (_fetch_data912_equities() or {}).get(codigo_en_byma(sym))
         if not row:
             continue
         c, pctv = row.get('c'), row.get('pct')
@@ -12538,12 +12553,14 @@ def _prev_close_y_ultimo(sym_list, uid, *, ttl=None, tope=None):
         finally:
             _cdb.close()
 
-    # CEDEARs USD-cotizados (ej. BAC): mismo criterio que /api/prices — el cierre
+    # CEDEARs USD-cotizados (ej. BAC) que la Bolsa NO resolvió arriba (BA.C sin
+    # fila en el feed): el respaldo, mismo criterio que /api/prices — el cierre
     # previo se toma del subyacente US y se devuelve en pesos (× CCL ÷ ratio), así
     # la variación diaria reconcilia con el precio actual (también en pesos). El
-    # contado con liqui, el de la fecha de cada cierre: ver abajo.
+    # contado con liqui, el de la fecha de cada cierre: ver abajo. Lo resuelto por
+    # la Bolsa NO entra: su cierre ya está en pesos.
     cedear_usd = {s: s[:-3] for s in uncached_symbols
-                  if s.endswith('.BA') and s[:-3] in CEDEAR_USD_RATIOS}
+                  if s.endswith('.BA') and s[:-3] in CEDEAR_USD_RATIOS and s not in _de_data912}
     # {sym: (fecha del cierre anterior, fecha del último)} de lo que trae Yahoo.
     _fechas_yahoo = {}
 
@@ -12608,8 +12625,12 @@ def _prev_close_y_ultimo(sym_list, uid, *, ttl=None, tope=None):
                             # último que SÍ tiene yfinance, no el de antes: si no,
                             # la variación diaria compara dos ruedas salteadas y
                             # muestra un movimiento viejo como si fuera de hoy.
+                            # (No para el estimado de un CEDEAR cotizado en USD: su
+                            # serie es la de Nueva York, y el precio de la Bolsa
+                            # que viniera acá estaría en pesos.)
                             _stale = (len(close_dates) > 0 and len(ser) > 0
                                       and ser.index[-1] != close_dates[-1]
+                                      and sym not in cedear_usd
                                       and _resolve_ar_equity_price(sym) is not None)
                             prev = float(ser.iloc[-1] if _stale else ser.iloc[-2])
                             if not math.isnan(prev) and prev > 0:
@@ -13923,6 +13944,35 @@ _HISTORY_PERIODS = {
     "3m":  ("3mo",  "1d"),    # 90 días, vela diaria
     "1y":  ("1y",   "1wk"),   # 1 año, vela semanal (52 puntos)
 }
+# Los mismos períodos en días corridos, para la serie que sale de la Bolsa
+# (`_mini_grafico_de_byma`): data912 manda la historia entera.
+_HISTORY_DIAS = {"1w": 7, "1m": 31, "3m": 92, "1y": 366}
+
+
+def _mini_grafico_de_byma(sym: str, period: str) -> list:
+    """Los puntos del mini-gráfico de un '.BA' que Yahoo no tiene y la Bolsa sí
+    (`snapshots_job.solo_en_byma`: BAC.BA, su CEDEAR en pesos 'BA.C'): los
+    cierres de la historia de data912 del período, de la MISMA bajada que guarda
+    la noche para el gráfico de la ficha (`velas_diarias._historia_de_byma`). En
+    vela semanal como la da Yahoo: fechada el lunes, con el último cierre de esa
+    semana. [] si data912 no contesta o no tiene nada (quien llama cae al
+    estimado)."""
+    import velas_diarias
+    from estructura import precio_redondo as _precio_redondo
+    try:
+        historia = velas_diarias._historia_de_byma(sym[:-3], timeout=_yahoo.TOPE_PANTALLA_SEG)
+    except Exception as ex:
+        log.warning("mini-gráfico de %s: la historia de la Bolsa no vino: %r", sym, ex)
+        return []
+    desde = (date.fromisoformat(_iso_today()) - timedelta(days=_HISTORY_DIAS[period])).isoformat()
+    cierres = sorted((d, v[3]) for d, v in historia.items() if d >= desde)
+    if _HISTORY_PERIODS[period][1] == "1wk":
+        semanas = {}
+        for d, c in cierres:
+            f = date.fromisoformat(d)
+            semanas[(f - timedelta(days=f.weekday())).isoformat()] = c
+        cierres = sorted(semanas.items())
+    return [{"date": d, "close": _precio_redondo(c)} for d, c in cierres]
 
 
 @app.get("/api/prices/history")
@@ -13952,11 +14002,23 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_ef
     if cached and (now - cached[0]) < _HISTORY_TTL_S:
         return cached[1]
 
+    # Un '.BA' que Yahoo no tiene (BAC.BA: el de Yahoo es otro papel, en
+    # dólares): la serie de la Bolsa, la misma del gráfico de la ficha. Si la
+    # Bolsa no contesta, el estimado de abajo.
+    from snapshots_job import solo_en_byma
+    if solo_en_byma(sym):
+        points = _mini_grafico_de_byma(sym, period)
+        if points:
+            result = {"symbol": sym, "period": period, "points": points}
+            _history_cache[cache_key] = (now, result)
+            return result
+
     # Resolver el símbolo igual que /api/prices: bono AR via data912, sino yfinance
     yf_period, interval = _HISTORY_PERIODS[period]
     yf_sym = sym
-    # CEDEAR USD-cotizado (ej. BAC): la serie en pesos se computa del subyacente
-    # US (cada punto × CCL ÷ ratio). Fetcheamos el ticker US, no el '.BA' roto.
+    # CEDEAR USD-cotizado (ej. BAC) cuando la Bolsa no dio su serie: el estimado,
+    # del subyacente US (cada punto × CCL ÷ ratio). Fetcheamos el ticker US, no
+    # el '.BA' roto.
     cedear_base = sym[:-3] if (sym.endswith(".BA") and sym[:-3] in CEDEAR_USD_RATIOS) else None
     if yahoo_de_cripto(sym):
         yf_sym = yahoo_de_cripto(sym)

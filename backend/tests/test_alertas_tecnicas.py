@@ -111,11 +111,16 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.ayer, self.anteayer = r[-1], r[-2]     # las dos últimas ruedas cerradas
         self.yahoo = YahooFalso(self.anteayer)
         self.byma = {}          # la lista de CEDEARs de BYMA (data912)
+        # La historia de cada rueda de data912: {código de la Bolsa: cierre(fecha)},
+        # publicada hasta el mismo día que Yahoo. Vacía salvo en la prueba que la usa
+        # (la noche le pide la de BAC, 'BA.C': sin esto salía a la red).
+        self.historia_byma = {}
         self.mails, self.pushes = [], []
         self._p = [
             mock.patch("main._check_rate_limit"),
             mock.patch("pricing.yahoo._historia", self.yahoo),
             mock.patch("main._fetch_data912_equities", lambda: self.byma),
+            mock.patch("pricing.data912.filas", self._data912),
             # El alta prueba el precio de ahora (¿existe el ticker?): es red.
             mock.patch("alerts_engine._prices_for", lambda syms: {s: 100.0 for s in syms}),
             mock.patch("billing.emails._send",
@@ -150,6 +155,15 @@ class AlertasTecnicasTest(unittest.TestCase):
         """Pasa una noche: Yahoo publica hasta `hasta` y corre el trabajo de velas."""
         self.yahoo.hasta = hasta
         main._run_velas_diarias_job()
+
+    def _data912(self, tipo, papel, timeout=10):
+        """`pricing.data912.filas`: las ruedas que Yahoo ya publicó (`yahoo.hasta`)."""
+        f = self.historia_byma.get(papel)
+        if f is None:
+            return []
+        dias = _ruedas(self.yahoo.hasta, 759) + [self.yahoo.hasta]
+        return [{"date": d.isoformat(), "o": f(d), "h": f(d) * 1.01, "l": f(d) * 0.99, "c": f(d), "v": 4000.0}
+                for d in dias]
 
     def _crear(self, creada_el=None, **kw):
         """Crea la alerta por HTTP. `creada_el`: el día (Argentina) en que se
@@ -332,9 +346,10 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertEqual(len(self.mails), 1)
 
     def _bac_cruza_en_pesos(self, mep, ccl=None):
-        """BAC en pesos (SIEMPRE un estimado: su '.BA' viene roto y no se baja) cruza
-        su promedio de 200 días: la noche de verdad (que guarda también el contado
-        con liqui de cada día, `ccl`, si la fuente lo da) y el cron de verdad."""
+        """BAC en pesos cruza su promedio de 200 días: la noche de verdad (que guarda
+        también el contado con liqui de cada día, `ccl`, si la fuente lo da) y el
+        cron de verdad. Sin la historia de su CEDEAR en la Bolsa ('BA.C',
+        `historia_byma`) es el estimado: su '.BA' de Yahoo es otro papel."""
         dias = _ruedas(self.ayer, 800) + [self.ayer]
         with main.db_abierta() as conn:
             conn.execute("DELETE FROM fx_rates_daily")       # el MEP de esta prueba, no el de la anterior
@@ -367,6 +382,21 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertIn("BAC cerró en $30.000", texto, "120 × 1000 (el contado con liqui) ÷ 4")
         self.assertIn(tecnico.NOTA_ESTIMADO, texto)
         self.assertIn("contado con liqui", tecnico.NOTA_ESTIMADO)
+
+    def test_con_su_cedear_de_la_bolsa_el_mail_dice_el_precio_real(self):
+        # La noche guarda BA.C, el CEDEAR de BAC en pesos de la Bolsa (Nico,
+        # 06/11/2026): el aviso mira ESA serie y el mail dice su cierre, sin la
+        # nota del estimado. Acá BA.C está 2 % arriba del estimado: 120 dólares ×
+        # 1.020 ÷ 4 = $ 30.600, contra los $ 30.000 que daría Nueva York × el
+        # contado con liqui (1.000) ÷ 4.
+        import tecnico
+        self.historia_byma["BA.C"] = lambda d: self._sube_ayer(d) * 1020.0 / 4
+        texto = self._bac_cruza_en_pesos(mep=950.0, ccl=1000.0)
+        self.assertIn("BAC cerró en $30.600", texto)
+        self.assertNotIn(tecnico.NOTA_ESTIMADO, texto)
+        self.assertNotIn("estimado", texto)
+        self.assertEqual([p for p in self.yahoo.pedidos if p[0] == "BAC.BA"], [],
+                         "a Yahoo nunca: su 'BAC.BA' es otro papel")
 
     def test_sin_el_contado_con_liqui_el_mail_dice_que_es_con_el_mep(self):
         # Una base que todavía no bajó el contado con liqui: el estimado sigue con
