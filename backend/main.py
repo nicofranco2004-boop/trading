@@ -13039,7 +13039,7 @@ def get_comparar_precio(request: Request, activos: str, local: str = "", moneda:
         inicio = d.isoformat()
     elif plazo in comparar.PLAZOS:
         # «1 año» y «3 años» terminan en el último precio de los activos, no hoy:
-        # el día lo elige comparar.comparar, que sabe cuál es (tecnico.primer_dia).
+        # el día lo elige comparar.comparar, que sabe cuál es (tecnico.dia_de_arranque).
         anios = comparar.PLAZOS[plazo]
     else:
         raise HTTPException(400, "Plazo inválido")
@@ -46757,7 +46757,9 @@ def import_preview(
         safe_name = _import_pipeline.sanitize_filename(f.filename)
         file_data.append((data, safe_name))
 
-    combined_bytes, combined_name, combine_err = _import_pipeline.combine_csv_files(file_data)
+    # Además del combinado, cada archivo por separado: hay lectores (inviu) que
+    # tienen que leerlos de a uno (ver `juntar_archivos`).
+    combined_bytes, combined_name, combine_err, partes = _import_pipeline.juntar_archivos(file_data)
     if combine_err:
         raise HTTPException(400, combine_err)
 
@@ -46796,6 +46798,7 @@ def import_preview(
                     parser_format=format,
                     mapping=parsed_mapping,
                     route_by_currency=flag_route,
+                    partes=partes,
                 )
         # Si otro usuario tiene el candado de la base (un confirm largo, la tanda
         # del asesor, el cron), el `with conn:` hace rollback y se vuelve a

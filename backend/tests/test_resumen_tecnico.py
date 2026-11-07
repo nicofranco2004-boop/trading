@@ -142,6 +142,32 @@ class PalabrasTest(unittest.TestCase):
         h = rh.para_el_resumen(f, "Nueva")
         self.assertTrue(h["para_el_titular"].startswith("En tres meses"))
 
+    def test_despues_de_un_hueco_de_precios_no_dice_en_un_anio_como_la_ficha(self):
+        # Sin precios del 25/09 al 31/10/2025, el cierre de «hace un año» (21/10/2025)
+        # sería el del 24/09, 27 días antes: la ficha no daba la ganancia de 12 meses y
+        # su resumen decía «En un año subió…» (auditoría 06/11 del precio de arranque,
+        # H1). Con LA misma regla (`tecnico.base_vieja`), callan los dos.
+        hoy = date(2026, 10, 21)
+        todos = [hoy - timedelta(days=k) for k in range(800, -1, -1)]
+        hueco = [d for d in todos if not date(2025, 9, 25) <= d <= date(2025, 10, 31)]
+        for dias, dice_el_anio in ((todos, True), (hueco, False)):
+            n = len(dias)
+            # Sube y en las últimas 20 ruedas baja: lejos del máximo y del mínimo del año.
+            cierres = [100 + i * 0.1 for i in range(n - 20)] + [100 + (n - 21) * 0.1 - 0.5 * (k + 1) for k in range(20)]
+            velas = [{"date": d.isoformat(), "close": c} for d, c in zip(dias, cierres)]
+            pts = [{"d": v["date"], "c": v["close"]} for v in velas]
+            ficha = {"disponible": True, "moneda": "usd", "puntos": pts,
+                     "lectura": {"fecha": pts[-1]["d"], "precio": pts[-1]["c"]},
+                     "fibonacci": {"disponible": False, "en_curso": {
+                         "dir": "suba", "hasta": {"fecha": pts[-21]["d"], "precio": pts[-21]["c"]},
+                         "desde": {"fecha": pts[0]["d"], "precio": pts[0]["c"]}}}}
+            with self.subTest(hueco=not dice_el_anio):
+                self.assertEqual(tecnico.lectura(velas)["rend_12m"] is not None, dice_el_anio)
+                titular = rh.para_el_resumen(ficha, "Nueva")["para_el_titular"]
+                self.assertEqual(titular.startswith("En un año"), dice_el_anio, titular)
+                if not dice_el_anio:
+                    self.assertTrue(titular.startswith("En tres meses"), titular)
+
     def test_cerca_del_maximo_no_dice_que_es_el_maximo(self):
         # El día anterior cerró en 30.420 y el último en 30.300 (0,4 % abajo).
         cierres = [20000 + i * 25 for i in range(399)] + [30420.0, 30300.0]

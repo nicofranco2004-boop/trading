@@ -22,7 +22,7 @@ el mismo día que un giro, se dice que no se repita su precio, para que nunca
 haya dos precios para un mismo día.
 """
 import math
-from datetime import date, timedelta
+from datetime import date
 
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
          "septiembre", "octubre", "noviembre", "diciembre"]
@@ -97,9 +97,16 @@ def proporcion(q):
 # ─── los hechos ──────────────────────────────────────────────────────────────
 
 def _cierre_hace(puntos, dias):
-    piso = (date.fromisoformat(puntos[-1]["d"]) - timedelta(days=dias)).isoformat()
+    """El cierre de `dias` atrás (o el último anterior): el precio de arranque de LA
+    regla, `tecnico.dia_de_arranque`, la misma de Comparar y del Backtesting. None
+    si es de más de 10 días antes (`tecnico.base_vieja`, como la ganancia de 12
+    meses de la ficha: después de un hueco de precios no se dice «en un año»)."""
+    import tecnico
+    piso = tecnico.dia_de_arranque(puntos[-1]["d"], dias)
     previos = [p for p in puntos if p["d"] <= piso]
-    return previos[-1] if previos else None
+    if not previos or tecnico.base_vieja(previos[-1]["d"], puntos[-1]["d"], dias):
+        return None
+    return previos[-1]
 
 
 def _mov(p0, p1, moneda, hoy):

@@ -267,6 +267,7 @@ MIN_ANCHOS_BB = 60
 BB_QUIETO = 1e-9
 # La vela de «hace 12 meses» tiene que estar a lo sumo a estos días de esa
 # fecha: después de un hueco largo era una de hace años (auditoría 28/10).
+# `base_vieja`: lo usan la ficha y su resumen ✦ (también para «en tres meses»).
 DIAS_BASE_ANIO = 10
 # Cuánto se mueve: el día normal de los últimos 20 días de mercado, contra el
 # de su último año (con al menos 120 días medidos). Medido el 28/10 en 15
@@ -488,19 +489,53 @@ def _pct(a, b):
     return (a / b - 1.0) * 100.0 if (a is not None and b) else None
 
 
+def dia_de_arranque(ultimo: str, dias: int) -> str:
+    """LA regla del PRECIO de arranque de «los últimos `dias` días»: el día cuyo
+    cierre vale 100, `dias` días corridos antes de `ultimo`, el último precio («1
+    año» del 05/11/2026 arranca con el cierre del 05/11/2025; con un 29 de febrero
+    en el medio, con el del día siguiente a esa fecha: el del 08/03/2024, con el del
+    09/03/2023). Si ese día no hubo rueda, vale el último cierre anterior (lo que
+    tenía ese día). Es el día anterior al primero de la ventana (`primer_dia`).
+
+    Antes cada pantalla tomaba otro precio del primer día: la ficha y el resumen ✦
+    el cierre de la víspera, Comparar y «Una cartera» el cierre del primer día, Una
+    regla la apertura; con un día movido, el mismo «último año» daba +5 % en la ficha
+    y +21 % en «Una cartera» (auditorías 06/11; Nico: «como la ficha»). La usan la
+    ficha (la ganancia de 12 meses, el resumen ✦), Comparar, «Una cartera» y lo que
+    Una regla dice que hizo el precio.
+
+    Un último cierre anterior de más de `DIAS_BASE_ANIO` días antes (un hueco de
+    precios, `base_vieja`): la ficha y su resumen ✦ no dan el número; Comparar, «Una
+    cartera» y Una regla todavía lo usan (qué muestran en ese caso lo decide Nico:
+    auditoría 06/11 del precio de arranque, H1)."""
+    return (date.fromisoformat(ultimo) - timedelta(days=dias)).isoformat()
+
+
+def base_vieja(fecha: str, ultimo: str, dias: int) -> bool:
+    """¿El cierre de arranque (`fecha`, el último hasta `dia_de_arranque`) es de
+    más de `DIAS_BASE_ANIO` días antes del día de arranque? Pasa con un hueco de
+    precios justo antes (un papel suspendido, un agujero de la fuente): «hace 12
+    meses» era un precio de semanas antes y el año medía otra cosa. La ficha no da
+    la ganancia de 12 meses, y su resumen ✦ no dice «en un año»: la ficha callaba y
+    su resumen decía «en un año subió 20 %» (auditoría 06/11 del precio de arranque,
+    H1)."""
+    return (date.fromisoformat(dia_de_arranque(ultimo, dias)) - date.fromisoformat(fecha)).days > DIAS_BASE_ANIO
+
+
 def primer_dia(ultimo: str, dias: int) -> str:
     """LA regla de «los últimos `dias` días»: el primero de los `dias` días
-    CORRIDOS que terminan en `ultimo`, el último precio (no hoy). «1 año» (365)
-    arranca el mismo día de la semana que el último precio, 52 semanas antes.
+    CORRIDOS que terminan en `ultimo`, el último precio (no hoy): el siguiente al
+    del precio de arranque (`dia_de_arranque`). «1 año» (365) arranca el mismo día
+    de la semana que el último precio, 52 semanas antes.
 
     Desde el último precio y no desde hoy (Nico, 06/11/2026): contando desde hoy,
     un domingo, un lunes o el día después de un feriado el año arrancaba otro día
     que en la ficha, y Comparar daba otro número que el Backtesting para el mismo
     activo (MU en Pascua de 2026: +465,9 % contra +392,7 %; con «3 años», todos
     los domingos y lunes; auditoría de «Una cartera» 05/11, H4). La usan la ficha
-    (`_desde_dias`, `_en_maximo`, el resumen ✦), Comparar, el Backtesting de una
-    regla y «Una cartera»."""
-    return (date.fromisoformat(ultimo) - timedelta(days=dias - 1)).isoformat()
+    (`_desde_dias`, `_en_maximo`, el resumen ✦) y el Backtesting de una regla
+    (los días en que se prueba)."""
+    return (date.fromisoformat(dia_de_arranque(ultimo, dias)) + timedelta(days=1)).isoformat()
 
 
 def es_vieja(ultimo: str, hoy: date) -> bool:
@@ -625,8 +660,7 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
     # normal llevado a un año: × √ de los días de mercado del año). Medido el
     # 28/10 en 15 acciones: este número NO anticipó qué acción rindió más
     # después (INFORME_riesgo_beneficio.md). Sólo con el año completo.
-    base_ok = i_anio > 0 and (date.fromisoformat(velas[-1]["date"]) - timedelta(days=DIAS_ANIO)
-                              - date.fromisoformat(velas[i_anio - 1]["date"])).days <= DIAS_BASE_ANIO
+    base_ok = i_anio > 0 and not base_vieja(velas[i_anio - 1]["date"], velas[-1]["date"], DIAS_ANIO)
     ret_12m = _pct(ultimo, cierres[i_anio - 1]) if base_ok else None
     vol_anual = mov_anio * (n - i_anio) ** 0.5 if mov_anio is not None else None
     vols = [v.get("volume") for v in velas[-21:-1] if v.get("volume")]
