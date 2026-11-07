@@ -181,10 +181,10 @@ describe('Backtesting → Una cartera', () => {
     expect(simulaciones()).toEqual(['GET /backtest/cartera?activos=AAPL,GGAL,BTC&pesos=50,30,20&local=GGAL&anios=2'])
     const r = montado.t()
     // En condicional, primero la respuesta, y con «Mi cartera de hoy» que no es lo que ganaste.
-    for (const parte of ['Esta cartera', 'S&P 500', 'Nasdaq', '+21,4%',
+    for (const parte of ['Esta cartera', 'S&P 500', 'Nasdaq', '+21,7%',
       'Habría dado casi lo mismo que el S&P 500, y el Nasdaq le habría ganado',
       'Es tu cartera de hoy puesta en el pasado', 'No es lo que ganaste: eso está en Métricas.', 'Ver Métricas',
-      'De cada US$ 100, AAPL habría sumado US$ 17,8', 'Sin tocarla, GGAL habría pasado de 30% a 19,7% de la cartera.',
+      'De cada US$ 100, AAPL habría sumado US$ 18,0', 'Sin tocarla, GGAL habría pasado de 30% a 19,7% de la cartera.',
       'Los índices, sin dividendos, como la cartera.', 'Peor caída: lo más que habría bajado desde su mejor momento.',
       'Cada activo', 'Cómo habrían ido US$ 100', 'no es una recomendación']) {
       expect(r, parte).toContain(parte)
@@ -194,7 +194,7 @@ describe('Backtesting → Una cartera', () => {
     // el gráfico y «Cada activo», abajo (Nico 06/11; diseño 05/11, M1).
     const arriba = texto(laTarjeta(montado.contenedor))
     for (const parte of ['Habría dado casi lo mismo que el S&P 500, y el Nasdaq le habría ganado', 'Habría dado',
-      'Peor caída', 'Esta cartera+21,4%']) expect(arriba, parte).toContain(parte)
+      'Peor caída', 'Esta cartera+21,7%']) expect(arriba, parte).toContain(parte)
     for (const parte of ['Cómo habrían ido US$ 100', 'Cada activo', 'De cada US$ 100']) expect(arriba, parte).not.toContain(parte)
     // Tu cartera de hoy NO queda en la dirección: dice qué tenés y cuánto pesa cada
     // cosa, y la dirección se ve con el ojito, queda en el historial y viaja en cada
@@ -318,9 +318,9 @@ describe('Backtesting → Una cartera', () => {
     montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera')
     const t = montado.t()
     // El lector de pantalla oye «del … al …»; la flecha es sólo para la vista (auditoría de pantalla 06/11, B5).
-    for (const parte of ['Año por año', 'Los 3\u00a0años', '01/11/23 → al 30/10/26', 'Año 1', '01/11/23 → al 31/10/24',
-      'Año 3', '31/10/25 → al 30/10/26', 'Por año, en promedio', porcentaje(CASOS.tres_anios.anio_por_anio.por_anio.cartera),
-      'El año que más habría subido la cartera es el 2 (del 31/10/24 al 31/10/25)',
+    for (const parte of ['Año por año', 'Los 3\u00a0años', '31/10/23 → al 30/10/26', 'Año 1', '31/10/23 → al 30/10/24',
+      'Año 3', '30/10/25 → al 30/10/26', 'Por año, en promedio', porcentaje(CASOS.tres_anios.anio_por_anio.por_anio.cartera),
+      'El año que más habría subido la cartera es el 2 (del 30/10/24 al 30/10/25)',
       'El S&P 500 le habría ganado a la cartera en 2 de los 3 años; la cartera al S&P 500, en el otro.',
       'El Nasdaq le habría ganado a la cartera en 2 de los 3 años; la cartera al Nasdaq, en el otro.']) {
       expect(t, parte).toContain(parte)
@@ -351,10 +351,10 @@ describe('Backtesting → Una cartera', () => {
     const [a1, a2, a3] = r.anio_por_anio.tramos
     expect(renglones).toEqual([
       ['Período', 'Esta cartera', 'S&P 500', 'Nasdaq'],
-      ['Los 3 años01/11/23 → al 30/10/26', ...pct({ cartera: r.cartera.resultado, sp500: sp.resultado, nasdaq: nq.resultado })],
-      ['Año 101/11/23 → al 31/10/24', ...pct(a1)],
-      ['Año 231/10/24 → al 31/10/25', ...pct(a2)],
-      ['Año 331/10/25 → al 30/10/26', ...pct(a3)],
+      ['Los 3 años31/10/23 → al 30/10/26', ...pct({ cartera: r.cartera.resultado, sp500: sp.resultado, nasdaq: nq.resultado })],
+      ['Año 131/10/23 → al 30/10/24', ...pct(a1)],
+      ['Año 230/10/24 → al 30/10/25', ...pct(a2)],
+      ['Año 330/10/25 → al 30/10/26', ...pct(a3)],
       ['Por año, en promedio', ...pct(r.anio_por_anio.por_anio)],
     ])
   })
@@ -477,12 +477,12 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
   // un renglón fijo dice que es el anterior (pantalla 06/11, M2, B4 y B5).
   it('mientras la suma no da 100, el último resultado queda en su lugar, diciendo que es el anterior', async () => {
     montado = await abrir(CARTERA)
-    expect(montado.t()).toContain('+21,4%')
+    expect(montado.t()).toContain('+21,7%')
     await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '5')
     await pasaLaPausa()
     const arriba = texto(laTarjeta(montado.contenedor))
     expect(arriba).toContain('Es el resultado anterior: no suman 100%')
-    expect(arriba).toContain('+21,4%')                  // el de antes, tenue
+    expect(arriba).toContain('+21,7%')                  // el de antes, tenue
     expect(arriba).not.toContain('Para ver cómo le habría ido')
     expect(simulaciones()).toHaveLength(1)              // y no se pidió nada con 55 %
     // Un solo «Repartir»: el aviso tenía otro (B5).
@@ -684,7 +684,7 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
       await clic(montado.contenedor, boton)
       await esperar()
       expect(String(foco.nodo?.atributos?.tabIndex ?? foco.nodo?.atributos?.tabindex)).toBe('-1')
-      expect(montado.t()).toContain('+21,4%')
+      expect(montado.t()).toContain('+21,7%')
     } finally { foco.soltar() }
   })
 
@@ -699,10 +699,10 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Repartir en partes iguales'))
     await pasaLaPausa()
     expect(simulaciones()).toHaveLength(2)
-    expect(montado.t()).toContain('+21,4%')
+    expect(montado.t()).toContain('+21,7%')
     await enActo(async () => { soltarVieja({ ...CASOS.recortada, curva: [] }) })
     await esperar()
-    expect(montado.t()).toContain('+21,4%')
+    expect(montado.t()).toContain('+21,7%')
     expect(montado.t()).not.toContain(porcentaje(CASOS.recortada.cartera.resultado))
   })
 
@@ -714,7 +714,7 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
     expect(montado.t()).toContain('Estamos trayendo los precios de los activos nuevos: un momento…')
     await enActo(async () => { await new Promise(r => setTimeout(r, 4100)) })
     await esperar()
-    expect(montado.t()).toContain('+21,4%')
+    expect(montado.t()).toContain('+21,7%')
     expect(simulaciones()).toHaveLength(2)
   }, 10000)
 
@@ -775,9 +775,9 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
     await pasaLaPausa()
     const c = montado.contenedor
     expect([tenue(elTitulo(c)), tenue(elGrafico(c))]).toEqual([true, true])
-    // Al lado y abajo, el MISMO resultado: +21,4 % en la tabla y US$ 121,4 en el gráfico.
-    expect(texto(elTitulo(c).parentNode)).toContain('Esta cartera+21,4%')
-    expect(texto(elGrafico(c))).toContain('Esta carteraUS$ 121,4')
+    // Al lado y abajo, el MISMO resultado: +21,7 % en la tabla y US$ 121,7 en el gráfico.
+    expect(texto(elTitulo(c).parentNode)).toContain('Esta cartera+21,7%')
+    expect(texto(elGrafico(c))).toContain('Esta carteraUS$ 121,7')
   })
 
   it('mientras llega la respuesta nueva, «Actualizando…» y lo de antes tenue desde el primer momento', async () => {

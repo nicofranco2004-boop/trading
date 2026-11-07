@@ -169,11 +169,16 @@ export function parteAfuera(res, x) {
 
 /** Qué hizo el PRECIO en el período (`variacion_precio`, sin comisiones): «GGAL
  *  bajó 35%». No sale de comprar y mantener, que además paga las comisiones: con
- *  un precio quieto decía «bajó 1%» (auditoría 04/11, H2). */
+ *  un precio quieto decía «bajó 1%» (auditoría 04/11, H2). Se mide desde el cierre
+ *  de la víspera del primer día (`variacion_desde`); si la prueba arrancó más
+ *  tarde, la frase nombra ESE cierre: «desde el 17/04» se medía desde el cierre
+ *  del 16, y en Comparar y «Una cartera» la fecha es la del cierre que vale 100
+ *  (auditoría 06/11 del precio de arranque, H2). */
 function loQueHizoElPrecio(res, periodo) {
   const v = res.variacion_precio
-  if (Math.abs(v) < 0.5) return `${res.asset} terminó casi igual ${periodo}`
-  return `${res.asset} ${v < 0 ? 'bajó' : 'subió'} ${Math.abs(Math.round(v))}% ${periodo}`
+  const cuando = res.recortado && res.variacion_desde ? `desde el cierre del ${fechaCorta(res.variacion_desde)}` : periodo
+  if (Math.abs(v) < 0.5) return `${res.asset} terminó casi igual ${cuando}`
+  return `${res.asset} ${v < 0 ? 'bajó' : 'subió'} ${Math.abs(Math.round(v))}% ${cuando}`
 }
 
 /** Por qué no se pudo probar, en una oración entera con el activo adentro. */
