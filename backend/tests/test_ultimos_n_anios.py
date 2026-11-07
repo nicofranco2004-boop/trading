@@ -198,14 +198,14 @@ class LasTresPantallas(unittest.TestCase):
 
     def _arrancan_igual(self, c, k, b, yahoo, hasta, anios=1, ficha=None):
         """Las cuatro pantallas, el mismo «último año» y el mismo número. El 100 es el
-        cierre de N años atrás, de fecha a fecha desde el último precio (o el último
-        cierre anterior, si ese día no hubo rueda): la regla de la ficha (Nico, 06/11:
+        cierre de N × 365 días antes del último precio (o el último cierre anterior, si
+        ese día no hubo rueda): la regla de la ficha (Nico, 06/11:
         «como la ficha»). Comparar y «Una cartera» arrancan ese día; Una regla prueba
         sus operaciones desde el siguiente (compra a la apertura), pero lo que dice que
         hizo el precio arranca de ese mismo cierre. Con el cierre del primer día, un
         día movido daba otro número (+21 % contra +5 %; auditorías 06/11)."""
         serie = yahoo.series["MU"]
-        arranque = hasta - timedelta(days=anios * 365)            # de fecha a fecha
+        arranque = hasta - timedelta(days=anios * 365)            # N × 365 días
         con_precio = max(d for d in serie if d <= arranque)        # el cierre que tenía ese día
         primero = min(d for d in serie if d > arranque)            # la primera rueda del período
         cierre = serie[hasta] / serie[con_precio] * 100
@@ -261,6 +261,57 @@ class LasTresPantallas(unittest.TestCase):
         yahoo = self._mercado(hoy, jueves, feriados={feriado}, mu=mu)
         c, k, b, ficha = self._las_tres(hoy, yahoo, 1, ficha=True)
         self._arrancan_igual(c, k, b, yahoo, jueves, ficha=ficha)
+
+    # ─── El día de arranque SIN rueda (auditoría 06/11 de las pruebas, H1 y H2) ─
+    # Las de arriba arrancan un día con rueda (jueves, martes, miércoles): ninguna
+    # miraba «si ese día no hubo rueda, vale el último cierre anterior», y un error
+    # que tomara el cierre del lunes siguiente quedaba en verde (con GGAL de verdad y
+    # el último precio un lunes, −28,1 % donde va −0,2 %: la semana de las elecciones).
+
+    def test_un_martes_hace_un_anio_es_domingo_y_vale_el_cierre_del_viernes(self):
+        # Último precio un lunes: 365 días antes es domingo. Las cuatro pantallas
+        # arrancan con el cierre del viernes; Una regla prueba desde el lunes.
+        hoy = _el_ultimo(1)                                   # un martes
+        lunes = hoy - timedelta(days=1)
+        self.assertEqual((lunes - timedelta(days=365)).weekday(), DOMINGO)
+        yahoo = self._mercado(hoy, lunes)
+        c, k, b, ficha = self._las_tres(hoy, yahoo, 1, ficha=True)
+        self._arrancan_igual(c, k, b, yahoo, lunes, ficha=ficha)
+
+    def test_si_hace_un_anio_fue_feriado_vale_el_cierre_de_la_vispera(self):
+        hoy = _el_ultimo(SABADO)
+        viernes = hoy - timedelta(days=1)
+        arranque = viernes - timedelta(days=365)              # un jueves, feriado
+        yahoo = self._mercado(hoy, viernes, feriados={arranque})
+        c, k, b, ficha = self._las_tres(hoy, yahoo, 1, ficha=True)
+        self._arrancan_igual(c, k, b, yahoo, viernes, ficha=ficha)
+
+    def _el_resumen_dice_lo_de_la_ficha(self, hoy, ultimo):
+        # El resumen ✦ («En un año subió X %») con el precio de arranque de la ficha, por
+        # la ruta de la ficha. Con un salto el día del precio de arranque (+12 %) y otro el
+        # primer día (−13 %), cada precio de arranque equivocado da otro número entero
+        # (el resumen redondea a entero: sin saltos, un día de diferencia no se veía).
+        arranque = ultimo - timedelta(days=365)
+        con_precio = max(_habiles(arranque - timedelta(days=7), arranque))
+        primero = min(_habiles(arranque + timedelta(days=1), arranque + timedelta(days=7)))
+        mu = lambda d: _precio(d) * (1.12 if d >= con_precio else 1.0) * (0.87 if d >= primero else 1.0)
+        yahoo = self._mercado(hoy, ultimo, mu=mu)
+        with self._un_dia(hoy, yahoo):
+            main._run_velas_diarias_job()
+            f = self._get("/api/tecnico/MU?moneda=usd")
+        r12 = f["lectura"]["rend_12m"]
+        serie = yahoo.series["MU"]
+        self.assertAlmostEqual(r12, (serie[ultimo] / serie[con_precio] - 1) * 100, places=6)
+        tit = rh.para_el_resumen(f, "MU")["para_el_titular"]
+        self.assertTrue(tit.startswith(f"En un año {'subió' if r12 >= 0 else 'bajó'} {rh.pct(r12)}"), (tit, r12))
+
+    def test_el_resumen_dice_el_numero_de_la_ficha_con_el_arranque_un_domingo(self):
+        hoy = _el_ultimo(1)                                   # martes: último precio el lunes
+        self._el_resumen_dice_lo_de_la_ficha(hoy, hoy - timedelta(days=1))
+
+    def test_el_resumen_dice_el_numero_de_la_ficha_con_el_arranque_con_rueda(self):
+        hoy = _el_ultimo(SABADO)                              # último precio el viernes: arranca el jueves
+        self._el_resumen_dice_lo_de_la_ficha(hoy, hoy - timedelta(days=1))
 
     # ─── H9: los precios viejos se miden contra hoy ─────────────────────────
 
@@ -444,6 +495,9 @@ class LaRegla(unittest.TestCase):
         self.assertEqual(tecnico.dia_de_arranque("2026-11-06", 3 * 365), "2023-11-07")
         self.assertEqual(tecnico.dia_de_arranque("2024-03-08", 365), "2023-03-09")      # con un 29 de febrero
         self.assertEqual(tecnico.dia_de_arranque("2026-11-04", 1), "2026-11-03")
+        self.assertEqual(tecnico.dia_de_arranque("2026-11-02", 365), "2025-11-02")      # un domingo
+        self.assertEqual(tecnico.dia_de_arranque("2026-10-30", 3 * 365), "2023-10-31")  # con el 29/02/2024
+        self.assertEqual(tecnico.dia_de_arranque("2028-03-01", 365), "2027-03-02")
         for ultimo in ("2026-11-04", "2026-04-02", "2028-03-01", "2024-03-08"):
             for dias in (1, 91, 365, 3 * 365, 5 * 365):
                 siguiente = date.fromisoformat(tecnico.dia_de_arranque(ultimo, dias)) + timedelta(days=1)
@@ -455,6 +509,17 @@ class LaRegla(unittest.TestCase):
         self.assertFalse(tecnico.base_vieja("2025-11-04", "2026-11-04", 365))
         self.assertFalse(tecnico.base_vieja("2025-10-25", "2026-11-04", 365), "10 días: todavía sirve")
         self.assertTrue(tecnico.base_vieja("2025-10-24", "2026-11-04", 365))
+
+    def test_la_ficha_cuenta_el_anio_desde_un_cierre_a_diez_dias_y_no_a_once(self):
+        # El mismo borde, por la ficha: sin rueda en los `hueco` días que terminan en el
+        # día de arranque (auditoría 06/11 de las pruebas, H5).
+        fin = date(2026, 10, 30)
+        a = date.fromisoformat(tecnico.dia_de_arranque(fin.isoformat(), 365))
+        for hueco, vale in ((10, True), (11, False)):
+            dias = sorted(d for d in (fin - timedelta(days=k) for k in range(500))
+                          if not (a - timedelta(days=hueco) < d <= a))
+            velas = [{"date": d.isoformat(), "close": 100.0 + i} for i, d in enumerate(dias)]
+            self.assertEqual(tecnico.lectura(velas)["rend_12m"] is not None, vale, hueco)
 
     def test_vieja_es_mas_de_una_semana_contada_desde_hoy(self):
         hoy = date(2026, 11, 5)

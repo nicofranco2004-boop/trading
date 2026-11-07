@@ -20,7 +20,7 @@ import random
 import sys
 import unittest
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -34,6 +34,7 @@ import tecnico
 import velas_diarias
 from fechas import hoy_art_date
 from tests.test_tecnico import YahooFalso, _ruedas
+from tests.test_ultimos_n_anios import _el_ultimo
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 FIN = date(2026, 10, 30)
@@ -582,6 +583,7 @@ class LoQueLeeLaPantalla(unittest.TestCase):
 class Ruta(unittest.TestCase):
     """GET /api/backtest/cartera: LAS series de la ficha, los índices de cada noche
     y el freno."""
+    DIA_DE_LA_SEMANA = 1   # martes (ver `setUp`)
 
     def setUp(self):
         main._freno_reiniciar()
@@ -597,6 +599,15 @@ class Ruta(unittest.TestCase):
             self.uid = cur.lastrowid
             conn.commit()
         self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+        # El día de la prueba, fijo (`fechas.ahora_art`, el día argentino de toda la app):
+        # un martes, el último precio es del lunes y «1 año» arranca un domingo, sin rueda
+        # (vale el cierre del viernes). Con el día real, el caso cambiaba con el día de la
+        # semana en que corría la suite (auditoría 06/11 de las pruebas del precio de
+        # arranque, H3). La copia «UnViernes» corre lo mismo con un arranque con rueda.
+        dia = _el_ultimo(self.DIA_DE_LA_SEMANA)
+        reloj = mock.patch("fechas.ahora_art", return_value=datetime(dia.year, dia.month, dia.day, 15, 0))
+        reloj.start()
+        self.addCleanup(reloj.stop)
         self.hoy = hoy_art_date()
         self.yahoo = YahooFalso(self.hoy)
         self.yahoo.precios["AAPL"] = lambda i, d: 200 + 40 * math.sin(i / 12) + i * 0.05
@@ -808,7 +819,7 @@ class Ruta(unittest.TestCase):
         # el primer día hábil después del pedido: con el código de antes da rojo
         # cualquier día del año.
         self.yahoo.precios["BTC-USD"] = lambda i, d: 30000 + 10 * i
-        pedido = self.hoy - timedelta(days=1) - timedelta(days=5 * tecnico.DIAS_ANIO)    # de fecha a fecha
+        pedido = self.hoy - timedelta(days=1) - timedelta(days=5 * tecnico.DIAS_ANIO)    # 5 × 365 días
         habil = next(pedido + timedelta(days=k) for k in range(1, 8) if (pedido + timedelta(days=k)).weekday() < 5)
         res = self._cinco_anios("activos=BTC&pesos=100&anios=5", indices_desde=habil)
         self.assertTrue(res["disponible"], res)
@@ -917,6 +928,12 @@ class Ruta(unittest.TestCase):
                 self.assertEqual(self._get(q).status_code, 400)
         # Decimales que suman 100 sí.
         self.assertEqual(self._get("activos=AAPL,MSFT&pesos=33.33,66.67&anios=1").status_code, 200)
+
+
+class RutaUnViernes(Ruta):
+    """Las mismas, un viernes: el último precio es del jueves y «1 año» arranca un
+    miércoles, con rueda."""
+    DIA_DE_LA_SEMANA = 4
 
 
 if __name__ == "__main__":

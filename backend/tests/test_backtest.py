@@ -234,6 +234,18 @@ class LoQueVeLaPantalla(unittest.TestCase):
         # esta prueba no podría ver que «subió» toma otro precio que la compra.
         self.assertNotEqual(velas[i0]["open"], velas[i0 - 1]["close"])
 
+    def test_con_recorte_el_precio_arranca_la_vispera_del_primer_dia_probado(self):
+        # La media de 200 recién existe el 17/04/25: «GGAL bajó 41 % desde el cierre del
+        # 16/04/25», no desde el día pedido (hace 2 años). Sólo lo cuidaba el fixture, que
+        # dice «cambió», no «está mal» (auditoría 06/11 de las pruebas, H4).
+        velas = _ggal()
+        r = backtest.probar(velas, ["rsi", "media200"], 2, hoy=_al_dia(velas))
+        self.assertEqual((r["desde"], r["recortado"], r["variacion_desde"]), ("2025-04-17", True, "2025-04-16"))
+        i0 = [v["date"] for v in velas].index(r["desde"])
+        self.assertEqual(velas[i0 - 1]["date"], "2025-04-16")
+        self.assertAlmostEqual(r["variacion_precio"], (velas[-1]["close"] / velas[i0 - 1]["close"] - 1) * 100, places=9)
+        self.assertAlmostEqual(r["variacion_precio"], -41.4724, places=3)
+
     def test_la_peor_caida_se_cuenta_desde_los_100_del_principio(self):
         """Cada día abre en 100 y cierra abajo, y el cierre sube día a día: el
         primer día del período comprar y mantener ya perdió algo, aunque después
