@@ -24,7 +24,7 @@ import threading
 import time
 import unittest
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from unittest import mock
 
@@ -662,8 +662,22 @@ class ResumenTest(unittest.TestCase):
             self.assertEqual(self._pedir()["estado"], "no_disponible")
 
     def test_precios_viejos_no_se_ofrece(self):
-        with mock.patch.object(resumen_tecnico, "DIAS_VELA_VIEJA", -5):
-            self.assertIsNone(self._ficha()["resumen"])
+        # LA regla de «precio viejo» (`tecnico.es_vieja`, 7 días contados desde el día
+        # argentino), la misma del aviso de la ficha: con el último precio de hace 7
+        # días todavía se ofrece; con 8, no (antes tenía su propia copia del margen).
+        with main.db_abierta() as conn:
+            ultima = date.fromisoformat(conn.execute(
+                "SELECT MAX(date) FROM velas_diarias WHERE symbol = 'MSFT'").fetchone()[0])
+        el_dia = lambda n: mock.patch("fechas.ahora_art", return_value=datetime.combine(
+            ultima + timedelta(days=n), datetime.min.time()).replace(hour=15))
+        with el_dia(7):
+            f = self._ficha()
+            self.assertFalse(f["vieja"])
+            self.assertEqual(f["resumen"]["estado"], "no_hay")
+        with el_dia(8):
+            f = self._ficha()
+            self.assertTrue(f["vieja"])
+            self.assertIsNone(f["resumen"])
             self.assertEqual(self._pedir()["estado"], "no_disponible")
         self.assertEqual(self.claude.pedidos, [])
 

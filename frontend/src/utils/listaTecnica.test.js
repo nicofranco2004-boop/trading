@@ -108,14 +108,16 @@ describe('las filas, con lo que manda el servidor', () => {
     expect(f[0]).toMatchObject({ vigente: false, porque: 'sin_historia' })
   })
 
-  it('velas de hace más de 10 días: sin lectura, con su fecha, y sin último cambio', () => {
-    const vieja = lec('MSFT', false, { fecha: '2026-10-10' }, { ultimo_cambio: { fecha: '2026-10-08', texto: 'superó su promedio de 50 días: la tendencia de mediano plazo pasó a ser alcista.' } })
+  it('sin precios de la última semana (lo dice el servidor): sin lectura, con su fecha, y sin último cambio', () => {
+    // `vieja` viene de POST /api/tecnico/lista (tecnico.es_vieja, contado desde el
+    // día argentino). Antes la tabla contaba 10 días con la fecha de la compu.
+    const vieja = lec('MSFT', false, { fecha: '2026-10-16' }, { vieja: true, ultimo_cambio: { fecha: '2026-10-08', texto: 'superó su promedio de 50 días: la tendencia de mediano plazo pasó a ser alcista.' } })
     const f = filasDeLaLista({ seguidos: [{ symbol: 'MSFT' }], indice: indexarLecturas([vieja]), hoy: HOY })
     expect(f[0]).toMatchObject({ vigente: false, porque: 'vieja', rsi: null, adx: null, cambio: null })
-    expect(f[0].motivo).toContain('10/10/2026')
-    // El fin de semana largo sigue siendo de hoy.
-    const finde = filasDeLaLista({ seguidos: [{ symbol: 'MSFT' }], indice: indexarLecturas([lec('MSFT', false, { fecha: '2026-10-16' })]), hoy: HOY })
-    expect(finde[0].vigente).toBe(true)
+    expect(f[0].motivo).toContain('16/10/2026')
+    // Sin la marca, la fecha no decide (aunque la compu cuente más de una semana).
+    const sinMarca = filasDeLaLista({ seguidos: [{ symbol: 'MSFT' }], indice: indexarLecturas([lec('MSFT', false, { fecha: '2026-09-01' }, { vieja: false })]), hoy: HOY })
+    expect(sinMarca[0].vigente).toBe(true)
   })
 
   it('el último cambio: el de la cuenta única, con hace cuánto', () => {

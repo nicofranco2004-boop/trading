@@ -206,6 +206,22 @@ describe('LecturaTecnica', () => {
     expect((await opcionesDeLaVista(montado.contenedor)).some(o => o.startsWith('Dólares'))).toBe(true)
   })
 
+  it('«Los precios son del…» sólo si el servidor dice que están viejos (la compu no cuenta días)', async () => {
+    // `vieja` viene de GET /api/tecnico/{activo} (tecnico.es_vieja: sin precios de
+    // la última semana contada desde el día argentino). Antes se contaba acá desde
+    // las 9 de la mañana con el reloj de la compu (auditoría 06/11, H7). Los puntos
+    // de USD terminan en mayo de 2026: contando en la compu, eran «viejos».
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    expect(await dibujar({})).not.toContain('Los precios son del')
+    await montado.desmontar()
+    const ultimo = USD.puntos[USD.puntos.length - 1].d
+    respuestas = { '/tecnico/AAPL?moneda=usd': { ...USD, vieja: true }, '/tecnico/AAPL?moneda=ars': ARS }
+    const t = await dibujar({})
+    const [y, m, d] = ultimo.split('-')
+    expect(t).toContain(`Los precios son del ${d}/${m}/${y.slice(2)}.`)
+    expect(t).toContain('No se pudieron actualizar desde ese día.')
+  })
+
   it('sin velas todavía: el gráfico de 30 días de siempre', async () => {
     respuestas = { '/tecnico/': { disponible: false }, '/prices/history': { points: [] } }
     const t = await dibujar({})

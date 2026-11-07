@@ -72,16 +72,25 @@ describe('las palabras son las de la ficha', () => {
 // el Panorama, la pestaña Señales y el mail dan el MISMO %.
 
 describe('lo que no se puede leer no se inventa', () => {
-  const HOY = '2026-10-22'
-  it('una lectura de hace más de 10 días va sin lectura, con su fecha, y sin RSI', () => {
-    const vieja = lec('MSFT', false, { ...ALCISTA, fecha: '2026-09-17' })
-    expect(lecturaVieja(vieja, HOY)).toBe(true)
-    expect(tendencia(vieja, HOY)).toMatchObject({ id: 'sin', palabra: 'Sin lectura' })
-    expect(tendencia(vieja, HOY).motivo).toContain('17/09/2026')
-    expect(fuerza(vieja, HOY)).toBeNull()
-    // Un fin de semana largo (viernes → martes) sigue siendo de hoy.
-    const finde = lec('MSFT', false, { ...ALCISTA, fecha: '2026-10-16' })
-    expect(tendencia(finde, HOY).id).toBe('alcista')
+  // «Vieja» lo dice el servidor (`vieja` de cada lectura, tecnico.es_vieja: sin
+  // precios de la última semana contada desde el día argentino). La pantalla no
+  // cuenta días: antes eran 10 con la fecha de la compu (auditoría 06/11, H2).
+  it('una lectura que el servidor marca vieja va sin lectura, con su fecha, y sin RSI', () => {
+    const vieja = { ...lec('MSFT', false, { ...ALCISTA, fecha: '2026-09-17' }), vieja: true }
+    expect(lecturaVieja(vieja)).toBe(true)
+    expect(tendencia(vieja)).toMatchObject({ id: 'sin', palabra: 'Sin lectura', porque: 'vieja' })
+    expect(tendencia(vieja).motivo).toContain('17/09/2026')
+    expect(fuerza(vieja)).toBeNull()
+  })
+
+  it('sin la marca del servidor, una fecha vieja se lee igual: la compu no decide', () => {
+    // Con el reloj de la compu adelantado o en otro huso, la Cartera decía «viejo»
+    // un día antes (o después) que Comparar. Ahora la fecha sólo se muestra.
+    const sinMarca = lec('MSFT', false, { ...ALCISTA, fecha: '2020-01-02' })
+    expect(lecturaVieja(sinMarca)).toBe(false)
+    expect(tendencia(sinMarca).id).toBe('alcista')
+    expect(fuerza(sinMarca)).toEqual({ rsi: 64, palabra: veredictoRsi(64) })
+    expect(lecturaVieja({ ...sinMarca, vieja: false })).toBe(false)
   })
 
   it('si el pedido falla, la fila dice error, no «sin lectura»', () => {
@@ -100,12 +109,14 @@ describe('el motivo de cada «sin lectura» de una fila', () => {
     const bono = { id: 1, broker: 'IOL', asset: 'AL30', asset_type: 'BONO' }
     const fondo = { id: 2, broker: 'IOL', asset: 'FCI:PIONERO-PESOS', asset_type: 'FUND' }
     const accion = { id: 4, broker: 'IOL', asset: 'GGAL', asset_type: 'ACCION' }
-    expect(tendencia({ asset: 'AL30', local: true, disponible: false }, HOY, bono).porque).toBe('no_se_mide')
-    expect(tendencia(null, HOY, fondo).porque).toBe('no_se_mide')
-    expect(tendencia({ asset: 'GGAL', local: true, disponible: false }, HOY, accion).porque).toBe('sin_historia')
-    expect(tendencia(null, HOY, accion).motivo).toContain('va a aparecer mañana')
-    expect(tendencia(lec('IREN', false, { ...ALCISTA, ruedas: 120, media200: null, dist_media200: null, tendencia: null, fecha: HOY }), HOY).porque).toBe('pocos_dias')
-    expect(tendencia(lec('MSFT', false, { ...ALCISTA, fecha: '2026-09-17' }), HOY).porque).toBe('vieja')
+    expect(tendencia({ asset: 'AL30', local: true, disponible: false }, bono).porque).toBe('no_se_mide')
+    expect(tendencia(null, fondo).porque).toBe('no_se_mide')
+    expect(tendencia({ asset: 'GGAL', local: true, disponible: false }, accion).porque).toBe('sin_historia')
+    expect(tendencia(null, accion).motivo).toContain('va a aparecer mañana')
+    expect(tendencia(lec('IREN', false, { ...ALCISTA, ruedas: 120, media200: null, dist_media200: null, tendencia: null, fecha: HOY })).porque).toBe('pocos_dias')
+    expect(tendencia({ ...lec('MSFT', false, { ...ALCISTA, fecha: '2026-09-17' }), vieja: true }).porque).toBe('vieja')
+    // El motivo dice «la última semana», la regla del servidor (tecnico.DIAS_VIEJA = 7).
+    expect(MOTIVOS_SIN_LECTURA.vieja).toContain('antes de la última semana')
     for (const k of ['no_se_mide', 'sin_historia', 'pocos_dias', 'vieja']) expect(MOTIVOS_SIN_LECTURA[k]).toBeTruthy()
   })
 })

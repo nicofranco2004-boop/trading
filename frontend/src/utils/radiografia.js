@@ -13,13 +13,14 @@
 import { isFciSym, isFixedIncome } from './valuation'
 import { esLoteLocal, esAccionLocal } from './accionLocal'
 import { tarjetas, veredictoRsi } from './tecnico'
-import { hoyISO } from './fecha'
 
-// Una lectura cuya última vela tiene más días corridos que esto no describe el
-// precio de hoy (Yahoo dejó de mandar velas, cambió el ticker): va «sin
-// lectura» con su fecha, en vez de contarse en el porcentaje. Un fin de semana
-// largo con feriados son 5 días; las velas se guardan cada noche.
-export const DIAS_LECTURA_VIEJA = 10
+// Una lectura sin precios de la última semana no describe el precio de hoy
+// (Yahoo dejó de mandar velas, cambió el ticker): va «sin lectura» con su fecha,
+// en vez de contarse en el porcentaje. Lo decide el SERVIDOR (`vieja` de cada
+// lectura, `tecnico.es_vieja`, contado desde el día argentino): la misma regla
+// de Comparar, el Backtesting y la ficha. Antes acá eran 10 días contados con la
+// fecha de la compu, y el mismo papel salía «al día» en la Cartera y «viejo» en
+// Comparar (auditoría de «1 año» 06/11, H2; Nico eligió 7 días).
 
 // ¿Acción ARGENTINA (no CEDEAR)? La regla vive en accionLocal.js, una para la
 // ficha, la Cartera y las alertas técnicas; acá se re-exporta.
@@ -61,7 +62,7 @@ export const MOTIVOS_SIN_LECTURA = {
   no_se_mide: 'Rendi no guarda la historia de precios de bonos, fondos, efectivo ni plazos fijos, así que no se les calcula la tendencia.',
   sin_historia: 'todavía no hay historia de precios guardada. Se guarda cada noche, así que va a aparecer mañana.',
   pocos_dias: 'para calcular la tendencia hacen falta 200 días de mercado de precios guardados, y todavía no los tienen.',
-  vieja: `su último precio guardado tiene más de ${DIAS_LECTURA_VIEJA} días, así que no refleja cómo está hoy.`,
+  vieja: 'su último precio guardado es de antes de la última semana, así que no refleja cómo está hoy.',
 }
 
 /** ¿Este lote es de los que no se miden con velas? (efectivo, fondo, bono, plazo fijo) */
@@ -76,13 +77,13 @@ function noSeMide(p) {
  * (una clave de MOTIVOS_SIN_LECTURA) y un `motivo` para el globo de la fila,
  * según qué le falta: `p` (un lote del activo) dice si es un bono o un fondo.
  */
-export function tendencia(x, hoy = hoyISO(), p = null) {
+export function tendencia(x, p = null) {
   const sin = (porque, motivo) => ({ id: 'sin', palabra: 'Sin lectura', porque, motivo })
   if (!x || !x.disponible || !x.lectura) {
     if (noSeMide(p)) return sin('no_se_mide', 'Rendi no guarda la historia de precios de bonos, fondos ni efectivo, así que no se les calcula la tendencia.')
     return sin('sin_historia', 'Todavía no hay historia de precios guardada para este activo. Se guarda cada noche, así que va a aparecer mañana.')
   }
-  if (lecturaVieja(x, hoy)) {
+  if (lecturaVieja(x)) {
     return sin('vieja', `El último precio guardado es del ${fechaCorta(x.lectura.fecha)}, así que no refleja cómo está hoy.`)
   }
   const fondo = tarjetas(x.lectura).find(t => t.id === 'fondo')
@@ -91,11 +92,10 @@ export function tendencia(x, hoy = hoyISO(), p = null) {
   return sin('pocos_dias', fondo?.texto || 'Faltan datos.')
 }
 
-/** ¿La última vela es de hace más de DIAS_LECTURA_VIEJA días corridos? */
-export function lecturaVieja(x, hoy = hoyISO()) {
-  const f = x?.lectura?.fecha
-  if (!f) return false
-  return (Date.parse(hoy + 'T00:00:00Z') - Date.parse(f + 'T00:00:00Z')) / 86400000 > DIAS_LECTURA_VIEJA
+/** ¿Su último precio es de antes de la última semana? Lo dice el servidor
+ *  (`vieja`); la pantalla no cuenta días. */
+export function lecturaVieja(x) {
+  return !!x?.vieja
 }
 
 function fechaCorta(iso) {
@@ -105,8 +105,8 @@ function fechaCorta(iso) {
 
 /** El RSI de la fila y su palabra (`veredictoRsi`, «Toma fuerza»). null si no hay o
  *  si la lectura es vieja. */
-export function fuerza(x, hoy = hoyISO()) {
-  const rsi = x?.disponible && !lecturaVieja(x, hoy) ? x.lectura?.rsi : null
+export function fuerza(x) {
+  const rsi = x?.disponible && !lecturaVieja(x) ? x.lectura?.rsi : null
   if (rsi == null) return null
   return { rsi, palabra: veredictoRsi(rsi) }
 }
