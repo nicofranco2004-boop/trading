@@ -9,7 +9,8 @@ UNA SOLA CUENTA. La regla de «arrancar en 100» (`base_cien`) y en qué moneda 
 cada línea viven acá; la pantalla sólo dibuja. Las series de los activos son las
 de la ficha (`tecnico.serie`: corrige los cambios de ratio de un CEDEAR y pasa
 una acción argentina a dólares con el MEP de CADA día) y la del S&P 500 la de
-«Cuánto se mueve» (`tecnico.sp500`). Acá no se arma ninguna serie de precios.
+«Cuánto se mueve» (`tecnico.indice_con_dolar`). Acá no se arma ninguna serie de
+precios.
 
 HASTA CUÁNDO. Todas las líneas terminan el último día con precio de los
 activos (nunca después de hoy: la UVA se publica por adelantado). Una línea
@@ -47,7 +48,11 @@ LAS VARAS EN CADA MONEDA.
   · Inflación (CER): sólo en pesos. En dólares no se ofrece: lo que la mide es
     el poder de compra de los pesos. La serie la pasa quien llama (vive en
     `main`, con su plan B por UVA y su `basis`).
-  · S&P 500: en dólares, el índice; en pesos, × el MEP de cada día.
+  · S&P 500: en dólares, el índice; en pesos, × el dólar de los CEDEARs de cada
+    día, el contado con liqui (`tecnico.indice_con_dolar`): es el que se compra
+    en la Bolsa con el CEDEAR de SPY. Con el MEP, SPY le «ganaba» 4,45 % en un año
+    sin moverse distinto (auditoría del contado con liqui, H2 del servidor). Cada
+    línea dice con qué dólar fue (`convertida`) y la pantalla lo cuenta abajo.
   · Merval: no hay fuente (Yahoo dejó de publicar ^MERV el 16/10/2026). No va.
 
 QUÉ NO HACE. No recomienda nada ni mira para adelante: dice qué pasó.
@@ -166,8 +171,9 @@ def comparar(conn, activos: list, moneda: str, desde: str = None, *, anios: int 
     for asset, local in activos:
         # Todo arranca en 100: la escala de un CEDEAR estimado en pesos no cambia
         # ninguna línea, y uno sin escala conocida se compara igual (la acción de
-        # afuera × el MEP). Sin esto, NET desaparecía de Comparar en pesos
-        # (auditoría 06/11, H4 de la serie).
+        # afuera × el contado con liqui de cada día, el dólar de los CEDEARs; la
+        # vara «guardar dólares» sigue siendo el MEP). Sin esto, NET desaparecía
+        # de Comparar en pesos (auditoría 06/11, H4 de la serie).
         s = tecnico.serie(conn, asset, moneda, bool(local), escala_obligatoria=False)
         puntos = [p for p in _cierres(s["velas"]) if p[0] <= tope]
         if not puntos:
@@ -193,7 +199,8 @@ def comparar(conn, activos: list, moneda: str, desde: str = None, *, anios: int 
     # El día del 100: `desde`, o el primero que tienen TODOS si alguno empieza
     # después; y si el S&P 500 empieza unos días después (el borde de lo guardado),
     # ése (`dia_del_cien`, LA regla de las dos pantallas).
-    sp = _cierres(tecnico.sp500(conn, moneda))
+    sp_velas, sp_dolar = tecnico.indice_con_dolar(conn, tecnico.SP500, moneda)
+    sp = _cierres(sp_velas)
     base, de_los_activos = dia_del_cien(desde, [c["puntos"] for c in crudas], [sp], hoy)
     if _dias(desde, de_los_activos) > DIAS_MARGEN:
         out["base_corrida"] = True
@@ -205,7 +212,7 @@ def comparar(conn, activos: list, moneda: str, desde: str = None, *, anios: int 
             out["base_corrida_por"] = ultimo_en_llegar["clave"]
     out["base"] = base
 
-    varas = [{"clave": "sp500", "puntos": sp, "ticker": "^GSPC"}]
+    varas = [{"clave": "sp500", "puntos": sp, "ticker": "^GSPC", "convertida": sp_dolar}]
     if moneda == "usd":
         # Un dólar guardado sigue siendo un dólar: 100 de punta a punta.
         varas.append({"clave": "mep", "puntos": [(base, 1.0), (hasta, 1.0)], "ticker": None})
@@ -235,7 +242,7 @@ def comparar(conn, activos: list, moneda: str, desde: str = None, *, anios: int 
         if v["clave"] == "cer" and v["ticker"] == "UVA":
             nombre = "Inflación (CER, vía UVA)"
         crudas.append({"clave": v["clave"], "tipo": "vara", "nombre": nombre,
-                       "ticker": v["ticker"], "convertida": None, "puntos": p})
+                       "ticker": v["ticker"], "convertida": v.get("convertida"), "puntos": p})
 
     for c in crudas:
         p = c["puntos"]

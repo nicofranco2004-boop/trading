@@ -119,7 +119,7 @@ class HorasTest(unittest.TestCase):
         self.client = TestClient(main.app)
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
-            for t in ("velas_diarias", "velas_estado", "cambios_ratio", "fx_rates_daily"):
+            for t in ("velas_diarias", "velas_estado", "cambios_ratio", "fx_rates_daily", "bond_indices_daily"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
                 "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
@@ -378,6 +378,87 @@ class HorasTest(unittest.TestCase):
         self.assertAlmostEqual(h4["puntos"][-1]["c"], 300.0 * 1200.0 / 20, places=6)
         # En dólares, la acción de afuera tal cual (lo armado en pesos no se mezcla).
         self.assertEqual(self._horas("AAPL", "1h")["puntos"][-1]["c"], 300.0)
+
+    def test_cedear_estimado_las_horas_van_con_el_contado_con_liqui_de_su_dia(self):
+        # Con el contado con liqui de cada día guardado, el diario de un CEDEAR
+        # estimado es la acción × ESE dólar ÷ 20 (Nico, 06/11), y las de 1 y 4
+        # horas, cada una con el de su día: la misma conversión del diario. Lo
+        # armado antes con el MEP (la base sin el contado con liqui) no se vuelve a
+        # servir aunque Yahoo no haya traído nada nuevo: el dólar va en la clave.
+        dias = [date(2026, 10, 27), date(2026, 10, 28)]
+        self.yahoo.horas["AAPL"] = [(_hora(d, hh, 30, NY), 300.0, 303.0, 297.0, 300.0, 1.0)
+                                    for d in dias for hh in range(9, 16)]
+        self._mep({"2026-10-27": 1000.0, "2026-10-28": 1200.0})
+        self._ficha("AAPL", moneda="ars")
+        antes = self._horas("AAPL", "1h", moneda="ars")
+        self.assertEqual(antes["convertida"], "mep")
+        ccl = {d.isoformat(): 1050.0 for d in _ruedas(hoy_art_date(), 800)}
+        ccl.update({"2026-10-27": 1060.0, "2026-10-28": 1260.0})
+        with mock.patch("main._bajar_ccl", lambda: [(d, v - 1, v + 1) for d, v in ccl.items()]):
+            main._actualizar_ccl()
+        self._ficha("AAPL", moneda="ars")
+        h1 = self._horas("AAPL", "1h", moneda="ars")
+        por_dia = {p["d"]: p for p in h1["puntos"]}
+        self.assertAlmostEqual(por_dia["2026-10-27"]["c"], 300.0 * 1060.0 / 20, places=6)
+        self.assertEqual((h1["ticker"], h1["convertida"], h1["escala"]), ("AAPL", "ccl", 20))
+        self.assertAlmostEqual(por_dia["2026-10-28"]["c"], 300.0 * 1260.0 / 20, places=6)
+        self.assertAlmostEqual(por_dia["2026-10-28"]["h"], 303.0 * 1260.0 / 20, places=6)
+        h4 = self._horas("AAPL", "4h", moneda="ars")
+        self.assertAlmostEqual(h4["puntos"][-1]["c"], 300.0 * 1260.0 / 20, places=6)
+
+    def test_cedear_estimado_las_horas_de_hoy_van_con_el_contado_con_liqui_de_ahora(self):
+        # El contado con liqui de HOY no se guarda hasta el cierre
+        # (`fx.HORA_CIERRE_CCL`): las velas de 1 hora de hoy van con el de ahora, el
+        # de la vela de hoy del gráfico diario (`tecnico._dolar_de_hoy`). Con el
+        # último guardado (el de ayer), al pasar de 1D a 1H el precio saltaba lo que
+        # se movió el dólar desde ayer (auditoría del contado con liqui, H4 del
+        # servidor). Y si se corrige el de un día guardado, lo armado se vuelve a
+        # armar aunque Yahoo no haya traído nada nuevo (la huella del dólar).
+        import fx
+        dias = [date(2026, 10, 28), date(2026, 10, 29)]         # el 29 es hoy (AHORA)
+        self.yahoo.horas["AAPL"] = [(_hora(d, hh, 30, NY), 300.0, 303.0, 297.0, 300.0, 1.0)
+                                    for d in dias for hh in range(9, 14)]
+        self._mep({})
+        ccl = {d.isoformat(): 1050.0 for d in _ruedas(date(2026, 10, 29), 800)}   # hasta el 28
+        ccl["2026-10-28"] = 1260.0
+        with mock.patch("main._bajar_ccl", lambda: [(d, v - 1, v + 1) for d, v in ccl.items()]):
+            main._actualizar_ccl()
+        self._ficha("AAPL", moneda="ars")
+        ahora = {"ccl": {"compra": 1299.0, "venta": 1301.0, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        with mock.patch("fechas.hoy_art", lambda: "2026-10-29"), mock.patch("main._get_dolar_data", lambda: ahora):
+            h1 = self._horas("AAPL", "1h", moneda="ars")
+            por_dia = {p["d"]: p["c"] for p in h1["puntos"]}
+            self.assertAlmostEqual(por_dia["2026-10-28"], 300.0 * 1260.0 / 20, places=6)
+            self.assertAlmostEqual(por_dia["2026-10-29"], 300.0 * 1300.0 / 20, places=6,
+                                   msg="hoy, con el contado con liqui de ahora y no con el de ayer")
+            with main.db_abierta() as conn:                     # el servidor anota el cierre del 28
+                fx.guardar_ccl(conn, [("2026-10-28", 1279.0, 1281.0)], fx.FUENTE_PROPIA)
+                conn.commit()
+            h1 = self._horas("AAPL", "1h", moneda="ars")         # Yahoo no trajo nada nuevo
+        self.assertAlmostEqual({p["d"]: p["c"] for p in h1["puntos"]}["2026-10-28"], 300.0 * 1280.0 / 20, places=6)
+
+    def test_si_el_dashboard_reescribe_el_mep_de_hoy_igual_no_se_rehacen_las_cuentas(self):
+        # Cada vez que alguien abre su Dashboard se reescribe el MEP de hoy
+        # (`main.post_snapshot`), casi siempre con el mismo valor: lo armado con el
+        # MEP no se vuelve a armar por eso. Sí cuando cambia lo que vale un día.
+        import tecnico
+        dias = [date(2026, 10, 27), date(2026, 10, 28)]
+        self.yahoo.horas["GGAL.BA"] = [(_hora(d, hh, 0, BA), 6000.0, 6060.0, 5940.0, 6000.0, 1.0)
+                                       for d in dias for hh in range(11, 17)]
+        self._mep({"2026-10-27": 1000.0, "2026-10-28": 1200.0})
+        with main.db_abierta() as conn:                         # escritos más temprano
+            conn.execute("UPDATE fx_rates_daily SET fetched_at = '2026-10-29 09:00:00'")
+            conn.commit()
+        self._ficha("GGAL", local=True)
+        with mock.patch("tecnico.indicadores", wraps=tecnico.indicadores) as cuentas:
+            self._horas("GGAL", "1h", local=True)
+            main._persist_blue_for_date(hoy_art_date().isoformat(), 1100.0, source="dolarapi", mep=1000.0)
+            self._horas("GGAL", "1h", local=True)
+            self.assertEqual(cuentas.call_count, 1, "el mismo MEP, reescrito: no cambió nada")
+            self._mep({"2026-10-28": 1250.0})
+            h1 = self._horas("GGAL", "1h", local=True)
+            self.assertEqual(cuentas.call_count, 2)
+        self.assertAlmostEqual({p["d"]: p["c"] for p in h1["puntos"]}["2026-10-28"], 6000.0 / 1250.0, places=6)
 
     def test_horas_en_la_escala_de_la_serie_guardada_y_al_podarla_la_de_la_tabla(self):
         # Con la serie en pesos guardada, el diario va en SU escala (125, no la de la

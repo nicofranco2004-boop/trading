@@ -176,10 +176,11 @@ class NoSePudo(Exception):
         self.gasto = gasto
 
 
-def generar(hechos: dict) -> dict:
+def generar(hechos: dict, dolar: str = None) -> dict:
     """Llama al modelo (hasta 2 veces) y devuelve
     {texto, model, input_tokens, output_tokens, cost_usd_cents, llamadas, palabras}.
     None si la IA no está configurada. NoSePudo si no hubo texto publicable.
+    `dolar`: el `convertida` de la ficha, para la nota de un CEDEAR estimado.
 
     Texto plano, sin salida estructurada ni caché: es el pedido tal como lo midió
     la redacción, y con uno por activo y por día el caché de 1 h (que cuesta el
@@ -213,7 +214,7 @@ def generar(hechos: dict) -> dict:
                 # acuerde: el pedido arma oraciones fijas y la revisión no lo
                 # exigía (auditoría 06/11, H3 de la pantalla).
                 import tecnico
-                crudo = f"{crudo} {tecnico.NOTA_ESTIMADO}"
+                crudo = f"{crudo} {tecnico.nota_de(tecnico.NOTA_ESTIMADO, dolar)}"
             return {**gasto, "texto": crudo, "palabras": len(crudo.split())}
         log.info("Resumen técnico de %s, intento %d: %s", hechos.get("activo"), intento, graves + largo)
         if intento == 2:
@@ -239,13 +240,18 @@ def clave_de(ficha: dict) -> tuple | None:
     el ticker, el resumen escrito con la cuenta de antes («cerró en 546.700
     pesos») se seguía mostrando al lado del gráfico nuevo ($ 27.337) hasta la vela
     siguiente; y lo mismo el día que la escala cambia (se borra una serie vieja,
-    se corrige la tabla). Auditoría 06/11, H2 de la pantalla."""
+    se corrige la tabla). Auditoría 06/11, H2 de la pantalla.
+
+    Y el dólar, si es el contado con liqui («AAPL÷20·ccl»): el escrito con el MEP
+    (el estimado de antes, ~6 % más abajo) no es el de la serie nueva."""
     if not ficha or not ficha.get("disponible"):
         return None
     fecha = (ficha.get("lectura") or {}).get("fecha")
     if not (ficha.get("ticker") and fecha):
         return None
     serie = ficha["ticker"] + (f"÷{round(ficha['escala'], 6):g}" if ficha.get("escala") else "")
+    if ficha.get("escala") and ficha.get("convertida") == "ccl":
+        serie += "·ccl"
     return (serie, ficha.get("moneda") or "usd", fecha)
 
 
@@ -373,7 +379,7 @@ def pedir(abrir, ficha: dict, nombre: str, uid: int) -> dict:
         return {"estado": "generando", "fecha": clave[2]}
 
     try:
-        res = generar(hechos)
+        res = generar(hechos, ficha.get("convertida"))
         gasto, error = (res or {}), (None if res else "IA sin configurar")
     except NoSePudo as ex:
         res, gasto, error = None, ex.gasto, str(ex)

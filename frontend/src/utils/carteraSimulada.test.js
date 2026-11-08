@@ -29,6 +29,8 @@ import { modoDe, porcentaje } from './backtesting'
 
 const AQUI = dirname(fileURLToPath(import.meta.url))
 const CASOS = JSON.parse(readFileSync(resolve(AQUI, '../../../backend/tests/fixtures/cartera_simulada.json'), 'utf8'))
+// «Mi cartera de hoy» como la contesta el servidor (cartera_simulada.de_hoy).
+const DE_HOY = JSON.parse(readFileSync(resolve(AQUI, '../../../backend/tests/fixtures/cartera_de_hoy.json'), 'utf8'))
 const PY = readFileSync(resolve(AQUI, '../../../backend/cartera_simulada.py'), 'utf8')
 const fila = (asset, txt, local = false) => ({ asset, local, txt })
 
@@ -166,6 +168,48 @@ describe('mi cartera de hoy', () => {
     expect(notaDeHoy({ activos: [], afuera: [{ asset: 'AL30', motivo: 'sin_serie' }] }))
       .toBe('Quedó afuera AL30: no tenemos sus precios de cada día. El resto se repartió sobre 100%.')
     expect(notaDeHoy({ activos: [], afuera: [] })).toBeNull()
+  })
+
+  it('lo que no tiene precios de la última semana queda afuera con su fecha, y el resto en su proporción', () => {
+    // MU parado: antes quedaba adentro y frenaba la cartera entera (pantalla 06/11, H3).
+    // La respuesta de verdad del servidor, la que se le mostró a Nico el 06/11.
+    expect(filasDeHoy(DE_HOY.vieja)).toEqual([fila('AAPL', '62,5'), fila('NVDA', '37,5')])
+    expect(notaDeHoy(DE_HOY.vieja)).toBe('Lo que se simula es el 80% de tu plata. Quedó afuera MU: sus precios llegan '
+      + 'hasta el 14/08/26. El resto se repartió sobre 100%.')
+    expect(notaDeHoy(DE_HOY.vieja, 'Ana')).toMatch(/^Lo que se simula es el 80% de su plata\. Quedó afuera MU/)
+    const parado = (asset, hasta) => ({ asset, tipo: 'STOCK', motivo: 'vieja', hasta })
+    // Varios: el mismo día, una vez; días distintos, cada uno con el suyo, del más viejo al más nuevo.
+    expect(notaDeHoy({ afuera: [parado('AMD', '2026-08-14'), parado('MU', '2026-08-14')] }))
+      .toBe('Quedaron afuera AMD y MU: sus precios llegan hasta el 14/08/26. El resto se repartió sobre 100%.')
+    expect(notaDeHoy({ afuera: [parado('AMD', '2026-09-02'), parado('KO', '2026-08-14'), parado('MU', '2026-08-14')] }))
+      .toBe('Quedaron afuera AMD, KO y MU: los precios de KO y MU llegan hasta el 14/08/26 y los de AMD hasta el '
+        + '02/09/26. El resto se repartió sobre 100%.')
+    // Tres días: comas y una sola «y» (la propuso la revisión del 06/11).
+    expect(notaDeHoy({ afuera: [parado('AMD', '2026-09-02'), parado('INTC', '2026-10-01'), parado('KO', '2026-08-14')] }))
+      .toBe('Quedaron afuera AMD, INTC y KO: los precios de KO llegan hasta el 14/08/26, los de AMD hasta el 02/09/26 '
+        + 'y los de INTC hasta el 01/10/26. El resto se repartió sobre 100%.')
+  })
+
+  it('«lo demás (efectivo, plazos fijos, bonos o fondos)» si algo de eso quedó afuera', () => {
+    // Con sólo MU (o el tope) afuera, lo demás es ese activo y la nota lo nombra. Con
+    // efectivo o plazos fijos (el sí o no del servidor) o un bono, vuelve: sin él, con
+    // efectivo parecía que todo lo que faltaba era MU (revisión 06/11; Nico, 06/11:
+    // «Sí, que lo nombre»). Con la respuesta de verdad del servidor, con y sin efectivo.
+    const LO_DEMAS = ': lo demás (efectivo, plazos fijos, bonos o fondos) no lo podemos simular.'
+    expect(notaDeHoy(DE_HOY.vieja_con_efectivo)).toBe(`Lo que se simula es el 62% de tu plata${LO_DEMAS} Quedó afuera MU: `
+      + 'sus precios llegan hasta el 14/08/26. El resto se repartió sobre 100%.')
+    expect(notaDeHoy(DE_HOY.vieja)).toMatch(/^Lo que se simula es el 80% de tu plata\. Quedó afuera MU/)
+    const bono = { asset: 'AL30', tipo: 'BOND', motivo: 'sin_serie' }
+    const t11 = { asset: 'T11', tipo: 'STOCK', motivo: 'tope' }
+    expect(notaDeHoy({ afuera: [bono], parte: 70 })).toBe(`Lo que se simula es el 70% de tu plata${LO_DEMAS} Quedó `
+      + 'afuera AL30: no tenemos sus precios de cada día. El resto se repartió sobre 100%.')
+    expect(notaDeHoy({ afuera: [bono, ...DE_HOY.vieja.afuera, t11], parte: 60 })).toBe(`Lo que se simula es el 60% de `
+      + `tu plata${LO_DEMAS} Quedó afuera AL30: no tenemos sus precios de cada día. Quedó afuera MU: sus precios llegan `
+      + 'hasta el 14/08/26. Entran hasta 10 activos: quedó afuera T11, el que menos pesa. El resto se repartió sobre 100%.')
+    expect(notaDeHoy({ afuera: [t11], parte: 95, efectivo_o_plazos: false }))
+      .toMatch(/^Lo que se simula es el 95% de tu plata\. Entran hasta 10 activos/)
+    expect(notaDeHoy({ afuera: [t11], parte: 85, efectivo_o_plazos: true }))
+      .toMatch(/^Lo que se simula es el 85% de tu plata: lo demás \(efectivo, plazos fijos, bonos o fondos\)/)
   })
 
   it('dice qué parte de tu plata se simula (un porcentaje, nunca plata)', () => {

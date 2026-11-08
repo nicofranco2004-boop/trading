@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { setBrokersRegistry } from './valuation'
 import {
   marcaLocal, primeraCompraDe, urlDelPedido, urlDeComparar, filasDelGrafico, fraseComparacion, monto,
-  vaciaPorVieja,
+  vaciaPorVieja, notaDelDolar,
 } from './comparadorPrecio'
 
 const serie = (clave, final, tipo = 'activo') => ({ clave, nombre: clave, tipo, final, puntos: [] })
@@ -120,6 +120,33 @@ describe('lo que dicen los números', () => {
   it('sin varas prendidas o sin activos, nada', () => {
     expect(fraseComparacion(res([serie('GGAL', 130)]))).toBe('')
     expect(fraseComparacion(res([serie('sp500', 110, 'vara')]))).toBe('')
+  })
+})
+
+describe('con qué dólar va cada línea (auditoría del contado con liqui, 06/11)', () => {
+  const con = (clave, convertida, tipo = 'activo') => ({ ...serie(clave, 100, tipo), convertida })
+  const enPesos = (...series) => notaDelDolar(res(series, { moneda: 'ars' }))
+
+  it('en pesos: los CEDEARs y el S&P 500 con el contado con liqui; lo demás de afuera, con el MEP', () => {
+    expect(enPesos(con('AAPL', 'ccl'), con('sp500', 'ccl', 'vara'), con('mep', null, 'vara')))
+      .toBe('Los CEDEARs y el S&P 500 se pasan a pesos con el dólar contado con liqui (CCL) de cada día.')
+    expect(enPesos(con('AAPL', 'ccl'), con('SCHD', 'mep'), con('sp500', 'ccl', 'vara')))
+      .toBe('Los CEDEARs y el S&P 500 se pasan a pesos con el dólar contado con liqui (CCL) de cada día; '
+        + 'lo demás que cotiza afuera, con el MEP.')
+    // Una acción argentina va con su precio de BYMA: sólo el S&P 500 se pasa.
+    expect(enPesos(con('GGAL', null), con('sp500', 'ccl', 'vara')))
+      .toBe('El S&P 500 se pasa a pesos con el dólar contado con liqui (CCL) de cada día.')
+    // Sacaste el S&P: se habla de lo que ves.
+    expect(enPesos(con('AAPL', 'ccl')))
+      .toBe('Los CEDEARs se pasan a pesos con el dólar contado con liqui (CCL) de cada día.')
+  })
+
+  it('sin la historia del contado con liqui, todo con el MEP; y en dólares, lo de siempre', () => {
+    expect(enPesos(con('AAPL', 'mep'), con('sp500', 'mep', 'vara')))
+      .toBe('Lo que cotiza afuera se pasa a pesos con el MEP de cada día.')
+    expect(enPesos(con('GGAL', null))).toBe('')
+    expect(notaDelDolar(res([con('GGAL', 'mep'), con('sp500', null, 'vara')])))
+      .toBe('Las acciones argentinas se pasan a dólares con el MEP de cada día.')
   })
 })
 

@@ -180,3 +180,27 @@ export function fraseComparacion(res) {
   }
   return partes.join(' ')
 }
+
+/**
+ * Con qué dólar se pasó cada línea a la moneda elegida, en una frase. Lo dice el
+ * servidor en `convertida` de cada serie (backend/comparar.py): en pesos, los
+ * CEDEARs van con el contado con liqui de cada día y el S&P 500 con el mismo (en
+ * la Bolsa se compra con el CEDEAR de SPY); lo que cotiza afuera y no es un
+ * CEDEAR, con el MEP; sin la historia del contado con liqui, todo con el MEP. Antes
+ * la nota decía «con el MEP» para todo y los CEDEARs ya iban con el contado con
+ * liqui (auditoría del contado con liqui, 06/11, H1 de la pantalla).
+ */
+export function notaDelDolar(res) {
+  if (res?.moneda !== 'ars') return 'Las acciones argentinas se pasan a dólares con el MEP de cada día.'
+  const series = res.series || []
+  const sp = series.find(s => s.clave === 'sp500')
+  const conCcl = [
+    series.some(s => s.tipo === 'activo' && s.convertida === 'ccl') && 'los CEDEARs',
+    sp?.convertida === 'ccl' && 'el S&P 500',
+  ].filter(Boolean)
+  const conMep = series.some(s => s.tipo === 'activo' && s.convertida === 'mep') || sp?.convertida === 'mep'
+  if (!conCcl.length) return conMep ? 'Lo que cotiza afuera se pasa a pesos con el MEP de cada día.' : ''
+  const quien = lista(conCcl)
+  const frase = `${quien[0].toUpperCase()}${quien.slice(1)} ${quien === 'el S&P 500' ? 'se pasa' : 'se pasan'} a pesos con el dólar contado con liqui (CCL) de cada día`
+  return conMep ? `${frase}; lo demás que cotiza afuera, con el MEP.` : `${frase}.`
+}

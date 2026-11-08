@@ -238,9 +238,23 @@ class VelasDiariasTest(unittest.TestCase):
         self._posicion("Binance", "USDC", "CRYPTO")
         with main.db_abierta() as conn:
             seguidos = set(velas_diarias.simbolos_a_seguir(conn))
-        self.assertEqual(seguidos, {"SPY", "SPY.BA", "GGAL.BA", "BAC", *velas_diarias.INDICES},
-                         "GGAL es acción local (sin serie de afuera); BAC sólo en dólares "
-                         "(su '.BA' de Yahoo viene roto); USDC no tiene nada que medir")
+        self.assertEqual(seguidos, {"SPY", "SPY.BA", "GGAL.BA", "BAC", "BAC.BA", *velas_diarias.INDICES},
+                         "GGAL es acción local (sin serie de afuera); BAC, el par como "
+                         "cualquier CEDEAR; USDC no tiene nada que medir")
+        # BAC.BA: su '.BA' de Yahoo es OTRO papel (en dólares). Se baja de la
+        # Bolsa, con el código de su CEDEAR en pesos ('BA.C'); a Yahoo, nunca.
+        self.yahoo.precios["BAC"] = lambda d: 50.0
+        self.yahoo.precios["BAC.BA"] = lambda d: 7.29
+        dias = _ruedas(self.hoy, 30)
+        self.historia_byma["BA.C"] = [{"date": d.isoformat(), "o": 20000.0, "h": 20100.0, "l": 19900.0,
+                                       "c": 20000.0 + i, "v": 4000.0} for i, d in enumerate(dias)]
+        with main.db_abierta() as conn:
+            velas_diarias.actualizar(conn, ["BAC", "BAC.BA"])
+        self.assertEqual([p for p in self.yahoo.pedidos if p[0] == "BAC.BA"], [])
+        self.assertIn("BA.C", self.pedidos_byma)
+        guardada = self._velas("BAC.BA")
+        self.assertEqual([(v["date"], v["close"]) for v in guardada],
+                         [(d.isoformat(), 20000.0 + i) for i, d in enumerate(dias)])
 
     def test_sin_la_lista_de_byma_se_sigue_lo_etiquetado(self):
         self.byma = {}          # data912 no contestó
@@ -688,6 +702,24 @@ class VelasDiariasTest(unittest.TestCase):
         renglon = next(m for m in log.output if "Velas diarias: {" in m)
         self.assertIn(f"'cortados_por_yahoo': {12 + len(velas_diarias.INDICES)}", renglon)
         self.assertIn("'no_son_tickers': 0", renglon)
+
+    def test_lo_que_sale_de_la_bolsa_no_tapa_un_corte_de_yahoo(self):
+        # BAC.BA se baja de la Bolsa (data912), no de Yahoo. Si Yahoo corta y la
+        # Bolsa contesta, la tanda con BAC.BA no dice «Yahoo contestó»: si no, los
+        # demás de la tanda quedaban anotados como que no existen.
+        tickers = self._cartera_de(3)
+        self.historia_byma["BA.C"] = [{"date": d.isoformat(), "o": 20000.0, "h": 20100.0, "l": 19900.0,
+                                       "c": 20000.0, "v": 4000.0} for d in _ruedas(self.hoy, 30)]
+        with main.db_abierta() as conn:
+            velas_diarias.actualizar(conn, tickers + ["BAC.BA"])       # todos andan
+        pausas = []
+        with mock.patch("velas_diarias.TANDA", 4), \
+                mock.patch("pricing.yahoo._historia", lambda *a: pd.DataFrame()), \
+                mock.patch("velas_diarias._dormir", pausas.append), main.db_abierta() as conn:
+            res = velas_diarias.actualizar(conn, tickers + ["BAC.BA"])
+        self.assertEqual(len(pausas), velas_diarias.PAUSAS_MAX, "Yahoo cortó: se espera")
+        self.assertEqual((res["sin_datos"], res["cortados_por_yahoo"]), ([], 4))
+        self.assertTrue(all(self._estado(t)["fallas_seguidas"] == 0 for t in tickers))
 
     def test_uno_o_dos_que_dejaron_de_cotizar_no_son_un_corte(self):
         self._cartera_de(2)

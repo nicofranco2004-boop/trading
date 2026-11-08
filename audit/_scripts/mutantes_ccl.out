@@ -1,0 +1,21 @@
+VISTO   serie: un CEDEAR siempre con el MEP: test_bac_el_grafico_y_la_cartera_con_el_mismo_contado_con_liqui, test_el_cedear_estimado_va_con_el_contado_con_liqui_de_cada_dia, test_la_serie_vieja_no_corre_el_pasado_ni_salta_al_podarse
+VISTO   sin red: siempre el CCL aunque no haya historia: test_sin_el_contado_con_liqui_guardado_sigue_con_el_mep_toda_la_serie, test_cedear_estimado_las_horas_van_con_el_contado_con_liqui_de_su_dia, test_sin_el_contado_con_liqui_el_mail_dice_que_es_con_el_mep
+VISTO   historia a medias alcanza (mitad y mitad): test_sin_el_contado_con_liqui_guardado_sigue_con_el_mep_toda_la_serie
+VISTO   vela de hoy: lo guardado de hoy con el MEP: test_cedear_estimado_la_vela_de_hoy_va_con_el_contado_con_liqui_de_aho
+VISTO   vela de hoy: el dólar de ahora, el MEP: test_cedear_estimado_la_vela_de_hoy_va_con_el_contado_con_liqui_de_aho
+VISTO   1 y 4 horas: la clave sin el dólar: test_cedear_estimado_las_horas_van_con_el_contado_con_liqui_de_su_dia
+VISTO   1 y 4 horas: con el MEP: test_cedear_estimado_las_horas_van_con_el_contado_con_liqui_de_su_dia
+VISTO   BAC: siempre el CCL de ahora (lo guardado no se mira): test_bac_el_grafico_y_la_cartera_con_el_mismo_contado_con_liqui
+VISTO   BAC: el cierre anterior con el CCL del último: test_bac_el_grafico_y_la_cartera_con_el_mismo_contado_con_liqui
+VISTO   BAC: el mini-gráfico con el CCL de ahora: test_bac_el_grafico_y_la_cartera_con_el_mismo_contado_con_liqui
+VISTO   la noche no reescribe los últimos días: test_la_noche_guarda_el_contado_con_liqui_de_cada_dia
+VISTO   la noche reescribe toda la historia: test_la_noche_guarda_el_contado_con_liqui_de_cada_dia
+VISTO   la noche no baja el CCL: test_la_noche_guarda_el_contado_con_liqui_de_cada_dia, test_en_pesos_el_mail_dice_que_el_precio_del_cedear_es_estimado
+VISTO   la nota no sigue al dólar: test_sin_el_contado_con_liqui_el_mail_dice_que_es_con_el_mep
+VISTO   el mail no sabe el dólar: test_sin_el_contado_con_liqui_el_mail_dice_que_es_con_el_mep
+VISTO   Mervall-E: la clave sin «·ccl»: test_un_cedear_estimado_en_pesos_no_muestra_el_resumen_de_antes_y_dice
+VISTO   Mervall-E: los hechos dicen CCL siempre: test_sin_el_contado_con_liqui_el_resumen_dice_que_es_con_el_mep
+VISTO   el CCL se lee de otro índice: test_bac_el_grafico_y_la_cartera_con_el_mismo_contado_con_liqui, test_el_cedear_estimado_va_con_el_contado_con_liqui_de_cada_dia, test_la_serie_vieja_no_corre_el_pasado_ni_salta_al_podarse
+VISTO   el CCL guardado es la punta de venta: test_bac_el_grafico_y_la_cartera_con_el_mismo_contado_con_liqui, test_el_cedear_estimado_va_con_el_contado_con_liqui_de_cada_dia, test_la_noche_guarda_el_contado_con_liqui_de_cada_dia
+
+19 de 19 errores plantados los ve alguna prueba

@@ -29,7 +29,7 @@ import { MONTHS } from '../../utils/format'
 import { hoyISO } from '../../utils/fecha'
 import {
   MAX_ACTIVOS, PLAZOS, marcaLocal, primeraCompraDe, urlDelPedido, filasDelGrafico,
-  monto, fraseComparacion, vaciaPorVieja,
+  monto, fraseComparacion, vaciaPorVieja, notaDelDolar,
 } from '../../utils/comparadorPrecio'
 
 const v = (token) => `rgb(var(--${token}))`
@@ -152,6 +152,8 @@ export default function PrecioComparado({ tickers }) {
     () => (res ? fraseComparacion({ ...res, series: visibles }) : ''),
     [res, visibles],
   )
+  // Con qué dólar fue cada línea que estás viendo (lo dice el servidor).
+  const notaDolar = useMemo(() => (res ? notaDelDolar({ ...res, series: visibles }) : ''), [res, visibles])
   const ultimoActivo = useMemo(() => visibles.filter(s => s.tipo === 'activo')
     .reduce((m, s) => (s.fecha_final > m ? s.fecha_final : m), ''), [visibles])
 
@@ -320,9 +322,7 @@ export default function PrecioComparado({ tickers }) {
             {enPesos
               ? 'En pesos, la vara es el dólar MEP y la inflación (CER): si algo subió menos que la inflación, tenés más pesos pero alcanzan para menos.'
               : 'En dólares, guardar dólares queda quieto en 100: lo que termina abajo de esa línea perdió dólares.'}
-            {enPesos
-              ? ' Lo que cotiza afuera se pasa a pesos con el MEP de cada día.'
-              : ' Las acciones argentinas se pasan a dólares con el MEP de cada día.'}
+            {notaDolar && ` ${notaDolar}`}
             {' '}No incluye dividendos. Mira hacia atrás; no es una recomendación.
           </p>
         </>

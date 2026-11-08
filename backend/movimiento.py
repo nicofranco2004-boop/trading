@@ -18,8 +18,9 @@ LAS CUENTAS
     «Cuánto se mueve» (A5, 29/10). Un «día malo normal» es una baja de ese
     tamaño; se cuenta además cada cuántos días de mercado pasó una baja así o
     peor, para que el «normal» sea un dato.
-  · El S&P 500 en el MISMO año y la misma moneda (en pesos, × el MEP de cada
-    día), con la misma cuenta, para comparar.
+  · El S&P 500 en el MISMO año y la misma moneda (en pesos, con el mismo dólar
+    que la serie del papel: el contado con liqui de un CEDEAR estimado, el MEP de
+    lo demás de afuera; `tecnico.sp500`), con la misma cuenta, para comparar.
   · La peor caída: la mayor baja de un máximo a un piso posterior dentro de los
     2 años (de cierre a cierre), y cuántos días tardó desde el piso en volver a
     cerrar a la altura de aquel máximo (o que todavía no volvió).

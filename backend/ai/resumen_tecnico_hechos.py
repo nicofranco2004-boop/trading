@@ -133,11 +133,16 @@ def hechos(nombre, r, todos_los_indicadores=False):
     }
     if r.get("escala"):
         # En pesos, un CEDEAR sin su serie en pesos al día: el gráfico es un
-        # ESTIMADO (la acción de Nueva York × el MEP ÷ los CEDEARs que hacen una
-        # acción, `tecnico.serie`) y sus precios quedan unos % lejos de los de la
-        # Bolsa. El pie del gráfico lo dice; el texto que dé un precio, también.
-        h["los_precios_en_pesos_son"] = ("un estimado del CEDEAR hecho con la acción de Nueva York y el MEP: "
-                                         "pueden estar unos pocos % lejos de su precio en la Bolsa")
+        # ESTIMADO (la acción de Nueva York × el contado con liqui ÷ los CEDEARs
+        # que hacen una acción, `tecnico.serie`; el MEP en una base que todavía no
+        # tiene el contado con liqui: `convertida`) y sus precios quedan un poco
+        # lejos de los de la Bolsa. El pie del gráfico lo dice; el texto que dé un
+        # precio, también.
+        h["los_precios_en_pesos_son"] = (
+            "un estimado del CEDEAR hecho con la acción de Nueva York y el MEP: pueden quedar unos pocos % "
+            "lejos de su precio en la Bolsa" if r.get("convertida") == "mep" else
+            "un estimado del CEDEAR hecho con la acción de Nueva York y el dólar contado con liqui: pueden "
+            "quedar alrededor de 1 % arriba o abajo de su precio en la Bolsa")
     # El dato del titular lo elige una regla fija (v7: dejarlo al modelo hizo que contrapusiera
     # plazos en casi todos los textos y, una vez, que se corrigiera en voz alta).
     var = {}

@@ -9,7 +9,8 @@ COPIA de `CEDEAR_RATIOS` de frontend/src/utils/cedearRatio.js (la lista oficial
 de Comafi y, para los ETFs y los CEDEARs de otros emisores, el ratio medido del
 precio: ver el comentario de allá). La pantalla la usa para los dividendos; acá:
   · `tecnico.serie`: el gráfico en pesos de un CEDEAR que no tiene su serie en
-    pesos al día es la acción de afuera × el MEP de cada día ÷ esto. Sin dividir
+    pesos al día es la acción de afuera × el contado con liqui de cada día ÷
+    esto. Sin dividir
     era la acción ENTERA en pesos (Apple ×20, Mercado Libre ×120: auditoría del
     06/11/2026);
   · `main.CEDEAR_USD_RATIOS`: el precio en pesos de los CEDEARs que las fuentes
