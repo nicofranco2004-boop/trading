@@ -22,6 +22,7 @@ import { urlDeCompararTuyos } from '../pages/AnalisisTecnico'
 import { ordenarFilas, filasDeLaLista } from './listaTecnica'
 import { indexarLecturas } from './radiografia'
 import { cuadritosDelMapa } from './mapaCartera'
+import { hoyISO } from './fecha'
 import { enOrden } from './tusSenales'
 
 const texto = (html) => html.replace(/<[^>]+>/g, ' ').replace(/&#x27;|&#39;/g, "'").replace(/\s+/g, ' ')
@@ -80,7 +81,7 @@ describe('D1: el termómetro (Inicio › Análisis de mercado)', () => {
 })
 
 // Tu lista: tenencias como las manda el servidor (de más a menos peso).
-const hoy = new Date().toISOString().slice(0, 10)
+const hoy = hoyISO()
 const lec = (asset, l = {}) => ({
   asset, local: false, disponible: true,
   lectura: { ruedas: 760, fecha: hoy, media200: 90, dist_media200: 11, tendencia: 'alcista', pendiente_media200: 2, media50: 95,

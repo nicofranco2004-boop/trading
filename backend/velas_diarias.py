@@ -505,7 +505,7 @@ def _orden(estado: dict, t: str, hoy: str) -> tuple:
     con la fila siempre en el mismo orden, si Yahoo cortaba se perdían todas las
     noches los últimos (medido el 24/10: siempre de la S a la Z)."""
     e = estado.get(t)
-    return (_turno(estado, t, hoy), str((e or {}).get('ultima_corrida') or '')[:10])
+    return (_turno(estado, t, hoy), str(dia_de_la_marca((e or {}).get('ultima_corrida')) or ''))
 
 
 def _por_turnos(conn, de_cada_una: dict, hoy: str) -> list:
@@ -883,10 +883,11 @@ def _toca_semanal(ticker: str, ultima: str, hoy: str) -> bool:
     """Lo que se pide una vez por semana: ¿toca hoy? Toca el día del ticker
     (`dia_de_la_semana`) si no se pidió ya hoy, o si pasó más de una semana
     (una noche que no corrió no lo deja dos semanas sin pedir)."""
-    if not ultima:
+    dia = dia_de_la_marca(ultima)
+    if dia is None:
         return True
     d = date.fromisoformat(hoy)
-    dias = (d - date.fromisoformat(str(ultima)[:10])).days
+    dias = (d - dia).days
     return dias > 7 or (dias >= 1 and d.weekday() == dia_de_la_semana(ticker))
 
 
@@ -966,6 +967,8 @@ def _anotar(conn, ticker: str, *, completa: bool, ok: bool, filas: int = 0, erro
     # Postgres exige un booleano. La hora sale de `_ahora_utc` (UTC, el mismo
     # formato que datetime('now')): es el reloj con que se leen después
     # (`_necesita`, la poda, el cupo de completas) y las pruebas lo pueden fijar.
+    # El DÍA de una marca se lee con `dia_de_la_marca` (el día de acá), nunca
+    # cortándola con `[:10]` (el día UTC: de 21 a 24 h ya es mañana).
     ahora = _ahora_utc().strftime('%Y-%m-%d %H:%M:%S')
     conn.execute(
         """INSERT INTO velas_estado (symbol, ultima_corrida, ultima_completa, ok, filas, error,
@@ -995,11 +998,11 @@ def _toca_completa(est: dict, hoy: str, ticker: str = None) -> bool:
     cupo, no lo deja dos meses sin la red de seguridad). Así, aunque todos
     tengan la misma `ultima_completa` (la primera noche, o al forzar los 5
     años), cada uno vuelve a bajarse entero en su día y no todos juntos."""
-    ultima = (est or {}).get('ultima_completa')
-    if not ultima:
+    dia = dia_de_la_marca((est or {}).get('ultima_completa'))
+    if dia is None:
         return True
     d = date.fromisoformat(hoy)
-    dias = (d - date.fromisoformat(str(ultima)[:10])).days
+    dias = (d - dia).days
     if dias > DIAS_ENTRE_COMPLETAS * 3 // 2:
         return True
     return (ticker is not None and dias >= DIAS_ENTRE_COMPLETAS // 2
@@ -1597,6 +1600,28 @@ def _ahora_utc() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def instante_de_la_marca(marca):
+    """El instante UTC (sin zona) de una marca de `velas_estado`
+    (`ultima_corrida`, `ultima_completa`, como las escribe `_anotar`), o None si
+    no hay o no se entiende."""
+    try:
+        return datetime.fromisoformat(str(marca)[:19]) if marca else None
+    except ValueError:
+        return None
+
+
+def dia_de_la_marca(marca):
+    """El día ARGENTINO de una marca de `velas_estado`, o None: lo que se compara
+    con `hoy`, que es el día de acá. Cortar la marca con `[:10]` da el día UTC, y
+    lo anotado de 21:00 a medianoche de acá caía en «mañana»: la noche siguiente
+    creía que ya se había pedido hoy (`_toca_semanal`: lo que falla esperaba una
+    semana más) y contaba un día menos desde la última bajada entera
+    (`_toca_completa`: la del mes podía saltar a su día del mes siguiente)."""
+    from fechas import dia_art   # el día argentino de un instante UTC (regla única)
+    cuando = instante_de_la_marca(marca)
+    return dia_art(cuando) if cuando else None
+
+
 def _necesita(conn, ticker: str, hoy: str, ahora: datetime) -> bool:
     """¿Hay que bajarlo? No, si:
       · su última vela es de ayer (la de hoy no entra hasta mañana: `_velas_de`);
@@ -1612,12 +1637,10 @@ def _necesita(conn, ticker: str, hoy: str, ahora: datetime) -> bool:
         return False
     e = conn.execute("SELECT ultima_corrida FROM velas_estado WHERE symbol=?", (ticker,)).fetchone()
     if e and e["ultima_corrida"]:
-        try:
-            cuando = datetime.fromisoformat(str(e["ultima_corrida"])[:19])
-        except ValueError:
+        cuando = instante_de_la_marca(e["ultima_corrida"])
+        if cuando is None:
             return True
-        from fechas import dia_art   # el día argentino de un instante UTC (regla única)
-        if (dia_art(cuando) >= date.fromisoformat(hoy)
+        if (dia_de_la_marca(e["ultima_corrida"]) >= date.fromisoformat(hoy)
                 or ahora - cuando < timedelta(hours=A_PEDIDO_REINTENTO_HORAS)):
             return False
     return True

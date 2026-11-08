@@ -341,13 +341,6 @@ def tu_plata(conn, uid: int, t: dict):
 
 # ─── La corrida de cada día ──────────────────────────────────────────────────
 
-def _instante(v):
-    try:
-        return datetime.fromisoformat(str(v)[:19]) if v else None
-    except ValueError:
-        return None
-
-
 def toca(conn, now: datetime) -> bool:
     """¿Hay que correr ahora? `now` en UTC (naive), como el cron. Una vez por
     día ARGENTINO: de 21:00 a medianoche de acá en UTC ya es mañana, y eso no
@@ -355,12 +348,12 @@ def toca(conn, now: datetime) -> bool:
     velas de la noche haya terminado hace `MINUTOS_DESPUES_DE_LA_NOCHE`; si la
     noche no corrió, desde las `HORA_SIN_NOCHE` de acá corre igual."""
     from fechas import dia_art, en_art
-    from velas_diarias import MARCA_CORRIDA_NOCHE
+    from velas_diarias import MARCA_CORRIDA_NOCHE, instante_de_la_marca
     hoy = dia_art(now)
 
     def _marca(simbolo):
         r = conn.execute("SELECT ultima_corrida FROM velas_estado WHERE symbol=?", (simbolo,)).fetchone()
-        return _instante(r["ultima_corrida"]) if r else None
+        return instante_de_la_marca(r["ultima_corrida"]) if r else None
 
     ya = _marca(MARCA_CORRIDA)
     if ya and dia_art(ya) >= hoy:
