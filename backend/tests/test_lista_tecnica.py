@@ -18,8 +18,9 @@ Los casos que importan:
   · el «último cambio» sale de `tecnico.cambios_desde` (la cuenta única de la
     pieza «qué cambió esta semana»), el más reciente del último año;
   · un bono, un fondo o un activo sin velas vuelven «sin lectura» sin romper el
-    pedido; con velas cortadas la lectura trae SU fecha (la pantalla la marca
-    «sin lectura» con más de 10 días: utils/listaTecnica.test.js).
+    pedido; con velas cortadas la lectura trae SU fecha y `vieja` (el servidor
+    la marca con LA regla de «precio viejo», `tecnico.es_vieja`; los bordes, en
+    tests/test_precio_viejo.py; la pantalla sólo la muestra: utils/listaTecnica.test.js).
 
 Corre con: cd backend && python3 -m pytest tests/test_lista_tecnica.py
 """
@@ -243,6 +244,8 @@ class ListaTecnicaTest(unittest.TestCase):
         x = self._lista([{"asset": "TSLA"}])[("TSLA", False)]
         self.assertEqual(x["lectura"]["fecha"], corte)
         self.assertEqual(x["linea"][-1]["d"], corte)
+        self.assertIs(x["vieja"], True, "15 ruedas atrás: sin precios de la última semana")
+        self.assertIs(self._lista([{"asset": "AAPL"}])[("AAPL", False)]["vieja"], False)
 
     def test_tope_y_sesion(self):
         r = self.client.post("/api/tecnico/lista",

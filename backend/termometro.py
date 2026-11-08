@@ -28,8 +28,9 @@ EL UNIVERSO es fijo, no lo que tienen los usuarios:
 Cada acción se lee con la MISMA lectura que su ficha (`tecnico.para_la_cartera`
 → `tecnico.lectura`, en dólares: una acción argentina es su precio de BYMA ÷ el
 MEP de cada día) y la misma regla de «alcista» que la Cartera y Señales
-(`senales_semana._alcista`, que además descarta una lectura de hace más de 10
-días). Ninguna regla está copiada acá.
+(`senales_semana._alcista`, que además descarta una lectura sin precios de la
+última semana: `tecnico.lectura_vieja`, LA regla de «precio viejo»). Ninguna
+regla está copiada acá.
 
 CUÁNDO CORRE. Una vez por día, un rato DESPUÉS de la corrida nocturna de velas
 (`toca`), en su propio trabajo: baja sólo lo que la noche no bajó (lo que
@@ -62,9 +63,6 @@ COBERTURA_MINIMA = 0.8
 # «Hace una semana»: la fila de entre 7 y 13 días antes (la de `senales_semana`).
 DIAS_SEMANA = 7
 DIAS_SEMANA_PASADA = 13
-# Un número cuya última vela es de hace más de esto ya no es «al cierre de
-# ayer»: la pantalla dice de qué día es.
-DIAS_VIEJO = 5
 # Cuánto se espera después de la corrida de la noche antes de pedirle a Yahoo
 # lo que falta: dos tandas seguidas son las que lo hacen cortar.
 MINUTOS_DESPUES_DE_LA_NOCHE = 60
@@ -151,15 +149,15 @@ def _pct(a: int, b: int):
 
 def _indice(conn, hoy: date) -> dict:
     """El S&P 500 contra sus promedios de 50 y 200 días, con `tecnico.lectura`
-    (la de la ficha) sobre la serie del índice que ya guarda la noche."""
-    import senales_semana
+    (la de la ficha) sobre la serie del índice que ya guarda la noche. Sin
+    precios de la última semana (`tecnico.lectura_vieja`) no cuenta."""
     import tecnico
     velas = tecnico.sp500(conn)
     if not velas:
         return {"disponible": False}
     cierres = [v["close"] for v in velas]
     l = tecnico.lectura(velas, tecnico.media(cierres, 50), tecnico.media(cierres, 200))
-    if senales_semana._lectura_vieja(l, hoy) or l.get("dist_media200") is None or l.get("dist_media50") is None:
+    if tecnico.lectura_vieja(l, hoy) or l.get("dist_media200") is None or l.get("dist_media50") is None:
         return {"disponible": False, "fecha": l.get("fecha")}
     arriba200, arriba50 = l["dist_media200"] >= 0, l["dist_media50"] >= 0
     return {"disponible": True, "fecha": l["fecha"], "arriba200": arriba200, "arriba50": arriba50,
@@ -169,7 +167,8 @@ def _indice(conn, hoy: date) -> dict:
 
 def calcular(conn, hoy: date) -> dict:
     """El termómetro con las velas guardadas. `hoy` es el día ARGENTINO (una
-    lectura de hace más de 10 días no cuenta). Nunca inventa: sin el índice o
+    lectura sin precios de la última semana no cuenta: `tecnico.lectura_vieja`,
+    vía `senales_semana._alcista`). Nunca inventa: sin el índice o
     con menos de `COBERTURA_MINIMA` del universo medido, `disponible` False."""
     import senales_semana
     import tecnico
@@ -247,8 +246,11 @@ def _fila(row) -> dict:
 
 def ultimo(conn, hoy: date) -> dict:
     """Lo que ve la pantalla: el último número guardado, el de hace una semana
-    (de 7 a 13 días antes de ESE número) y si quedó viejo. Sin filas,
-    {'disponible': False}."""
+    (de 7 a 13 días antes de ESE número) y si quedó viejo (`viejo`: su fecha, la
+    última vela del S&P, es de antes de la última semana contada desde `hoy`;
+    `tecnico.es_vieja`, LA regla de «precio viejo». Hasta el 06/11 eran 5 días
+    acá). Sin filas, {'disponible': False}."""
+    import tecnico
     row = conn.execute(
         "SELECT fecha, puntaje, detalle FROM termometro_diario ORDER BY fecha DESC LIMIT 1").fetchone()
     if not row:
@@ -261,7 +263,7 @@ def ultimo(conn, hoy: date) -> dict:
         ((f - timedelta(days=DIAS_SEMANA)).isoformat(),
          (f - timedelta(days=DIAS_SEMANA_PASADA)).isoformat())).fetchone()
     t["semana_pasada"] = {"fecha": antes["fecha"], "puntaje": antes["puntaje"]} if antes else None
-    t["viejo"] = (hoy - f).days > DIAS_VIEJO
+    t["viejo"] = tecnico.es_vieja(t["fecha"], hoy)
     lista = _lista_sp500()
     t["fuente"] = {"sp500_bajada": lista.get("bajada"), "pesos": {
         "amplitud": PESO_AMPLITUD, "indice": PESO_INDICE, "maximos": PESO_MAXIMOS}}

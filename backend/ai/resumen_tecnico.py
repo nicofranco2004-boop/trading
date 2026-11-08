@@ -62,9 +62,6 @@ MAX_LLAMADAS_POR_CLAVE = 4
 # Si el que estaba generando no terminó en este tiempo (el proceso se cayó), otro
 # puede tomar la fila.
 SEGUNDOS_GENERANDO = 90
-# Con velas más viejas que esto (los precios no se pudieron actualizar) no se
-# ofrece el resumen: contaría como actual algo de hace semanas.
-DIAS_VELA_VIEJA = 7
 
 # Largo (decisiones de Nico, 23/10): el tope es 120 palabras, y 130 cuando
 # viene la frase del ADX + Squeeze, que va entera y es larga (con 120, 4 de 11
@@ -260,9 +257,13 @@ def _fila(conn, clave):
 
 
 def _vela_vieja(fecha_vela: str) -> bool:
+    """Con la última vela vieja (sin precios de la última semana: `tecnico.es_vieja`,
+    LA regla de «precio viejo», la del aviso de la ficha) no se ofrece el resumen:
+    contaría como actual algo de hace semanas. Hasta el 06/11 tenía su propio
+    margen (`DIAS_VELA_VIEJA`)."""
+    import tecnico
     from fechas import hoy_art_date
-    from datetime import date
-    return (hoy_art_date() - date.fromisoformat(fecha_vela)).days > DIAS_VELA_VIEJA
+    return tecnico.es_vieja(fecha_vela, hoy_art_date())
 
 
 def estado_para_la_ficha(conn, ficha: dict) -> dict | None:
