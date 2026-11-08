@@ -30,7 +30,8 @@ def _todos(s):
 class _Base(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
-        for t in ("snapshots", "positions", "operations", "monthly_entries", "users"):
+        # `brokers` antes que `users`: lo apunta sin cascada (ver tests/_limpieza.py).
+        for t in ("snapshots", "positions", "operations", "monthly_entries", "brokers", "users"):
             try:
                 self.conn.execute(f"DELETE FROM {t}")
             except Exception:
@@ -262,6 +263,13 @@ class SnapshotPostNoPisaElCierreTest(_Base):
     def test_sin_cierre_previo_la_visita_si_escribe(self):
         from fastapi.testclient import TestClient
         hoy = main._iso_today()
+        # Una cuenta que se fotografía tiene al menos un broker: sin ninguno, el
+        # POST no escribe (una pestaña vieja después de «Empezar de cero»;
+        # tests/test_empezar_de_cero_bordes.py). Medido en la copia de producción
+        # del 04/11: 0 cuentas con cartera o con fotos del navegador sin brokers.
+        self.conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,'IBKR','USD')",
+                          (self.uid,))
+        self.conn.commit()
         main.app.dependency_overrides[main.get_effective_user] = lambda: self.uid
         try:
             TestClient(main.app).post("/api/snapshots", json={
