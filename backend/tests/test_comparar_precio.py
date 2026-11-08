@@ -237,6 +237,32 @@ class CompararTest(unittest.TestCase):
         self.assertEqual((cer["ticker"], cer["nombre"]), ("CER", "Inflación (CER)"))
         self.assertAlmostEqual(cer["final"], (10 + ult * 0.01) / (10 + ib * 0.01) * 100, places=2)
 
+    def test_en_pesos_el_sp500_va_con_el_dolar_de_los_cedears(self):
+        # Un CEDEAR en pesos va con el contado con liqui de cada día (Nico, 06/11), y
+        # el S&P 500 con el MISMO dólar: es el que se compra en la Bolsa, con el
+        # CEDEAR de SPY. Con el MEP, en Comparar SPY le «ganaba» 4,45 % en un año al
+        # S&P 500, la misma canasta, y la ficha medía «cuántas veces se mueve lo que
+        # el S&P 500» con dos dólares (auditoría del contado con liqui, H2 del
+        # servidor). Acá MSFT se mueve igual que el S&P 500, y el contado con liqui
+        # se separa del MEP con el tiempo y salta de un día al otro.
+        self._mep(lambda i: 1000 + i)
+        ccl = lambda i: (1000 + i) * (1 + i / 2000) * (1.005 if i % 2 else 0.995)   # noqa: E731
+        fuente = [(d.isoformat(), ccl(i) - 1, ccl(i) + 1) for i, d in enumerate(self.dias)]
+        with mock.patch("main._bajar_ccl", lambda: fuente):
+            main._actualizar_ccl()
+        self.yahoo.precios["MSFT"] = lambda i, d: 100.0 + i
+        self.yahoo.precios["^GSPC"] = lambda i, d: 5000.0 + 50 * i
+        main._run_velas_diarias_job()
+        ars = self._comparar("MSFT", "ars", "1a")
+        msft, sp = self._serie(ars, "MSFT"), self._serie(ars, "sp500")
+        self.assertEqual((msft["convertida"], sp["convertida"]), ("ccl", "ccl"))
+        self.assertAlmostEqual(msft["final"], sp["final"], places=1)
+        ib, ult = self._i(self._un_anio()), len(self.dias) - 1
+        self.assertAlmostEqual(self._serie(ars, "mep")["final"], (1000 + ult) / (1000 + ib) * 100, places=2,
+                               msg="guardar dólares sigue siendo el MEP")
+        ficha = self.client.get("/api/tecnico/MSFT?moneda=ars", headers=self.h).json()
+        self.assertAlmostEqual(ficha["movimiento"]["dia_normal"]["veces_el_sp500"], 1.0, places=3)
+
     def test_sin_cer_se_usa_la_uva_y_se_dice(self):
         # La fuente del CER da 404 desde 09/2026: se mide con la UVA (el BCRA la
         # ajusta por CER) y el nombre lo dice.
@@ -491,7 +517,7 @@ class BaseCienTest(unittest.TestCase):
         nuevas = [{"date": f"2025-11-{d:02d}", "close": 50.0 + d} for d in range(3, 29)]
         series = {"VIEJ": viejas, "NUEV": nuevas}
         with unittest.mock.patch("tecnico.serie", lambda c, a, m, l, **k: {"velas": series[a]}), \
-             unittest.mock.patch("tecnico.sp500", lambda c, m: nuevas):
+             unittest.mock.patch("tecnico.indice_con_dolar", lambda c, s, m, d=None: (nuevas, None)):
             r = comparar.comparar(None, [("VIEJ", False), ("NUEV", False)], "usd", "2025-11-03",
                                   hoy=__import__("datetime").date(2025, 11, 29))
         self.assertEqual([s["clave"] for s in r["series"]], ["NUEV", "sp500", "mep"])

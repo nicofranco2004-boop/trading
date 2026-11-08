@@ -1,0 +1,32 @@
+La Bolsa (data912): BA.C en vivo 20.660 (-1.38 %, 1889.0 CEDEARs operados)
+
+## La noche: qué guardó de BAC (velas, primera y última fecha)
+  BAC     antes [1254, '2021-11-08', '2026-11-05']   ahora [1254, '2021-11-08', '2026-11-05']
+  BAC.BA  antes [0, None, None]   ahora [1225, '2021-11-02', '2026-11-05']
+
+## La Cartera (contra BA.C en vivo y su cierre anterior)
+  precio            antes   20.529,69 (-0,63 % de la Bolsa)   ahora   20.660,00 (+0,00 %)
+  cierre_anterior   antes   20.881,16 (-0,32 % de la Bolsa)   ahora   20.949,10 (+0,00 %)
+  foto_de_la_noche  antes   20.529,69 (-0,63 % de la Bolsa)   ahora   20.660,00 (+0,00 %)
+  variación del día antes {'price': 20529.685, 'prev_close': 20881.1613, 'change_pct': -1.68, 'mercado': 'eeuu', 'as_of': '2026-11-06'}
+                    ahora {'price': 20660.0, 'prev_close': 20949.097546, 'change_pct': -1.38, 'mercado': 'byma', 'as_of': '2026-11-06'}
+
+## El mini-gráfico (1m): cada punto contra el cierre de BA.C de esa fecha
+  antes: 23 puntos · mediana -0.33 % · el más lejos -1.79 % · último ('2026-11-06', 20529.6858)
+  ahora: 23 puntos · mediana +0.00 % · el más lejos +0.00 % · último ('2026-11-06', 20660.0)
+## El mini-gráfico (1y): cada punto contra el cierre de BA.C de esa fecha (semanal: el último de la semana)
+  antes: 53 puntos · mediana -0.20 % · el más lejos -2.59 % · último ('2026-11-02', 20529.6858)
+  ahora: 53 puntos · mediana +0.00 % · el más lejos +0.00 % · último ('2026-11-02', 20660.0)
+
+## La ficha en pesos
+  antes: BAC · dólar ccl · escala 4.0 · 1254 velas · última 2026-11-05 20.881,16 (BA.C ese día 20.950,00) · contra BA.C: mediana -0.17 %, el más lejos -15.55 % · tendencia bajista
+  ahora: BAC.BA · dólar None · escala None · 1225 velas · última 2026-11-05 20.950,00 (BA.C ese día 20.950,00) · contra BA.C: mediana +0.00 %, el más lejos +0.00 % · tendencia bajista
+
+## La vela de hoy:   antes [{'d': '2026-11-06', 'o': 20579.5356, 'c': 20529.685, 'hoy': True}]   ahora [{'d': '2026-11-06', 'o': 20670.0, 'c': 20660.0, 'hoy': True}]
+## Las de 1 hora:    antes {'ticker': 'BAC', 'convertida': 'ccl', 'escala': 4.0, 'ultimas': [['2026-11-06', 20652.2325], ['2026-11-06', 20525.5316]]}
+                     ahora {'ticker': 'BAC', 'convertida': 'ccl', 'escala': 3.9943804165870227, 'ultimas': [['2026-11-06', 20681.2876], ['2026-11-06', 20554.4084]]}
+## En dólares:       antes {'ticker': 'BAC', 'ultimo': 49.76, 'n': 1254}   ahora {'ticker': 'BAC', 'ultimo': 49.76, 'n': 1254}
+
+## La liquidez de la ficha
+  antes: {nivel: poca, pesos_por_dia: 747.100, en_dolares: True, fuente: data912_vivo, ruedas: 1, spread_pct: None}
+  ahora: {nivel: media, pesos_por_dia: 391.826.197, en_dolares: False, fuente: data912, ruedas: 20, spread_pct: None}

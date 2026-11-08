@@ -108,6 +108,21 @@ export function velasSemanales(puntos = [], previos = []) {
 }
 
 /**
+ * ¿Las velas de hoy (`vivas`, useVelaDeHoy) vienen en la misma cuenta que la serie
+ * que dibuja la pantalla (`cuenta`: el `convertida` y la `escala` de GET
+ * /api/tecnico)? Sin esto, con la ficha abierta mientras se publicaba el cambio
+ * del dólar, se pegaba una vela con el contado con liqui sobre la serie con el
+ * MEP: +4 % un día en que el papel bajó (auditoría del 06/11, H3 de la pantalla);
+ * y lo mismo con la escala el día que la noche borra una serie vieja. Un servidor
+ * que no dice la suya (`vivas.cuenta` sin definir: uno de antes) no se controla.
+ */
+export function mismaCuenta(vivas, cuenta) {
+  if (!vivas?.cuenta || !cuenta) return true
+  return (vivas.cuenta.convertida ?? null) === (cuenta.convertida ?? null)
+    && (vivas.cuenta.escala ?? null) === (cuenta.escala ?? null)
+}
+
+/**
  * Las velas que la noche todavía no guardó (useVelaDeHoy: la de HOY y, si hace
  * falta, algún día cerrado sin guardar) al final de lo que dibuja el gráfico.
  * Van SÓLO al dibujo: las cuentas de la pantalla (los lugares de los dibujos y
@@ -117,7 +132,9 @@ export function velasSemanales(puntos = [], previos = []) {
  *
  * Se dibujan sólo si siguen a lo guardado que tiene la pantalla
  * (`base === ultimaGuardada`): con la ficha abierta de un día para el otro, la
- * noche guardó otra y la de hoy quedaría pegada a la de anteayer.
+ * noche guardó otra y la de hoy quedaría pegada a la de anteayer. Y sólo si
+ * vienen en la misma cuenta que la serie (`mismaCuenta`, con `cuenta`: el
+ * `convertida` y la `escala` de la serie que tiene la pantalla).
  *   · diarias: si entran todas en el aire de la derecha que se ve; le sacan ese lugar;
  *   · semanales: se suman a la semana en curso (o abren una nueva un lunes) si
  *     el último día guardado se ve (`alBorde`) y, si abren una, hay lugar.
@@ -126,10 +143,10 @@ export function velasSemanales(puntos = [], previos = []) {
  * @returns {{ puntos: Array, huecos: number }} lo que recibe el gráfico.
  */
 export function sumarVelaDeHoy({ puntos = [], huecos = 0, vivas = null, ultimaGuardada = null,
-  semanales = false, diarios = [], previos = [], alBorde = false } = {}) {
+  semanales = false, diarios = [], previos = [], alBorde = false, cuenta = null } = {}) {
   const sin = { puntos, huecos }
   const velas = vivas?.velas || []
-  if (!velas.length || !ultimaGuardada || vivas.base !== ultimaGuardada
+  if (!velas.length || !ultimaGuardada || vivas.base !== ultimaGuardada || !mismaCuenta(vivas, cuenta)
     || !velas.every(x => x.c > 0 && x.d > ultimaGuardada)) return sin
   if (!semanales) {
     if (huecos < velas.length) return sin
@@ -169,16 +186,22 @@ export function textoVelaDeHoy(vela, semanales = false) {
  * Una sola frase para la pantalla (LecturaTecnica) y la imagen de «Compartir»
  * (imagenGrafico).
  *
+ * `convertida`: con qué dólar de cada día ('mep'; 'ccl', el contado con liqui,
+ * el de un CEDEAR en pesos).
+ *
  * `escala`: en pesos, un CEDEAR sin su precio en pesos al día. El servidor
- * dibuja la acción de Nueva York × el MEP ÷ cuántas veces entra el CEDEAR en
- * ella (backend/tecnico.py, `_escala_en_bolsa`): es un ESTIMADO del CEDEAR y
- * queda unos pocos % lejos de su precio en la Bolsa, porque los CEDEARs se pagan
- * con un dólar algo distinto del MEP (~5 % el 05/11/2026). Sin dividir era la
+ * dibuja la acción de Nueva York × el contado con liqui de cada día ÷ cuántas
+ * veces entra el CEDEAR en ella (backend/tecnico.py, `_escala_en_bolsa`): es un
+ * ESTIMADO del CEDEAR, alrededor de 1 % arriba o abajo de su precio en la Bolsa (con el
+ * MEP —una base que todavía no tiene el contado con liqui— quedaba unos 5 %
+ * abajo: los CEDEARs se pagan con el contado con liqui). Sin dividir era la
  * acción entera en pesos: Apple ×20 (Nico, 06/11/2026).
  */
 export function notaDeLaMoneda(convertida, moneda, escala = null) {
-  if (convertida !== 'mep') return ''
-  if (moneda === 'usd') return 'El precio en pesos de cada día está pasado a dólares con el MEP de ese día.'
+  // «(CCL)»: el selector de dólar de la app lo llama así (CurrencySwitcher).
+  const dolar = { mep: 'el MEP', ccl: 'el dólar contado con liqui (CCL)' }[convertida]
+  if (!dolar) return ''
+  if (moneda === 'usd') return `El precio en pesos de cada día está pasado a dólares con ${dolar} de ese día.`
   if (escala) {
     // Con escala menor a 1 un CEDEAR vale VARIAS acciones (ABEV: tres): dividir
     // por un tercio es multiplicar por tres, y así hay que decirlo (auditoría
@@ -186,10 +209,12 @@ export function notaDeLaMoneda(convertida, moneda, escala = null) {
     const cuenta = escala < 1
       ? 'multiplicada por las acciones que hay en un CEDEAR'
       : 'dividida por los CEDEARs que hacen una acción'
-    return `Precio estimado del CEDEAR: la acción de Nueva York pasada a pesos con el MEP de cada día y ${cuenta}. `
-      + 'Puede estar unos pocos % lejos de su precio en la Bolsa.'
+    return `Precio estimado del CEDEAR: la acción de Nueva York pasada a pesos con ${dolar} de cada día y ${cuenta}. `
+      + (convertida === 'ccl'
+        ? 'Puede quedar alrededor de 1 % arriba o abajo de su precio en la Bolsa.'
+        : 'Puede quedar unos pocos % lejos de su precio en la Bolsa.')
   }
-  return 'El precio en dólares de cada día está pasado a pesos con el MEP de ese día.'
+  return `El precio en dólares de cada día está pasado a pesos con ${dolar} de ese día.`
 }
 
 /**

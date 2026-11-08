@@ -37,16 +37,15 @@ import re
 from statistics import median
 from typing import Optional
 
-from snapshots_job import BYMA_EXCEPCIONES
+from snapshots_job import BYMA_EXCEPCIONES, EN_DATA912
 
 # Código de la especie EN PESOS cuando no es el ticker (canónico → BYMA). La
 # tabla de la valuación (`snapshots_job.BYMA_EXCEPCIONES`, espejo de
-# valuation.js) más BAC: BAC no está ahí porque Cartera lo cotiza por otro camino
-# (la acción de EE.UU. × CCL ÷ ratio, `CEDEAR_USD_RATIOS`), pero en la Bolsa su
-# CEDEAR en pesos es 'BA.C'.
-PESOS_EXCEPCIONES = {**BYMA_EXCEPCIONES, 'BAC': 'BA.C'}
+# valuation.js) más la de los papeles que la Bolsa lista con otro código
+# (`snapshots_job.EN_DATA912`: el CEDEAR de BAC en pesos es 'BA.C').
+PESOS_EXCEPCIONES = {**BYMA_EXCEPCIONES, **EN_DATA912}
 # La vuelta: código de pesos del feed → ticker con el que Rendi guarda el activo.
-_CANONICO = {'BRKB': 'BRK-B', 'BA.C': 'BAC'}
+_CANONICO = {'BRKB': 'BRK-B', **{c: a for a, c in EN_DATA912.items()}}
 # Especies en dólares que ni el código ni el precio alcanzan para atar solas
 # (prefijo demasiado corto): verificadas a mano en el feed.
 DOLARES_EXCEPCIONES = {'GOOGL': 'GOGLD'}

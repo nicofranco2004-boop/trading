@@ -90,7 +90,7 @@ class ElLockNoSeTomaAntesDeParsear(unittest.TestCase):
         # `run_preview` envuelve a `_run_preview_una_vez` (lo rehace si un broker
         # se renombró en el medio): el cuerpo que parsea y escribe es éste.
         src = inspect.getsource(pipeline._run_preview_una_vez)
-        pos_cleanup = src.index("cleanup_stale_previews(conn)")
+        pos_cleanup = src.index("cleanup_stale_previews(conn, uid)")
         # `_parsear` lee el combinado o cada archivo por separado (06/11/2026).
         pos_parse = src.index("parse_result = _parsear(")
         self.assertGreater(

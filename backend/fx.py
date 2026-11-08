@@ -191,7 +191,7 @@ def fx_for_date_detail(conn, date_str, fallback=None, riel: str = RIEL_MEP):
     return (fallback, "fallback" if fallback else None)
 
 
-def serie_diaria(conn, desde: str):
+def serie_diaria(conn, desde: str, dolar: str = "mep"):
     """`fx_for_date` para una serie entera, en UNA lectura: [(fecha, tc, fecha_del_tc)]
     por cada fila de `fx_rates_daily` desde `desde` (y la última anterior, para
     arrastrar). La regla es la misma que `fx_for_date`: el ÚLTIMO MEP conocido
@@ -199,10 +199,15 @@ def serie_diaria(conn, desde: str):
     `fecha_del_tc` es la fecha del dato que se usó: quien la consume decide si es
     demasiado vieja para ser "el dólar de ese día".
 
+    `dolar`='ccl': el contado con liqui de cada día, el dólar de los CEDEARs (ver
+    «El dólar de los CEDEARs», abajo), con la misma forma.
+
     (Existe porque la ficha técnica convierte ~750 velas y pedir `fx_for_date`
     de a una son 750 consultas; y porque la versión que tenía aparte usaba el
     blue DEL DÍA cuando faltaba el MEP, distinto del resto de la app: un día así
     fabricaba un pozo de ~10 % en el gráfico.)"""
+    if dolar == "ccl":
+        return _serie_ccl(conn, desde)
     rows = conn.execute(
         f"SELECT date, {SQL_MEDIO_MEP} AS mep, {SQL_MEDIO_BLUE} AS blue FROM fx_rates_daily "
         "WHERE date >= COALESCE((SELECT MAX(date) FROM fx_rates_daily WHERE date < ?), ?) "
@@ -226,6 +231,219 @@ def fx_for_date(conn, date_str, fallback=None, riel: str = RIEL_MEP) -> Optional
     pasan solo para no romper con una base vacía en tests.
     """
     return fx_for_date_detail(conn, date_str, fallback=fallback, riel=riel)[0]
+
+
+# ─── EL DÓLAR DE LOS CEDEARs: el contado con liqui de cada día ───────────────
+#
+# Un CEDEAR se compra y se vende con el contado con liqui (CCL), no con el MEP:
+# en pesos es la acción de afuera × el CCL ÷ su ratio. Medido el 06/11/2026
+# contra los cierres de BYMA (83 CEDEARs, todas las ruedas de 5 años,
+# audit/_scripts/medir_ccl.out): con el CCL de cada día el estimado queda entre
+# 0,1 y 0,3 % de la Bolsa en la mediana de 2024 a 2026 (99 % de las ruedas de
+# 2025–2026 a menos de 2 %); con el MEP, entre 0 y 12 % abajo según el mes, porque
+# la distancia entre los dos dólares cambia (~6 % en noviembre de 2026, 0 en
+# agosto de 2024) y con ella el error: de ahí los saltos del gráfico que no
+# eran del mercado (auditoría del 06/11, H3 de la serie, H4 y H5 de la pantalla).
+#
+# DÓNDE SE GUARDA. En `bond_indices_daily` con el nombre 'CCL': la tabla de los
+# números públicos de cada día (CER, UVA, A3500, que ya es un dólar), cuyos
+# lectores filtran todos por nombre. NO en `fx_rates_daily`, que no tiene columnas
+# para él: sumarlas cambia el esquema de Postgres en la publicación, y el
+# 02/08/2026 un cambio así dejó la app caída. Un número por día: el MEDIO, con la
+# regla de `punta_media` (la de la valuación). Lo baja `main._actualizar_ccl` de
+# argentinadatos, la misma fuente del MEP, y es el mismo número que da en vivo
+# dolarapi (medido el 06/11: 1.658,4 / 1.664,9 en las dos).
+INDICE_CCL = "CCL"
+# Lo que se vuelve a escribir cada vez aunque ya esté guardado: la fuente puede
+# corregir los últimos días.
+DIAS_CCL_REVISAR = 10
+# Desde qué hora (de la Argentina) el CCL de HOY es el del cierre y se guarda. Antes,
+# la fuente lo publica en vivo: guardado a la mañana (un arranque del servidor),
+# la vela de hoy del gráfico quedaba con el dólar de esa hora y la Cartera de BAC
+# con el de ahora (auditoría del contado con liqui, 06/11, H6 de la pantalla). El
+# de hoy, mientras no cerró, es siempre el de ahora (`main._ccl_de_las_fechas`,
+# `tecnico._dolar_de_hoy`).
+HORA_CIERRE_CCL = 18
+
+# EL escritor de `bond_indices_daily`: el CCL (`guardar_ccl`) y el CER y la UVA
+# (`main._ensure_index_cached`) pasan por la misma sentencia.
+SQL_GUARDAR_INDICE = """INSERT INTO bond_indices_daily (index_name, date, value, source, updated_at)
+   VALUES (?, ?, ?, ?, ?)
+   ON CONFLICT(index_name, date) DO UPDATE SET
+     value = excluded.value,
+     source = excluded.source,
+     updated_at = excluded.updated_at"""
+
+
+def _serie_ccl(conn, desde: str):
+    """`serie_diaria(..., 'ccl')`: el CCL guardado de cada día desde `desde` (y el
+    último anterior, para arrastrar), [(fecha, ccl, fecha)]."""
+    rows = conn.execute(
+        "SELECT date, value FROM bond_indices_daily WHERE index_name = ? AND date >= "
+        "COALESCE((SELECT MAX(date) FROM bond_indices_daily WHERE index_name = ? AND date < ?), ?) "
+        "ORDER BY date", (INDICE_CCL, INDICE_CCL, desde, desde)).fetchall()
+    return [(r["date"], float(r["value"]), r["date"]) for r in rows
+            if r["value"] is not None and float(r["value"]) > 0]
+
+
+def huella_del_dolar(conn, dolar: str):
+    """Algo que cambia cuando cambia lo guardado del dólar `dolar` ('mep' | 'ccl'):
+    cuántos días hay, el último y la suma de lo que valen. Para lo que se arma con
+    él y queda en la memoria del proceso (las velas de 1 y 4 horas, `velas_horarias`;
+    las alertas en la rueda, `alerts_engine._preparadas`). Los valores y no la hora
+    de la última escritura: cada vez que alguien abre su Dashboard se reescribe el
+    MEP de hoy (`main.post_snapshot`), casi siempre igual, y lo armado se volvía a
+    armar a cada rato sin que cambiara nada. La misma idea que `tecnico._huellas`."""
+    if dolar == "ccl":
+        r = conn.execute("SELECT COUNT(*) AS n, MAX(date) AS u, SUM(value) AS s FROM bond_indices_daily "
+                         "WHERE index_name = ?", (INDICE_CCL,)).fetchone()
+    else:
+        r = conn.execute(f"SELECT COUNT(*) AS n, MAX(date) AS u, SUM({SQL_MEDIO_MEP}) AS s "
+                         "FROM fx_rates_daily").fetchone()
+    return (r["n"], r["u"], r["s"]) if r else None
+
+
+def ccl_desde(conn):
+    """El primer día con CCL guardado, o None si todavía no hay ninguno (una base
+    nueva antes de que `main._actualizar_ccl` lo baje)."""
+    r = conn.execute("SELECT MIN(date) AS d FROM bond_indices_daily WHERE index_name = ?",
+                     (INDICE_CCL,)).fetchone()
+    return r["d"] if r else None
+
+
+def ccl_de_las_fechas(conn, fechas, max_dias: int) -> dict:
+    """{fecha: CCL} de cada fecha 'YYYY-MM-DD' con la regla de `serie_diaria`: el
+    último guardado hasta ese día, si no tiene más de `max_dias` (más viejo no es
+    «el de ese día»). La que no tiene queda afuera. En UNA lectura."""
+    from datetime import date
+    pedidas = sorted({str(f)[:10] for f in fechas if f})
+    if not pedidas:
+        return {}
+    serie = _serie_ccl(conn, pedidas[0])
+    out, j, actual = {}, 0, None
+    for f in pedidas:
+        while j < len(serie) and serie[j][0] <= f:
+            actual = serie[j]
+            j += 1
+        if actual and (date.fromisoformat(f) - date.fromisoformat(actual[0])).days <= max_dias:
+            out[f] = actual[1]
+    return out
+
+
+def _fecha_valida(fecha) -> bool:
+    """¿'YYYY-MM-DD' de un día que existe? Con la forma exacta: en producción
+    (Python 3.11) `fromisoformat` acepta «2026-W45-5» (una semana ISO), y en la Mac
+    (3.9) no. Una fecha rota guardada hacía reventar la cuenta de «los últimos
+    días» de la noche siguiente."""
+    import re
+    from datetime import date
+    try:
+        return bool(isinstance(fecha, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha)
+                    and date.fromisoformat(fecha))
+    except ValueError:
+        return False
+
+
+# El CCL que anota el propio servidor de dolarapi, con la fecha del dato
+# (`main._actualizar_ccl`): el cierre de cada día, sin depender de cómo fecha
+# argentinadatos. Manda: lo de argentinadatos no lo pisa.
+FUENTE_PROPIA = "dolarapi"
+
+
+def fechas_de_argentinadatos(filas: list, hoy: str) -> list:
+    """Las filas de argentinadatos [(fecha, compra, venta)] con la fecha del CIERRE
+    que traen, sólo de los días anteriores a `hoy`.
+
+    DESDE SEPTIEMBRE DE 2026 LA FUENTE FECHA CADA CIERRE CON EL DÍA SIGUIENTE.
+    Medido el 06/11/2026 (auditoría del contado con liqui, H1 del servidor): de
+    2013 a agosto de 2026 la fila del sábado repetía la del viernes (el último
+    cierre) en todos los fines de semana; desde el 12/09 repite la del LUNES y no
+    la del viernes, o sea que la fila del lunes trae el cierre del viernes, la del
+    martes el del lunes. Y contra el dólar que implican los CEDEARs en la Bolsa, la
+    variación de cada día acompaña a la fila del día siguiente (correlación 0,77 y
+    0,92 en septiembre y octubre; con la del mismo día, 0,09 y −0,24; hasta agosto
+    era al revés). Sin corregirlo, cada vela del estimado iba con el dólar de la
+    rueda anterior y la variación del día de BAC quedaba peor que con el MEP.
+
+    Cómo se corrige sin atarse a una fecha (la fuente puede volver a cambiar): cada
+    sábado dice de qué lado está su semana —igual al viernes y distinto del lunes,
+    alineada; igual al lunes y distinto del viernes, corrida; si no, no dice nada— y
+    cada fila toma lo que dice el sábado más cercano. En una semana corrida, la fila
+    del día X es el cierre del día anterior. Lo que queda en hoy o después, con la
+    fecha ya corregida, no se usa: mientras el día no cerró, la fuente publica el
+    valor del momento (el de cada día lo anota el servidor de dolarapi después del
+    cierre, `FUENTE_PROPIA`). Con la fecha corregida y no antes: en una semana
+    corrida la fila de HOY es el cierre de AYER, y descartándola antes de
+    corregirla, ayer quedaba sin su dólar hasta la noche siguiente (medido el
+    06/11/2026 a las 21: la vela del 05/11 iba con el cierre del 04/11).
+
+    Una fila con la fecha o el valor rotos no entra, y se descarta ANTES de juntar
+    las filas por fecha: si no, una rota que llegaba después de la buena del mismo
+    día la borraba, y ese día quedaba sin dólar (`guardar_ccl` descarta la rota,
+    pero ya sin la buena)."""
+    from bisect import bisect_left
+    from datetime import date, timedelta
+    validas = {f: (c, v) for f, c, v in filas if _fecha_valida(f) and punta_media(c, v)}
+    medio = {f: punta_media(c, v) for f, (c, v) in validas.items()}
+    marcas = []                                     # [(sábado, corrida)]
+    for f in sorted(medio):
+        x = date.fromisoformat(f)
+        if x.weekday() != 5:
+            continue
+        sab, vie, lun = medio[f], medio.get((x - timedelta(days=1)).isoformat()), \
+            medio.get((x + timedelta(days=2)).isoformat())
+        if sab is None or vie is None or lun is None:
+            continue
+        if sab == vie and sab != lun:
+            marcas.append((f, False))
+        elif sab == lun and sab != vie:
+            marcas.append((f, True))
+    if not marcas:
+        return [(f, c, v) for f, (c, v) in sorted(validas.items()) if f < hoy]
+    sabados = [s for s, _ in marcas]
+
+    def corrida(f):
+        i = bisect_left(sabados, f)
+        cerca = [j for j in (i - 1, i) if 0 <= j < len(sabados)]
+        j = min(cerca, key=lambda j: abs((date.fromisoformat(sabados[j]) - date.fromisoformat(f)).days))
+        return marcas[j][1]
+    out = {}
+    for f in sorted(validas):          # en orden: si dos caen en el mismo día, gana la más nueva
+        dia = (date.fromisoformat(f) - timedelta(days=1)).isoformat() if corrida(f) else f
+        out[dia] = validas[f]
+    return [(f, c, v) for f, (c, v) in sorted(out.items()) if f < hoy]
+
+
+def guardar_ccl(conn, filas: list, fuente: str, hasta: str = None) -> int:
+    """Guarda el CCL de cada día: `filas` = [(fecha 'YYYY-MM-DD', compra, venta)] de
+    la fuente; el valor es el MEDIO (`punta_media`). Escribe las fechas que faltan
+    y vuelve a escribir las últimas `DIAS_CCL_REVISAR` (ver arriba), hasta `hasta`
+    (los días cerrados: `main._actualizar_ccl`). Lo que anotó el servidor de
+    dolarapi (`FUENTE_PROPIA`) no lo pisa otra fuente. No hace commit. Devuelve
+    cuántas escribió."""
+    from datetime import date, datetime, timedelta
+    valores = {}
+    for fecha, compra, venta in filas:
+        if not _fecha_valida(fecha) or (hasta and fecha > hasta):
+            continue
+        v = punta_media(compra, venta)
+        if v:
+            valores[fecha] = v
+    if not valores:
+        return 0
+    ya = {r["date"]: r["source"] for r in conn.execute(
+        "SELECT date, source FROM bond_indices_daily WHERE index_name = ?", (INDICE_CCL,)).fetchall()}
+    revisar = ((date.fromisoformat(max(ya)) - timedelta(days=DIAS_CCL_REVISAR)).isoformat()
+               if ya else "")
+    ahora = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    nuevas = [(INDICE_CCL, f, v, fuente, ahora) for f, v in sorted(valores.items())
+              if (f not in ya or f >= revisar or fuente == FUENTE_PROPIA)
+              and (fuente == FUENTE_PROPIA or ya.get(f) != FUENTE_PROPIA)]
+    if nuevas:
+        # De a una sentencia por fila (como el respaldo del blue): un INSERT con
+        # varias filas y la misma fecha dos veces lo rechaza Postgres.
+        conn.executemany(SQL_GUARDAR_INDICE, nuevas)
+    return len(nuevas)
 
 
 

@@ -48,6 +48,10 @@ import velas_diarias
 from fechas import hoy_art_date
 from home.market import session_today
 
+# La de verdad: la suite la reemplaza en cada prueba por una que no da nada
+# (conftest, `_ccl_sin_red`); acá se toma antes, para probarla a ella.
+_CCL_DE_DOLARAPI = main._ccl_cerrado_de_dolarapi
+
 
 def _ruedas(hasta, n):
     out, d = [], hasta - timedelta(days=1)
@@ -122,7 +126,7 @@ class VelaDeHoyTest(unittest.TestCase):
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
             for t in ("velas_diarias", "velas_estado", "cambios_ratio", "positions", "brokers",
-                      "fx_rates_daily"):
+                      "fx_rates_daily", "bond_indices_daily"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
                 "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
@@ -144,7 +148,12 @@ class VelaDeHoyTest(unittest.TestCase):
                    mock.patch("pricing.yahoo._historia", self.yahoo),
                    mock.patch("cambios_ratio._splits_de_yahoo", lambda t: []),
                    mock.patch("cambios_ratio._historia_byma", lambda c: {}),
+                   # La Bolsa sin nada y sin red: ni el precio de ahora, ni los bonos,
+                   # ni la historia de cada rueda (la de BA.C, el CEDEAR de BAC en
+                   # pesos, la pide el mini-gráfico antes que el estimado).
                    mock.patch("main._fetch_data912_equities", lambda: {}),
+                   mock.patch("main._fetch_data912_bonds", lambda: {}),
+                   mock.patch("pricing.data912.filas", lambda tipo, papel, timeout=10: []),
                    mock.patch("main._get_dolar_data", lambda: self.dolar),
                    mock.patch("alerts_engine.rueda_en_horario", self._horario),
                    # Desde las 13 de Nueva York `en_rueda` le pregunta a Yahoo (SPY)
@@ -275,6 +284,164 @@ class VelaDeHoyTest(unittest.TestCase):
         self.assertTrue(v["hoy"])
         self.assertEqual((v["o"], v["h"], v["l"], v["c"]), (301.0 * 50, 306.0 * 50, 299.0 * 50, 304.5 * 50),
                          "el MEP de hoy (1000) ÷ 20 = × 50")
+
+    def test_cedear_estimado_la_vela_de_hoy_va_con_el_contado_con_liqui_de_ahora(self):
+        # Con el contado con liqui de cada día guardado, el estimado es la acción ×
+        # ESE dólar ÷ 20 (Nico, 06/11): la vela de hoy, con el de AHORA (el caché
+        # de dolarapi, con la misma regla del medio), no con el MEP. Si el de hoy
+        # ya está guardado, con el guardado, como la historia.
+        self._mep(1000.0)
+        dias = _ruedas(self.hoy, 760)
+        with mock.patch("main._bajar_ccl", lambda: [(d.isoformat(), 1059.0, 1061.0) for d in dias]):
+            main._actualizar_ccl()
+        self.dolar = {"mep": {"compra": 990.0, "venta": 1010.0, "medio": 1000.0, "updated_at": _ahora_iso()},
+                      "ccl": {"compra": 1079.0, "venta": 1081.0, "medio": 1080.0, "updated_at": _ahora_iso()}}
+        self.yahoo.precios["AAPL"] = 300.0
+        ficha = self.client.get("/api/tecnico/AAPL?moneda=ars", headers=self.h).json()
+        self.assertAlmostEqual(ficha["puntos"][-1]["c"], 300.0 * 1060.0 / 20, places=3)
+        self.assertEqual((ficha["ticker"], ficha["convertida"], ficha["escala"]), ("AAPL", "ccl", 20))
+        self.yahoo.hoy_diaria["AAPL"] = (301.0, 306.0, 299.0, 304.5, 5_000_000.0)
+        v = self._hoy("AAPL", "ars")["velas"][-1]
+        self.assertTrue(v["hoy"])
+        self.assertEqual((v["o"], v["c"]), (301.0 * 54, 304.5 * 54), "el contado con liqui de ahora (1080) ÷ 20")
+        # El cierre de cada día lo anota el servidor de dolarapi, con la fecha del
+        # DATO. Antes del cierre (`fx.HORA_CIERRE_CCL`, 18 h) no: guardado a la
+        # mañana (un arranque), la vela de hoy quedaba con el dólar de esa hora y la
+        # Cartera de BAC con el de ahora. La fila de HOY de argentinadatos no se usa
+        # nunca: es el valor del momento. Y la corrida de la noche que termina pasada
+        # la medianoche lo anota con el día del dato, no con el del reloj.
+        hoy = session_today("AAPL")
+        manana = (datetime.fromisoformat(hoy) + timedelta(days=1)).date().isoformat()
+        for reloj, dato, guarda in ((f"{hoy} 11:00", f"{hoy}T14:00:00Z", False),
+                                    (f"{hoy} 17:59", f"{hoy}T20:59:00Z", False),
+                                    (f"{hoy} 18:00", f"{hoy}T21:00:00Z", True),
+                                    (f"{manana} 00:05", f"{hoy}T21:00:00Z", True)):
+            with main.db_abierta() as conn:
+                conn.execute("DELETE FROM bond_indices_daily WHERE date = ?", (hoy,))
+                conn.commit()
+            dolarapi = {"compra": 1099.0, "venta": 1101.0, "medio": 1100.0, "updated_at": dato}
+            with mock.patch("main._bajar_ccl", lambda: [(hoy, 1199.0, 1201.0)]), \
+                    mock.patch("main._ccl_cerrado_de_dolarapi", _CCL_DE_DOLARAPI), \
+                    mock.patch("main._fetch_dolar", lambda casa: dolarapi if casa == "contadoconliqui" else None), \
+                    mock.patch("fechas.ahora_art", lambda: datetime.fromisoformat(reloj)):
+                main._actualizar_ccl()
+            v = self._hoy("AAPL", "ars")["velas"][-1]
+            self.assertEqual(v["c"], 304.5 * (55 if guarda else 54),
+                             f"a las {reloj}: {'el cierre de hoy (1100)' if guarda else 'el de ahora (1080)'} ÷ 20")
+        # Sin contado con liqui reciente en el caché, no se inventa: sin vela de hoy.
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM bond_indices_daily WHERE date = ?", (session_today("AAPL"),))
+            conn.commit()
+        self.dolar = {"mep": self.dolar["mep"],
+                      "ccl": {"compra": 1079.0, "venta": 1081.0, "medio": 1080.0, "updated_at": _ahora_iso(10)}}
+        self.assertEqual(self._hoy("AAPL", "ars")["velas"], [])
+
+    def test_cedear_estimado_sin_contado_con_liqui_en_el_cache_no_hay_vela_de_hoy(self):
+        # dolarapi no dio el contado con liqui (el caché tiene sólo el MEP): la vela de
+        # hoy de una serie armada con el contado con liqui NO se pasa con el MEP de
+        # ahora (quedaría ~5 % abajo de la historia, un pozo que no existió): sin vela
+        # de hoy, como cuando el de ahora es viejo. (Auditoría de las pruebas, 06/11.)
+        self._mep(1000.0)
+        dias = _ruedas(self.hoy, 760)
+        with mock.patch("main._bajar_ccl", lambda: [(d.isoformat(), 1059.0, 1061.0) for d in dias]):
+            main._actualizar_ccl()
+        self.yahoo.precios["AAPL"] = 300.0
+        ficha = self.client.get("/api/tecnico/AAPL?moneda=ars", headers=self.h).json()
+        self.assertEqual((ficha["convertida"], ficha["escala"]), ("ccl", 20))
+        self.yahoo.hoy_diaria["AAPL"] = (301.0, 306.0, 299.0, 304.5, 5_000_000.0)
+        self.assertNotIn("ccl", self.dolar)
+        self.assertEqual(self._hoy("AAPL", "ars")["velas"], [])
+
+    # — BAC: su precio en pesos en la Cartera, en su mini-gráfico y en la foto de
+    # la noche, con el mismo dólar que su gráfico (`main._ccl_de_las_fechas`) —
+
+    def _cache_del_dolar(self, datos):
+        """La caché del dólar del servidor, la que leen /api/prices y la foto (la
+        de esta prueba, `self.dolar`, es la de `_get_dolar_data`): `datos`, o None
+        = recién arrancado, antes del primer /api/dolar."""
+        previo = dict(main._dolar_cache)
+        self.addCleanup(lambda: (main._dolar_cache.clear(), main._dolar_cache.update(previo)))
+        main._dolar_cache.update({"data": datos, "ts": time.time() if datos else 0.0})
+        for c in (main._PREVCLOSE_CACHE, main._PREVCLOSE_ULTIMO, main._PREVCLOSE_RUEDA,
+                  main._PREVCLOSE_VENCE, main._PRICE_CACHE, main._history_cache):
+            c.clear()
+
+    def _ccl_guardado(self, dias, compra, venta):
+        with mock.patch("main._bajar_ccl", lambda: [(d.isoformat(), compra, venta) for d in dias]):
+            main._actualizar_ccl()
+
+    def test_bac_con_el_dolar_frio_no_se_mueve_si_nada_se_movio(self):
+        # Recién publicado, antes del primer /api/dolar, la caché del dólar está
+        # vacía: el precio de ahora de BAC caía al blue de la configuración (1.415)
+        # y su cierre anterior iba con el contado con liqui guardado (1.660): la
+        # Cartera decía −14,8 % en el día y el mini-gráfico caía al final, sin que se
+        # moviera nada (auditoría del contado con liqui, H3 del servidor). Con la
+        # caché fría, el último guardado.
+        self._ccl_guardado(_ruedas(self.hoy, 40), 1659.0, 1661.0)
+        self._cache_del_dolar(None)
+        self.yahoo.precios["BAC"] = 50.0
+        precio = self.client.get("/api/prices?symbols=BAC.BA", headers=self.h).json()["BAC.BA"]
+        previo = self.client.get("/api/prices/prev-close?symbols=BAC.BA", headers=self.h).json()["BAC.BA"]
+        self.assertEqual((precio, previo), (50 * 1660 / 4, 50 * 1660 / 4))
+        ruedas = _ruedas(self.hoy, 21) + [self.hoy]
+
+        class _Ticker:
+            def __init__(self, sym):
+                self.sym = sym
+
+            def history(self, period, interval, auto_adjust):
+                return pd.DataFrame({"Close": [50.0] * len(ruedas)},
+                                    index=pd.DatetimeIndex([pd.Timestamp(d) for d in ruedas]))
+        with mock.patch("main.yf.Ticker", _Ticker):
+            mini = self.client.get("/api/prices/history?symbol=BAC.BA&period=1m", headers=self.h).json()
+        self.assertEqual({p["close"] for p in mini["points"]}, {50 * 1660 / 4}, "una línea chata")
+
+    def test_bac_la_vela_de_hoy_y_la_cartera_van_con_el_mismo_contado_con_liqui(self):
+        # Con la rueda abierta, la vela de hoy del gráfico de BAC y su precio en la
+        # Cartera van con el contado con liqui de AHORA (1.090) y con la misma regla
+        # del medio (`tecnico.dolar_de_la_cache`); no con el de ayer (1.060) ni con
+        # la fila de hoy que la fuente trae a la mañana (1.070). (Auditoría del
+        # contado con liqui, H4 y S3 del servidor.)
+        self._mep(1000.0)
+        dias = _ruedas(self.hoy, 760)
+        with mock.patch("main._bajar_ccl", lambda: [(d.isoformat(), 1059.0, 1061.0) for d in dias]
+                        + [(session_today("BAC"), 1069.0, 1071.0)]):
+            main._actualizar_ccl()
+        self.dolar = {"mep": self.dolar["mep"],
+                      "ccl": {"compra": 1089.0, "venta": 1091.0, "medio": 1090.0, "updated_at": _ahora_iso()}}
+        self._cache_del_dolar(self.dolar)
+        self.yahoo.precios["BAC"] = 50.0
+        ficha = self.client.get("/api/tecnico/BAC.BA?moneda=ars", headers=self.h).json()
+        self.assertEqual((ficha["convertida"], ficha["escala"]), ("ccl", 4))
+        self.yahoo.hoy_diaria["BAC"] = (50.0, 50.0, 50.0, 50.0, 5e6)       # Nueva York quieta en 50
+        vela = self._hoy("BAC.BA", "ars")["velas"][-1]
+        self.yahoo.hoy_en_historia = True       # la rueda de hoy también en la bajada de la Cartera
+        precio = self.client.get("/api/prices?symbols=BAC.BA", headers=self.h).json()["BAC.BA"]
+        self.assertEqual((vela["c"], precio), (50 * 1090 / 4, 50 * 1090 / 4))
+
+    def test_la_foto_de_la_noche_pasa_bac_con_el_contado_con_liqui_de_su_cierre(self):
+        # La foto de cada noche (`snapshots_job.fetch_prices_for_symbols`) valúa BAC
+        # como la Cartera: su último cierre de Nueva York × el contado con liqui de
+        # la fecha de ESE cierre ÷ 4, no el de ahora. Con la caché fría y nada
+        # guardado, dolarapi directo, con la misma regla del medio que el gráfico
+        # (con una compra que no tiene sentido, la venta).
+        import snapshots_job
+        self._ccl_guardado(_ruedas(self.hoy, 40), 1059.0, 1061.0)
+        self._cache_del_dolar({"ccl": {"compra": 1089.0, "venta": 1091.0, "medio": 1090.0,
+                                       "updated_at": _ahora_iso()}})
+        self.yahoo.precios["BAC"] = 50.0
+        self.assertEqual(snapshots_job.fetch_prices_for_symbols(["BAC.BA"], {})["BAC.BA"], 50 * 1060 / 4)
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM bond_indices_daily WHERE index_name = 'CCL'")
+            conn.commit()
+        self._cache_del_dolar(None)
+        directo = {"compra": 950.0, "venta": 1100.0, "medio": 1025.0, "updated_at": _ahora_iso()}
+        with mock.patch("main._fetch_dolar", lambda casa: directo if casa == "contadoconliqui" else None):
+            self.assertEqual(snapshots_job.fetch_prices_for_symbols(["BAC.BA"], {})["BAC.BA"], 50 * 1100 / 4)
+            # Y si la base falla justo ahí, dolarapi directo: no la foto de todos sin precios.
+            with mock.patch("main._ccl_de_las_fechas", side_effect=RuntimeError("la base no contesta")), \
+                    self.assertLogs("snapshots_job", level="WARNING"):
+                self.assertEqual(snapshots_job.fetch_prices_for_symbols(["BAC.BA"], {})["BAC.BA"], 50 * 1100 / 4)
 
     def test_vela_de_hoy_en_la_escala_medida_de_la_serie_guardada(self):
         # MELI.BA quedó guardada (alguien la tuvo): la ficha estima con SU escala

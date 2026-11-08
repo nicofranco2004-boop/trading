@@ -72,6 +72,7 @@ import {
   RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, conAvisosDeHoy, tarjetaBandas, lineaPromedio, marcas, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, zoomEnElTope, moverVentana, RUEDAS_MINIMAS,
   ventanaInicial, margenDerecho, futuroMaximo, sumarVelaDeHoy, textoVelaDeHoy, notaDeLaMoneda, sinPrecioEnPesos,
+  mismaCuenta,
 } from '../../utils/tecnico'
 import { useVelaDeHoy } from '../../hooks/useVelaDeHoy'
 import { cierreDeVela, textoCuenta } from '../../utils/cierreDeVela'
@@ -606,16 +607,20 @@ export default function LecturaTecnica({
   const vivas = useVelaDeHoy(asset, moneda, accionLocal, conGrafico)
   // La ficha quedó abierta de un día para el otro y la noche guardó otra vela:
   // la serie se vuelve a pedir sola (sin el gris de carga), y así la de hoy
-  // sigue a la última guardada en vez de quedar pegada a la de anteayer.
+  // sigue a la última guardada en vez de quedar pegada a la de anteayer. Lo
+  // mismo si la vela de hoy viene en otra cuenta (otro dólar u otra escala:
+  // `mismaCuenta`): la serie de la pantalla quedó de antes de un cambio.
   const ultimaDeLaSerie = actual?.puntos?.[actual.puntos.length - 1]?.d
+  const cuentaDeLaSerie = actual ? { convertida: actual.convertida ?? null, escala: actual.escala ?? null } : null
+  const otraCuenta = !!vivas && !!cuentaDeLaSerie && !mismaCuenta(vivas, cuentaDeLaSerie)
   useEffect(() => {
-    if (!vivas?.base || !ultimaDeLaSerie || !(vivas.base > ultimaDeLaSerie)) return undefined
+    if (!vivas?.base || !ultimaDeLaSerie || !(vivas.base > ultimaDeLaSerie || otraCuenta)) return undefined
     let vivo = true
     api.get(`/tecnico/${encodeURIComponent(asset)}?moneda=${moneda}${accionLocal ? '&local=1' : ''}${ref}`)
       .then(r => { if (vivo && r?.disponible) setDatos(d => ({ ...d, [moneda]: r })) })
       .catch(() => {})
     return () => { vivo = false }
-  }, [vivas?.base, ultimaDeLaSerie, asset, moneda, accionLocal, ref])
+  }, [vivas?.base, ultimaDeLaSerie, otraCuenta, asset, moneda, accionLocal, ref])
   useEffect(() => {
     if (!conGrafico || eventos[moneda] !== undefined) return
     let vivo = true
@@ -741,7 +746,8 @@ export default function LecturaTecnica({
   // La vela de hoy (useVelaDeHoy) se suma a las diarias y semanales; en 1H/4H
   // las horas traen su propia vela en curso (al juntar las dos, 30/10).
   const dibujo = sumarVelaDeHoy({ puntos, huecos, vivas: horas ? null : vivas, ultimaGuardada: actual.puntos[actual.puntos.length - 1]?.d,
-    semanales, diarios, previos: actual.puntos.slice(Math.max(0, inicioVista - 7), inicioVista), alBorde: finVista >= total })
+    semanales, diarios, previos: actual.puntos.slice(Math.max(0, inicioVista - 7), inicioVista), alBorde: finVista >= total,
+    cuenta: cuentaDeLaSerie })
   const conHoy = dibujo.puntos[dibujo.puntos.length - 1]?.hoy ? dibujo.puntos[dibujo.puntos.length - 1] : null
   // El contador de cuánto falta para que cierre la vela en curso, debajo del
   // precio (Nico, 02/11, como TradingView): sólo si la última vela que se ve

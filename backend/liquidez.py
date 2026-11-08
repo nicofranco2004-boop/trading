@@ -177,24 +177,32 @@ def para_la_ficha(papel: str) -> dict:
     rueda del precio en vivo (`periodo: 'ultima_rueda'`): un papel chico sin
     historia es justo el que más importa avisar."""
     from main import _fetch_data912_equities
+    from snapshots_job import codigo_en_byma, solo_en_byma
     p = (papel or "").strip().upper()
     if p.endswith(".BA"):
         p = p[:-3]
+    # El papel se mira por su código en la Bolsa: el de BAC es 'BA.C'. Con 'BAC'
+    # la ficha medía otro papel (en dólares, sin operar) con el precio de Boeing
+    # ('BA') como especie base, y decía «poca» de un CEDEAR que se opera ~$ 90
+    # millones por día (06/11/2026, audit/_scripts/medir_ba_c.out).
+    codigo = codigo_en_byma(p) if p else p
     vivos = _fetch_data912_equities() or {}
     if not vivos:
         return {"papel": p, "disponible": False, "motivo": "sin_fuente"}
-    vivo = vivos.get(p)
+    vivo = vivos.get(codigo)
     if not p or not vivo:
         return {"papel": p, "disponible": False, "motivo": "no_cotiza"}
     es_cedear = vivo.get("mercado") == "arg_cedears"
     # El precio en PESOS con el que se pasa a plata el volumen: el propio, o el
     # de la especie base si ésta es la especie en dólares.
-    base_pesos = _especie_en_dolares(p, vivos) if es_cedear else None
+    base_pesos = _especie_en_dolares(codigo, vivos) if es_cedear else None
     precio = base_pesos or float(vivo.get("c") or 0)
 
-    hist = _cacheado(("d912", p), lambda: _historia_data912("cedears" if es_cedear else "stocks", p))
+    hist = _cacheado(("d912", codigo), lambda: _historia_data912("cedears" if es_cedear else "stocks", codigo))
     fuente = "data912" if hist else None
-    if not hist:
+    if not hist and not solo_en_byma(f"{p}.BA"):
+        # Yahoo, de respaldo; nunca para un papel que Yahoo no tiene (el 'BAC.BA'
+        # de Yahoo es otro papel).
         hist = _cacheado(("yahoo", p), lambda: _historia_yahoo(p))
         fuente = "yahoo" if hist else None
 
