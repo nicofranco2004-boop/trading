@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import {
   DE_ENTRADA, MAX_REGLAS, PERIODOS, PERIODOS_CARTERA, POCAS_COMPRAS, REGLAS, aniosDe, colorDe, comoSeSimula, compraClave,
-  contraMantener, ganaron, lectura, motivoEnPalabras, otraRegla, parteAfuera, periodoEnPalabras, porcentaje,
+  contraMantener, ganaron, lectura, lecturaComparada, motivoEnPalabras, otraRegla, parteAfuera, periodoEnPalabras, porcentaje,
   precio, queSePrueba, reglaDe, reglasDe, sinEstaCompra, textoDelRecorte, tramosComprada,
 } from './backtesting'
 import { handleDemoRequest } from './demo'
@@ -185,7 +185,8 @@ describe('una regla: lo que dicen los números', () => {
   })
 
   it('«bajó X %» es lo que se movió el precio, sin comisiones (H2), y nunca «subió 0 %» (B1)', () => {
-    // El precio bajó 35,3 %; comprar y mantener, con sus dos comisiones, −35,9 %.
+    // El precio bajó 34,8 % (desde el cierre del viernes 25/10/24); comprar y mantener, que
+    // entra a la apertura del lunes 28 y paga sus dos comisiones, −35,9 %.
     expect(RSI.variacion_precio).toBeGreaterThan(RSI.mantener.resultado)
     expect(lectura(RSI).frases[0]).toMatch(/^GGAL bajó 35% /)
     expect(lectura(con({ variacion_precio: 0.26 })).frases[0]).toMatch(/^GGAL terminó casi igual en los últimos 2 años y /)
@@ -196,7 +197,9 @@ describe('una regla: lo que dicen los números', () => {
   it('media de 200 en GGAL: perdió menos, desde el día en que la media existe', () => {
     const l = lectura(GGAL.media200)
     expect(l.titulo).toBe('Habría perdido menos que comprar y mantener')
-    expect(l.frases[0]).toBe('GGAL bajó 42% desde el 17/04/25 y la regla estuvo afuera el 66% de los días.')
+    // El precio, desde el cierre de la víspera, y la frase lo dice: «desde el 17/04» era el
+    // cierre del 16 (auditoría 06/11 del precio de arranque, H2). Lo demás, desde el 17.
+    expect(l.frases[0]).toBe('GGAL bajó 41% desde el cierre del 16/04/25 y la regla estuvo afuera el 66% de los días.')
     expect(l.frases.join(' ')).not.toMatch(/sin la compra/i)
     expect(GGAL.media200.resultados[0].compras).toBeGreaterThanOrEqual(POCAS_COMPRAS)
     expect(l.frases.join(' ')).not.toMatch(/con tan pocas/)
@@ -333,12 +336,28 @@ describe('cuando la prueba arranca después de lo pedido', () => {
     expect(textoDelRecorte(RSI)).toBeNull()
   })
 
+  // Auditoría 06/11 del precio de arranque, H2: el precio se mide desde el cierre de
+  // la víspera (el 16/04) y la frase decía «desde el 17/04/25», el día de las compras.
+  it('lo que hizo el precio nombra el cierre del que se mide; las compras, el primer día', () => {
+    expect(GGAL['rsi,media200'].variacion_desde).toBe('2025-04-16')
+    const f = lecturaComparada(GGAL['rsi,media200']).frases
+    expect(f[0]).toMatch(/^GGAL bajó 41% desde el cierre del 16\/04\/25 y las reglas /)
+    expect(f.join(' ')).toContain('Con tan pocas compras (3 y 10) desde el 17/04/25,')
+    // Sin recortar, sin fecha: «en los últimos 2 años», como antes.
+    expect(lectura(RSI).frases[0]).toMatch(/^GGAL bajó 35% en los últimos 2 años /)
+    // Una respuesta sin la fecha (el servidor de antes, mientras se publica) no inventa una.
+    const { variacion_desde: _, ...sinFecha } = GGAL.media200
+    expect(lectura(sinFecha).frases[0]).toMatch(/^GGAL bajó 41% desde el 17\/04\/25 /)
+  })
+
   it('B5: un papel que cotiza hace poco, con la forma que manda el servidor (recorte_por siempre lleno)', () => {
+    // `variacion_desde`: la víspera del primer día, como la manda el servidor (el 18/04/25
+    // fue Viernes Santo, sin rueda en Nueva York).
     const joven = con({ recortado: true, recorte_por: 'rsi', primera_vela: '2025-03-28', desde: '2025-04-21',
-      pedido_desde: '2024-11-05', asset: 'CRWV' })
+      variacion_desde: '2025-04-17', pedido_desde: '2024-11-05', asset: 'CRWV' })
     expect(textoDelRecorte(joven)).toBe('Hay precios de CRWV desde el 28/03/25 y el RSI necesita 15 días de precios '
       + 'antes: la prueba arranca el 21/04/25.')
-    expect(lectura(joven).frases[0]).toMatch(/ desde el 21\/04\/25 y la regla/)
+    expect(lectura(joven).frases[0]).toMatch(/ desde el cierre del 17\/04\/25 y la regla/)
   })
 })
 

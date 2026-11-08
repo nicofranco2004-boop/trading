@@ -24,9 +24,11 @@ CÓMO SE ELIGE EL DÍA DEL 100.
   · El pedido trae tu primera compra (`desde`, la calcula la pantalla con la
     misma regla de la ficha, `primeraCompra`) o «1 año» / «3 años» (`anios`):
     los últimos N años que terminan en el último precio de los activos, no hoy
-    (`tecnico.primer_dia`, LA regla de la ficha, el Backtesting de una regla y
-    «Una cartera»; Nico, 06/11/2026). Desde hoy, un domingo, un lunes o después
-    de un feriado arrancaba otro día que el Backtesting para el mismo activo.
+    (Nico, 06/11/2026: desde hoy, un domingo, un lunes o después de un feriado
+    arrancaba otro día que el Backtesting para el mismo activo), y el 100 es el
+    cierre de N × 365 días atrás (`tecnico.dia_de_arranque`, LA regla
+    de la ficha y de «Una cartera»; Nico, 06/11: «como la ficha»). Con el cierre
+    del primer día, un día movido daba otro número que la ficha (+21 % contra +5 %).
   · Si `desde` cae un día sin precio (fin de semana, feriado), vale el último
     cierre anterior: es el precio que tenía ese día.
   · Si un activo empieza DESPUÉS de `desde`, el 100 se corre para TODOS al
@@ -58,7 +60,7 @@ import tecnico
 
 MAX_ACTIVOS = 4
 # «1 año» y «3 años», en años: se cortan por FECHA (días corridos) hasta el
-# último precio, como la ficha (`tecnico.primer_dia`).
+# último precio, como la ficha (`tecnico.dia_de_arranque`).
 PLAZOS = {"1a": 1, "3a": 3}
 VARAS = ("sp500", "mep", "cer")
 # Un activo que empieza hasta una semana después del día pedido no «corre» el
@@ -143,7 +145,7 @@ def comparar(conn, activos: list, moneda: str, desde: str = None, *, anios: int 
     `activos`: [(asset, local)] con `local` igual que la ficha (acción argentina
     → su precio de BYMA). `moneda`: 'usd' | 'ars'. Desde cuándo: `desde`
     ('YYYY-MM-DD', tu primera compra) o `anios` (los últimos N años hasta el
-    último precio de los activos, `tecnico.primer_dia`). `cer`: la serie del
+    último precio de los activos, con el 100 de `tecnico.dia_de_arranque`). `cer`: la serie del
     índice desde un día, `cer(dia)` → [(fecha, valor)] (sólo en pesos; vive en
     `main`, y el día lo sabe esta cuenta), y `cer_basis` con qué se armó ('CER' o
     'UVA'). `hoy`: el día argentino (ninguna línea pasa de hoy, y la que no tiene
@@ -181,11 +183,11 @@ def comparar(conn, activos: list, moneda: str, desde: str = None, *, anios: int 
         return out
 
     # Hasta cuándo: el último día con precio de los activos. «1 año» y «3 años»
-    # terminan ahí (`tecnico.primer_dia`).
+    # terminan ahí, y arrancan con el cierre de N años antes (`tecnico.dia_de_arranque`).
     hasta = max(c["puntos"][-1][0] for c in crudas)
     out["hasta"] = hasta
     if anios:
-        desde = tecnico.primer_dia(hasta, anios * tecnico.DIAS_ANIO)
+        desde = tecnico.dia_de_arranque(hasta, anios * tecnico.DIAS_ANIO)
         out["desde"] = desde
 
     # El día del 100: `desde`, o el primero que tienen TODOS si alguno empieza

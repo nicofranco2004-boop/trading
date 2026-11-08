@@ -19,11 +19,12 @@ import json
 import secrets
 from typing import Any, Dict, List, Optional, Tuple
 
-from .schema import (NormalizedTx, RawRow, RowError,
+from .schema import (NormalizedTx, ParseResult, RawRow, RowError,
                      OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, TX_VIVAS)
 from .parsers.registry import get_parser, autodetect, list_parsers
 from . import traspasos as _traspasos
 from . import movimientos_internos as _movimientos_internos
+from . import saldo_anterior as _saldo_anterior
 from .normalizer import normalize_rows
 from .fci_map import resolve_fci_by_name
 from .validator import validate
@@ -285,6 +286,8 @@ def find_duplicate_batch(conn, uid: int, file_hash: str) -> Optional[str]:
 
 # Marca que ponen los parsers en la fila del saldo de apertura de un export.
 SALDO_ANTERIOR_NOTE = "Saldo anterior"
+# Una fecha guardada como "AAAA-MM-DD" (con o sin hora atrás), para un LIKE.
+_FECHA_ISO_LIKE = "____-__-__%"
 
 
 def drop_saldo_anterior_ya_contado(conn, uid: int, txs: list) -> list:
@@ -299,8 +302,12 @@ def drop_saldo_anterior_ya_contado(conn, uid: int, txs: list) -> list:
 
     El parser resuelve el caso de varios archivos en UN mismo batch (el wizard
     los combina). Esto cubre el otro camino, el de subirlos de a uno: acá sí hay
-    conexión, así que preguntamos si el usuario ya tiene movimientos anteriores
-    en ese broker —importados o cargados a mano— y en ese caso la fila se cae.
+    conexión, así que preguntamos si el usuario ya tiene movimientos de ese día
+    o de antes en ese broker —importados o cargados a mano— y en ese caso la
+    fila se cae. Los dos caminos deciden con la MISMA regla
+    (`saldo_anterior.ya_contado`): hasta el 06/11/2026 éste comparaba con «<» y
+    el del parser con «≤», y los mismos archivos daban otro efectivo subidos
+    juntos o de a uno (revisión independiente).
     """
     saldos = [t for t in txs if (t.notes or "").strip() == SALDO_ANTERIOR_NOTE]
     if not saldos:
@@ -313,23 +320,58 @@ def drop_saldo_anterior_ya_contado(conn, uid: int, txs: list) -> list:
         # El broker y su hermano en dólares ("Bull Market · USD"): el efectivo es
         # de la misma cuenta, partido por moneda.
         like = f"{base} · %"
-        previo = conn.execute(
-            f"""SELECT 1 FROM {TX_VIVAS}
-                WHERE b.user_id=? AND b.reverted_at IS NULL AND n.date < ?
-                  AND (n.broker = ? OR n.broker LIKE ?)
-                LIMIT 1""",
-            (uid, t.date, base, like),
-        ).fetchone() or conn.execute(
-            """SELECT 1 FROM operations
-                WHERE user_id=? AND date < ? AND (broker = ? OR broker LIKE ?)
-                LIMIT 1""",
-            (uid, t.date, base, like),
-        ).fetchone()
-        if previo:
+        # Sólo fechas escritas "AAAA-MM-DD": una fila vieja con "15/06/2022" es,
+        # como texto, la más chica, y tapaba a todas las demás (2ª pasada de la
+        # revisión independiente, 06/11/2026).
+        primeros = [conn.execute(
+            f"""SELECT MIN(n.date) AS d FROM {TX_VIVAS}
+                WHERE b.user_id=? AND b.reverted_at IS NULL
+                  AND (n.broker = ? OR n.broker LIKE ?) AND n.date LIKE ?""",
+            (uid, base, like, _FECHA_ISO_LIKE),
+        ).fetchone()["d"], conn.execute(
+            """SELECT MIN(date) AS d FROM operations
+                WHERE user_id=? AND (broker = ? OR broker LIKE ?) AND date LIKE ?""",
+            (uid, base, like, _FECHA_ISO_LIKE),
+        ).fetchone()["d"]]
+        if _saldo_anterior.ya_contado(t.date, primeros):
             fuera.add(id(t))
     if not fuera:
         return txs
     return [t for t in txs if id(t) not in fuera]
+
+
+def interpretar_filas(conn, uid: int, raw_rows: List[RawRow]
+                      ) -> Tuple[List[NormalizedTx], List[RowError]]:
+    """Las filas crudas de un lote → las operaciones que se validan. Es TODO lo
+    que se les hace antes de validar que no depende del momento (los brokers sí:
+    la vista previa los crea y la confirmación los traduce al nombre de hoy).
+
+    Lo llaman los dos caminos que leen filas crudas: la vista previa y la
+    confirmación con «Estado inicial» (`load_session_with_seed_revalidate`),
+    que vuelve a leerlas en vez de usar lo que guardó la vista previa. Hasta el
+    06/11/2026 los pasos de abajo vivían sólo en la vista previa, y confirmar con
+    «Estado inicial» guardaba otra cosa que lo que la persona había visto: el
+    fondo escrito por nombre volvía al nombre crudo (y el fondo sembrado no
+    registraba su venta), y el «Saldo anterior» ya contado volvía a sumarse
+    (tests/test_estado_inicial_lee_igual.py). Un paso nuevo va ACÁ, no en uno de
+    los dos."""
+    normalized, errores = normalize_rows(raw_rows)
+
+    # Saldo de apertura ya contado (historia partida en varios archivos) → fuera.
+    normalized = drop_saldo_anterior_ya_contado(conn, uid, normalized)
+
+    # FCI escrito por NOMBRE (plantilla manual): el normalizer resuelve tickers de
+    # broker contra un mapa curado, pero no tiene DB para mirar el catálogo. Acá sí
+    # hay conn, así que traducimos "Ualintec Renta Dolares - Clase A" al símbolo
+    # (FCI:UALINTEC-RENTA-DOLARES-A) ANTES de la preview: el usuario ve el símbolo
+    # bueno y la posición valúa con el VCP del día en vez de quedar al costo.
+    # Sin match (o ambiguo) no se toca — mismo criterio que el mapa curado.
+    for tx in normalized:
+        _sym = resolve_fci_by_name(conn, getattr(tx, "asset_symbol", None))
+        if _sym:
+            tx.asset_symbol = _sym
+            tx.asset_type = "FUND"
+    return normalized, errores
 
 
 def confirmed_fingerprint_counts(conn, uid: int, *, exclude_session: str = None,
@@ -462,6 +504,8 @@ def _normalize_header_for_match(line: str) -> str:
 # o la cortada por el límite de 31 letras de Excel ("06-11-"). Un número suelto
 # ("Comitente 1234", "Hoja1") no es fecha y se queda.
 _FECHA_EN_HOJA = re.compile(r"\d+(?:[-/.]\d*)+")
+# Una celda que dice algo: no vacía y no sólo relleno ("-", "0", "0,00").
+_DICE_ALGO = re.compile(r"[^\s\-0.,]")
 
 
 def _clave_entre_archivos(header_line: str):
@@ -485,7 +529,19 @@ def _clave_entre_archivos(header_line: str):
     importe) tiene que seguir siendo igual. Sin esas columnas, la regla es la de
     siempre: la línea idéntica. Ignorar el saldo deja iguales a dos operaciones
     iguales del mismo día sin número de operación: por eso el que llama CUENTA
-    las repeticiones en vez de preguntar "¿ya vino?"."""
+    las repeticiones en vez de preguntar "¿ya vino?".
+
+    🔴 UN TÍTULO NO SE FILTRA NUNCA (clave vacía). Una línea con una sola celda
+    que dice algo ("PESOS - $", "Dólar MEP - U$S", "Disponible - Instrumentos")
+    no es una operación: dice a qué sección pertenecen las líneas que vienen
+    abajo EN SU ARCHIVO. Es igual en todos los archivos, así que el filtro la
+    borraba del segundo, y en inviu —que saca la moneda de esos títulos— las
+    compras nuevas en pesos del segundo archivo quedaban bajo el último título
+    del primero: GGAL $50.000 entraba como US$ 50.000 (revisión del 06/11/2026).
+    Para contar las celdas no cuenta lo mismo que la clave ignora (la hoja y el
+    saldo: un título puede traer al lado el saldo de su sección, distinto en
+    cada descarga) ni un relleno ("-", "0"). Una operación dice siempre al
+    menos dos cosas: la fecha y el importe."""
     delim = max((",", ";", "\t"), key=header_line.count)
     try:
         cols = [c.lstrip("﻿").strip().lower() for c in next(csv.reader([header_line], delimiter=delim))]
@@ -493,8 +549,6 @@ def _clave_entre_archivos(header_line: str):
         cols = []
     hoja = [i for i, c in enumerate(cols) if c == "_hoja"]
     saldo = [i for i, c in enumerate(cols) if c.startswith("saldo")]
-    if not hoja and not saldo:
-        return lambda ln: ln.strip()
 
     def clave(ln: str) -> str:
         if not ln.strip():
@@ -502,6 +556,11 @@ def _clave_entre_archivos(header_line: str):
         try:
             campos = next(csv.reader([ln], delimiter=delim))
         except (csv.Error, StopIteration):
+            return ln.strip()
+        if sum(1 for i, c in enumerate(campos)
+               if i not in hoja and i not in saldo and _DICE_ALGO.search(c)) <= 1:
+            return ""   # un título: se queda siempre (ver arriba)
+        if not hoja and not saldo:
             return ln.strip()
         for i in saldo:
             if i < len(campos):
@@ -535,10 +594,30 @@ def combine_csv_files(files: List[Tuple[bytes, str]]) -> Tuple[bytes, str, Optio
       uploads idénticos quedan dedup-eados aunque el orden sea distinto si los
       archivos individuales son iguales (cuestión menor — el orden importa).
     """
+    combined, name, err, _partes = juntar_archivos(files)
+    return (combined, name, err)
+
+
+def juntar_archivos(files: List[Tuple[bytes, str]]
+                    ) -> Tuple[bytes, str, Optional[str], List[str]]:
+    """`combine_csv_files`, y además CADA ARCHIVO POR SEPARADO: el cuarto valor
+    es la lista de archivos como texto CSV, cada uno con su encabezado y ya sin
+    las filas que trajo un archivo anterior. Vacía si hay un solo archivo (o un
+    error): ahí no hay nada que separar.
+
+    Para qué: el combinado se lee como si fuera UN archivo, y hay formatos donde
+    eso no alcanza. El lector de inviu deja de leer en "Disponible -
+    Instrumentos" (lo que sigue repite los boletos en nominales): con dos
+    archivos pegados dejaba de leer en el del PRIMERO y el segundo entero
+    quedaba afuera (revisión del 06/11/2026). Los lectores así lo declaran
+    (`Parser.lee_cada_archivo_aparte`) y `run_preview` les pasa estos, uno por
+    uno. Los demás siguen leyendo el combinado: Bull Market, Cocos o IOL
+    emparejan las dos patas de un dólar MEP aunque caigan en archivos
+    distintos, y de a uno las perderían."""
     if not files:
-        return (b"", "", "No se subió ningún archivo.")
+        return (b"", "", "No se subió ningún archivo.", [])
     if len(files) == 1:
-        return (files[0][0], files[0][1] or "import.csv", None)
+        return (files[0][0], files[0][1] or "import.csv", None, [])
 
     decoded: List[Tuple[List[str], str]] = []  # [(lines, name), ...]
     for data, name in files:
@@ -546,16 +625,16 @@ def combine_csv_files(files: List[Tuple[bytes, str]]) -> Tuple[bytes, str, Optio
             continue
         text = _decode_csv(data)
         if text is None:
-            return (b"", "", f"No pudimos decodificar '{name}'. Probá guardarlo como UTF-8.")
+            return (b"", "", f"No pudimos decodificar '{name}'. Probá guardarlo como UTF-8.", [])
         lines = text.splitlines()
         if not lines:
             continue
         decoded.append((lines, name or "archivo.csv"))
 
     if not decoded:
-        return (b"", "", "Todos los archivos estaban vacíos.")
+        return (b"", "", "Todos los archivos estaban vacíos.", [])
     if len(decoded) == 1:
-        return ("\n".join(decoded[0][0]).encode("utf-8"), decoded[0][1], None)
+        return ("\n".join(decoded[0][0]).encode("utf-8"), decoded[0][1], None, [])
 
     # El header del primero define el formato — los demás deben matchear.
     # Normalizamos para tolerar BOM residual / casing al comparar entre files.
@@ -579,6 +658,7 @@ def combine_csv_files(files: List[Tuple[bytes, str]]) -> Tuple[bytes, str, Optio
                 f"Los archivos no coinciden en formato. "
                 f"'{name}' tiene un header distinto al primero. "
                 f"Subí archivos del mismo broker/export.{hint}",
+                [],
             )
         parts.extend(lines[1:])  # skip header de archivos 2..N
 
@@ -601,10 +681,12 @@ def combine_csv_files(files: List[Tuple[bytes, str]]) -> Tuple[bytes, str, Optio
     # la misma regla que `confirmed_fingerprint_counts` contra lo ya importado.
     clave = _clave_entre_archivos(parts[0])
     deduped: List[str] = [parts[0]]  # header
+    por_archivo: List[str] = []      # cada archivo con su header, sin lo que ya vino
     ya_vinieron: Counter = Counter()   # clave → el máximo que trajo un archivo anterior
     dropped = 0
     for lines, _name in decoded:
         en_este: Counter = Counter()
+        este_archivo: List[str] = [lines[0]]
         for ln in lines[1:]:
             key = clave(ln)
             if key:
@@ -613,8 +695,10 @@ def combine_csv_files(files: List[Tuple[bytes, str]]) -> Tuple[bytes, str, Optio
                     dropped += 1
                     continue
             deduped.append(ln)
+            este_archivo.append(ln)
         for k, n in en_este.items():
             ya_vinieron[k] = max(ya_vinieron[k], n)
+        por_archivo.append("\n".join(este_archivo))
     if dropped:
         log.info("combine_csv_files: %d filas repetidas entre archivos descartadas", dropped)
     parts = deduped
@@ -623,7 +707,7 @@ def combine_csv_files(files: List[Tuple[bytes, str]]) -> Tuple[bytes, str, Optio
     names_joined = " + ".join(n for _, n in decoded)
     # Cap el nombre combinado para que entre en la columna file_name
     combined_name = names_joined if len(names_joined) <= 200 else names_joined[:197] + "..."
-    return (combined_text.encode("utf-8"), combined_name, None)
+    return (combined_text.encode("utf-8"), combined_name, None, por_archivo)
 
 
 def _snap_cash(x, eps: float = 1.0) -> float:
@@ -955,6 +1039,47 @@ def run_preview(conn, *, uid: int, **kw) -> Dict[str, Any]:
         return _run_preview_una_vez(conn, uid=uid, **kw)
 
 
+def _parsear(parser, content: str, file_name: Optional[str],
+             partes: Optional[List[str]]) -> ParseResult:
+    """El lector sobre lo que subió la persona: el combinado, o cada archivo por
+    separado si el lector lo pide (`Parser.lee_cada_archivo_aparte`, ver
+    `juntar_archivos`). Leídos de a uno, las filas se numeran seguidas, como si
+    fuera el combinado: el número une cada fila con sus errores."""
+    if not (partes and len(partes) > 1 and getattr(parser, "lee_cada_archivo_aparte", False)):
+        return parser.parse(content, file_name=file_name)
+    total = ParseResult()
+    hasta = 0          # el número más alto de fila usado por los archivos anteriores
+    omitidas = 0       # idem para las omitidas, que van en negativo (ver RowError)
+    lineas = 0         # filas de datos de los archivos anteriores ("Fila N")
+    vistos = set()     # un error del archivo entero (fila 0) se informa una vez
+    for texto in partes:
+        r = parser.parse(texto, file_name=file_name)
+        # Las filas de este archivo arrancan después del número más alto ya usado,
+        # también si el lector numera alguna con 0 (el Histórico compacto emite
+        # así su saldo de apertura).
+        corrimiento = hasta + 1 - min([1] + [x.row_index for x in r.raw_rows])
+        for raw in r.raw_rows:
+            raw.row_index += corrimiento
+            total.raw_rows.append(raw)
+        for e in r.parse_errors:
+            if e.row_index == 0:
+                if (e.code, e.message) in vistos:
+                    continue
+                vistos.add((e.code, e.message))
+            elif e.row_index > 0:
+                e.row_index += corrimiento
+            else:
+                e.row_index += omitidas
+            if e.file_row:
+                e.file_row += lineas
+            total.parse_errors.append(e)
+        hasta = max([hasta] + [x.row_index for x in total.raw_rows]
+                    + [e.row_index for e in total.parse_errors])
+        omitidas = min([omitidas] + [e.row_index for e in total.parse_errors])
+        lineas += max(len(texto.splitlines()) - 1, 0)
+    return total
+
+
 def _run_preview_una_vez(
     conn,
     *,
@@ -965,6 +1090,7 @@ def _run_preview_una_vez(
     parser_format: Optional[str],
     mapping: Optional[Dict[str, Any]] = None,   # mapping de columnas (formato libre)
     route_by_currency: bool = False,            # si True y broker es ARS, rutear USD al sub-broker
+    partes: Optional[List[str]] = None,         # cada archivo de la subida (`juntar_archivos`)
 ) -> Dict[str, Any]:
     # Lo PRIMERO que se lee de los brokers: contra esto se compara antes de escribir.
     brokers_leidos = _brokers_por_id(conn, uid)
@@ -1008,7 +1134,7 @@ def _run_preview_una_vez(
         parser = candidate
 
     # Parsear
-    parse_result = parser.parse(content, file_name=file_name)
+    parse_result = _parsear(parser, content, file_name, partes)
 
     # Fallback robusto: si se eligió un parser ESPECÍFICO que no matchea el
     # archivo (headers mismatch → 0 filas), reintentamos con autodetect sobre
@@ -1024,7 +1150,7 @@ def _run_preview_una_vez(
             headers = []
         auto = autodetect(headers)
         if auto is not None and auto.format_id != parser.format_id:
-            alt = auto.parse(content, file_name=file_name)
+            alt = _parsear(auto, content, file_name, partes)
             if alt.raw_rows:
                 parser, parse_result = auto, alt
 
@@ -1044,23 +1170,8 @@ def _run_preview_una_vez(
     # preview. Ver `importing/movimientos_internos.py`.
     parse_result.raw_rows = _movimientos_internos.neutralizar(parse_result.raw_rows)
 
-    # Normalizar
-    normalized, norm_errors = normalize_rows(parse_result.raw_rows)
-
-    # Saldo de apertura ya contado (historia partida en varios archivos) → fuera.
-    normalized = drop_saldo_anterior_ya_contado(conn, uid, normalized)
-
-    # FCI escrito por NOMBRE (plantilla manual): el normalizer resuelve tickers de
-    # broker contra un mapa curado, pero no tiene DB para mirar el catálogo. Acá sí
-    # hay conn, así que traducimos "Ualintec Renta Dolares - Clase A" al símbolo
-    # (FCI:UALINTEC-RENTA-DOLARES-A) ANTES de la preview: el usuario ve el símbolo
-    # bueno y la posición valúa con el VCP del día en vez de quedar al costo.
-    # Sin match (o ambiguo) no se toca — mismo criterio que el mapa curado.
-    for tx in normalized:
-        _sym = resolve_fci_by_name(conn, getattr(tx, "asset_symbol", None))
-        if _sym:
-            tx.asset_symbol = _sym
-            tx.asset_type = "FUND"
+    # Normalizar (lo mismo que hace la confirmación con «Estado inicial»)
+    normalized, norm_errors = interpretar_filas(conn, uid, parse_result.raw_rows)
 
     # Normalizar nombres de broker: case-insensitive + trim. Evita que
     # "Cocos capital" y "Cocos Capital" (o "  cocos capital  ") se traten
@@ -1776,8 +1887,9 @@ def load_session_with_seed_revalidate(
             data = {}
         raw_rows.append(RawRow(row_index=r["row_index"], data=data))
 
-    # Re-normalizar
-    normalized, _ = normalize_rows(raw_rows)
+    # Re-normalizar, con los mismos pasos que la vista previa: lo que se guarda
+    # tiene que ser lo que la persona vio.
+    normalized, _ = interpretar_filas(conn, uid, raw_rows)
 
     # El broker de cada fila, como se llama HOY. El archivo crudo dice el nombre
     # que tenía al subirlo; si se renombró entre la vista previa y la

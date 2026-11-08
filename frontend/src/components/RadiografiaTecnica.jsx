@@ -91,7 +91,7 @@ const TONO = {
  *  explicación de la ficha en el globo. `p` (la fila) dice si es un bono o un
  *  fondo, para explicar bien por qué no tiene lectura. */
 export function TendenciaChip({ x, p = null, className = '' }) {
-  return <PildoraTendencia {...tendencia(x, undefined, p)} className={className} />
+  return <PildoraTendencia {...tendencia(x, p)} className={className} />
 }
 
 /** La píldora de una tendencia ya leída: `id` 'alcista' | 'bajista' | 'sin',

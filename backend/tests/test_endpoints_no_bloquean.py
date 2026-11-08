@@ -91,7 +91,8 @@ class ElLockNoSeTomaAntesDeParsear(unittest.TestCase):
         # se renombró en el medio): el cuerpo que parsea y escribe es éste.
         src = inspect.getsource(pipeline._run_preview_una_vez)
         pos_cleanup = src.index("cleanup_stale_previews(conn, uid)")
-        pos_parse = src.index("parse_result = parser.parse(")
+        # `_parsear` lee el combinado o cada archivo por separado (06/11/2026).
+        pos_parse = src.index("parse_result = _parsear(")
         self.assertGreater(
             pos_cleanup, pos_parse,
             "cleanup_stale_previews volvió a estar ANTES del parseo: eso toma el "

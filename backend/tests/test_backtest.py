@@ -210,18 +210,41 @@ class LoQueVeLaPantalla(unittest.TestCase):
     """Lo que encontró la auditoría del 04/11 (H1–H3 y la vela rota)."""
 
     def test_el_precio_que_se_movio_es_el_del_papel_sin_comisiones(self):
-        """«GGAL bajó 35 %» es lo que se movió el precio (de la apertura del
-        primer día al último cierre), no el resultado de comprar y mantener, que
-        además paga las dos comisiones."""
+        """«GGAL bajó 35 %» es lo que se movió el precio, desde el cierre de la
+        víspera del primer día (el precio de arranque de LA regla, como la ficha,
+        Comparar y «Una cartera»: `tecnico.dia_de_arranque`) hasta el último cierre.
+        No es el resultado de comprar y mantener, que compra a la apertura del primer
+        día (la señal se ve al cierre y se actúa al día siguiente) y además paga las
+        dos comisiones."""
         velas = _ggal()
         _, r = _una(velas, "rsi", 2)
         i0 = [v["date"] for v in velas].index(r["desde"])
-        esperado = (velas[-1]["close"] / velas[i0]["open"] - 1) * 100
+        # Dos años de 365 días antes del último precio (27/10/2026) es el domingo
+        # 27/10/2024: la prueba arranca el lunes 28 y el precio, con el cierre del
+        # viernes 25. Contado a mano en el CSV: 35,14 ÷ 53,89 − 1 = −34,79 %.
+        self.assertEqual((r["desde"], r["variacion_desde"]), ("2024-10-28", "2024-10-25"))
+        self.assertEqual(velas[i0 - 1]["date"], r["variacion_desde"])
+        esperado = (velas[-1]["close"] / velas[i0 - 1]["close"] - 1) * 100
         self.assertAlmostEqual(r["variacion_precio"], esperado, places=9)
-        self.assertAlmostEqual(r["variacion_precio"], -35.26, places=2)
+        self.assertAlmostEqual(r["variacion_precio"], -34.79, places=2)
         c = backtest.COMISION
         self.assertAlmostEqual(1 + r["mantener"]["resultado"] / 100,
-                               (1 + r["variacion_precio"] / 100) * (1 - c) ** 2, places=9)
+                               velas[-1]["close"] / velas[i0]["open"] * (1 - c) ** 2, places=9)
+        # Con aperturas distintas de la víspera, los dos números se separan: si no,
+        # esta prueba no podría ver que «subió» toma otro precio que la compra.
+        self.assertNotEqual(velas[i0]["open"], velas[i0 - 1]["close"])
+
+    def test_con_recorte_el_precio_arranca_la_vispera_del_primer_dia_probado(self):
+        # La media de 200 recién existe el 17/04/25: «GGAL bajó 41 % desde el cierre del
+        # 16/04/25», no desde el día pedido (hace 2 años). Sólo lo cuidaba el fixture, que
+        # dice «cambió», no «está mal» (auditoría 06/11 de las pruebas, H4).
+        velas = _ggal()
+        r = backtest.probar(velas, ["rsi", "media200"], 2, hoy=_al_dia(velas))
+        self.assertEqual((r["desde"], r["recortado"], r["variacion_desde"]), ("2025-04-17", True, "2025-04-16"))
+        i0 = [v["date"] for v in velas].index(r["desde"])
+        self.assertEqual(velas[i0 - 1]["date"], "2025-04-16")
+        self.assertAlmostEqual(r["variacion_precio"], (velas[-1]["close"] / velas[i0 - 1]["close"] - 1) * 100, places=9)
+        self.assertAlmostEqual(r["variacion_precio"], -41.4724, places=3)
 
     def test_la_peor_caida_se_cuenta_desde_los_100_del_principio(self):
         """Cada día abre en 100 y cierra abajo, y el cierre sube día a día: el

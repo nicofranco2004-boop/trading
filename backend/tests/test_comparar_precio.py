@@ -23,7 +23,7 @@ import sys
 import unittest
 import unittest.mock
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +38,7 @@ import comparar
 from velas_diarias import PERIODO_COMPLETO
 import main
 from fechas import hoy_art_date
+from tests.test_ultimos_n_anios import _el_ultimo
 
 N_RUEDAS = 760
 
@@ -78,6 +79,7 @@ class YahooFalso:
 
 
 class CompararTest(unittest.TestCase):
+    DIA_DE_LA_SEMANA = 1   # martes (ver `setUp`)
 
     def setUp(self):
         self.client = TestClient(main.app)
@@ -92,6 +94,15 @@ class CompararTest(unittest.TestCase):
             self.uid = cur.lastrowid
             conn.commit()
         self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+        # El día de la prueba, fijo (`fechas.ahora_art`, el día argentino de toda la app):
+        # un martes, el último precio es del lunes y «1 año» arranca un domingo, sin rueda
+        # (vale el cierre del viernes). Con el día real, el caso cambiaba con el día de la
+        # semana en que corría la suite (auditoría 06/11 de las pruebas del precio de
+        # arranque, H3). La copia «UnViernes» corre lo mismo con un arranque con rueda.
+        dia = _el_ultimo(self.DIA_DE_LA_SEMANA)
+        reloj = mock.patch("fechas.ahora_art", return_value=datetime(dia.year, dia.month, dia.day, 15, 0))
+        reloj.start()
+        self.addCleanup(reloj.stop)
         self.hoy = hoy_art_date()
         self.dias = _ruedas(self.hoy, N_RUEDAS)
         self.yahoo = YahooFalso(self.hoy)
@@ -149,10 +160,11 @@ class CompararTest(unittest.TestCase):
         return next((s for s in res["series"] if s["clave"] == clave), None)
 
     def _un_anio(self):
-        """El día del 100 de «1 año»: el mismo día de la semana que el último precio
-        (la última rueda), 52 semanas antes. Desde el último precio y no desde hoy
-        (Nico, 06/11: `tecnico.primer_dia`); hasta el 06/11 era hoy − 365."""
-        return (self.dias[-1] - timedelta(days=364)).isoformat()
+        """El día del 100 de «1 año»: el mismo día de hace un año desde el último
+        precio (la última rueda), con el cierre que tenía ese día: de fecha a fecha,
+        como la ficha (Nico, 06/11: `tecnico.dia_de_arranque`). Hasta el 06/11 era
+        hoy − 365; el 06/11 a la tarde (`4165c2f6`), el día siguiente a ése."""
+        return (self.dias[-1] - timedelta(days=365)).isoformat()
 
     def _i(self, fecha):
         """La rueda que vale en `fecha` (la última en ese día o antes)."""
@@ -392,6 +404,12 @@ class CompararTest(unittest.TestCase):
         self._comparar("MSFT", local="<y>", status=400)
         r = self.client.get("/api/comparar/precio?activos=MSFT")
         self.assertIn(r.status_code, (401, 403), "sin sesión, nada")
+
+
+class CompararUnViernes(CompararTest):
+    """Las mismas, un viernes: el último precio es del jueves y «1 año» arranca un
+    miércoles, con rueda."""
+    DIA_DE_LA_SEMANA = 4
 
 
 class BaseCienTest(unittest.TestCase):
