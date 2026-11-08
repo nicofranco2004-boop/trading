@@ -6,8 +6,9 @@
 // Nasdaq lo calcula el servidor (backend/cartera_simulada.py, GET
 // /api/backtest/cartera), y «Mi cartera de hoy» también la arma él (GET
 // /api/backtest/cartera/hoy), con LA regla de qué activos tienen precio de todos
-// los días. Acá: lo que se puede escribir en cada porcentaje, cuánto falta para
-// 100, la barra del 100 %, la dirección y las palabras de lo que volvió.
+// los días y de la última semana. Acá: lo que se puede escribir en cada
+// porcentaje, cuánto falta para 100, la barra del 100 %, la dirección y las
+// palabras de lo que volvió.
 //
 // NUNCA PROMETE, como el Backtesting de una regla (utils/backtesting.js): todo en
 // pasado, siempre al lado del S&P 500 y del Nasdaq, sin «la mejor cartera». Lo que
@@ -64,6 +65,15 @@ export const errorDeHoy = (cliente = null) => `No pudimos traer ${deQuien(client
 const capital = (t) => t.charAt(0).toUpperCase() + t.slice(1)
 /** «AAPL» · «AAPL y GGAL» · «AAPL, GGAL y BTC». */
 const enLista = (xs) => (xs.length < 2 ? String(xs[0] ?? '') : `${xs.slice(0, -1).join(', ')} y ${xs.at(-1)}`)
+/** Los activos de `xs` ({asset, hasta}) por el día hasta el que llegan sus precios,
+ *  del más viejo al más nuevo: [[hasta, [activos]]]. Cada uno con SU fecha: con la
+ *  noche caída y uno que ya estaba parado, la más vieja para todos decía mal la del
+ *  otro (auditoría 06/11, H5). */
+function porFecha(xs) {
+  const grupos = new Map()
+  for (const x of xs) grupos.set(x.hasta || '', [...(grupos.get(x.hasta || '') || []), x.asset])
+  return [...grupos].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+}
 
 /** Lo escrito en un porcentaje como número: «33,3» · «33.3» → 33.3; vacío o
  *  algo que no es un número, 0. */
@@ -212,25 +222,49 @@ export const filasDeHoy = (r) => (r?.activos || []).map(a => ({ asset: a.asset, 
 /** Qué parte de tu plata se simula y qué quedó afuera de «Mi cartera de hoy», en
  *  palabras (null si nada). La parte: el servidor la cuenta sobre TODA tu plata
  *  (`parte`); sin decirla, mitad fondo y mitad CEDEARs se veía como «tu cartera»
- *  toda en CEDEARs (producto 05/11, A4; método, C6). */
+ *  toda en CEDEARs (producto 05/11, A4; método, C6). Lo que no tiene precios de la
+ *  última semana también queda afuera y el resto se reparte en su proporción: un
+ *  activo que dejó de cotizar frenaba la cartera entera (pantalla 06/11, H3; Nico,
+ *  06/11: «Sí, así»). */
 export function notaDeHoy(r, cliente = null) {
   const afuera = r?.afuera || []
   const sin = afuera.filter(x => x.motivo === 'sin_serie').map(x => x.asset.replace(/^FCI:/, ''))
+  const viejas = afuera.filter(x => x.motivo === 'vieja')
   const tope = afuera.filter(x => x.motivo === 'tope').map(x => x.asset)
   const out = []
   if (r?.parte != null && r.parte < 100) {
-    out.push(`Lo que se simula es el ${r.parte}% de ${cliente ? 'su' : 'tu'} plata: lo demás (efectivo, plazos fijos, `
-      + 'bonos o fondos) no lo podemos simular.')
+    // «Lo demás (efectivo, plazos fijos, bonos o fondos)», si algo de eso quedó afuera (un
+    // bono o un fondo en `sin`; efectivo o plazos fijos, el sí o no del servidor). Con sólo
+    // un activo afuera por sus precios o por el tope era falso: lo demás era ese activo, y
+    // la nota lo nombra. Con efectivo, sin el paréntesis parecía que todo lo que faltaba
+    // era ese activo (revisión 06/11; Nico, 06/11: «Sí, que lo nombre»).
+    const loDemas = sin.length || r.efectivo_o_plazos || !(viejas.length || tope.length)
+    out.push(`Lo que se simula es el ${r.parte}% de ${cliente ? 'su' : 'tu'} plata`
+      + (loDemas ? ': lo demás (efectivo, plazos fijos, bonos o fondos) no lo podemos simular.' : '.'))
   }
   if (sin.length) {
     out.push(`${sin.length === 1 ? 'Quedó' : 'Quedaron'} afuera ${enLista(sin)}: no tenemos sus precios de cada día.`)
+  }
+  if (viejas.length) {
+    out.push(`${viejas.length === 1 ? 'Quedó' : 'Quedaron'} afuera ${enLista(viejas.map(x => x.asset))}: `
+      + `${hastaCuando(viejas)}.`)
   }
   if (tope.length) {
     out.push(`Entran hasta ${MAX_ACTIVOS} activos: ${tope.length === 1 ? 'quedó' : 'quedaron'} afuera ${enLista(tope)}, `
       + `${tope.length === 1 ? 'el que menos pesa' : 'los que menos pesan'}.`)
   }
   if (!out.length) return null
-  return `${out.join(' ')}${sin.length || tope.length ? ' El resto se repartió sobre 100%.' : ''}`
+  return `${out.join(' ')}${sin.length || viejas.length || tope.length ? ' El resto se repartió sobre 100%.' : ''}`
+}
+
+/** «sus precios llegan hasta el 14/08/26», la frase de Comparar; con días
+ *  distintos, cada uno con el suyo (`porFecha`): «los precios de MU llegan hasta
+ *  el 14/08/26 y los de AMD hasta el 02/09/26». */
+function hastaCuando(viejas) {
+  const grupos = porFecha(viejas)
+  if (grupos.length === 1) return `sus precios llegan hasta el ${fechaCorta(grupos[0][0])}`
+  return enLista(grupos.map(([h, xs], k) => (k ? `los de ${enLista(xs)} hasta el ${fechaCorta(h)}`
+    : `los precios de ${enLista(xs)} llegan hasta el ${fechaCorta(h)}`)))
 }
 
 const NOMBRE_INDICE = { sp500: 'S&P 500', nasdaq: 'Nasdaq' }
@@ -467,11 +501,8 @@ export function motivoCartera(res, cuantos = 2) {
       return `No tenemos los precios de cada día de ${enLista(nombres)}: `
         + `${uno ? 'sacalo o cambialo por otro' : 'sacalos o cambialos por otros'}.`
     case 'vieja': {
-      // Cada uno con su fecha: con la noche caída y uno que ya estaba parado, la más
-      // vieja para todos decía mal la del otro (auditoría 06/11, H5).
-      const porFecha = new Map()
-      for (const f of faltan) porFecha.set(f.hasta || '', [...(porFecha.get(f.hasta || '') || []), f.asset])
-      const frase = 'No tenemos precios de ' + [...porFecha].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      // Cada uno con su fecha (`porFecha`).
+      const frase = 'No tenemos precios de ' + porFecha(faltan)
         .map(([h, xs]) => (h ? `${enLista(xs)} desde el ${fechaCorta(h)}` : enLista(xs))).join(' ni de ')
       // Viejo se mide contra hoy (auditoría 05/11, H9): puede ser el único activo, o
       // todos (la noche no trajo nada). Ahí no hay «resto» que simular, y cambiarlo no

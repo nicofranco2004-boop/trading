@@ -17,7 +17,8 @@
 //
 // LA CUENTA LA HACE EL SERVIDOR (GET /api/backtest/cartera → backend/
 // cartera_simulada.py), y «Mi cartera de hoy» también (GET /api/backtest/
-// cartera/hoy: LA regla de qué tiene precio de todos los días, y nunca plata).
+// cartera/hoy: LA regla de qué tiene precio de todos los días y de la última
+// semana, y nunca plata).
 // Las palabras: utils/carteraSimulada.js, que nunca promete. El pedido, con sus
 // reintentos, es el mismo de «Una regla» (`usePedidoDePrueba`).
 //

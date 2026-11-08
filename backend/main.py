@@ -12742,15 +12742,18 @@ def get_backtest_cartera(request: Request, activos: str, pesos: str, local: str 
 @app.get("/api/backtest/cartera/hoy")
 def get_backtest_cartera_hoy(request: Request, uid: int = Depends(get_effective_user)):
     """«Mi cartera de hoy» de «Una cartera» (Backtesting): tus activos que tienen
-    precio de todos los días, con su peso sobre 100 entre ellos, y cuáles quedaron
-    afuera y por qué. Sólo porcentajes, nunca plata; igual dicen qué tenés, así
-    que la pantalla no la pide con «Ocultar saldos» prendido. La valuación es LA
-    de «tu plata» (`senales_semana.cartera`); la regla, cartera_simulada.de_hoy."""
+    precio de todos los días y de la última semana, con su peso sobre 100 entre
+    ellos, y cuáles quedaron afuera y por qué. Sólo porcentajes, nunca plata;
+    igual dicen qué tenés, así que la pantalla no la pide con «Ocultar saldos»
+    prendido. La valuación es LA de «tu plata» (`senales_semana.cartera`); la
+    regla, cartera_simulada.de_hoy, con LAS series con que se simula
+    (`cs.ultimo_precio`) y el día argentino."""
     import cartera_simulada as cs
     import senales_semana
+    from fechas import hoy_art_date
     with _freno_tecnico(request, uid), db_abierta() as conn:
         car = senales_semana.cartera(conn, uid)
-    return cs.de_hoy(car)
+        return cs.de_hoy(car, lambda asset, local: cs.ultimo_precio(conn, asset, local), hoy_art_date())
 
 
 @app.post("/api/tecnico/{asset}/resumen")
