@@ -149,15 +149,16 @@ export function textoDelCambio(c) {
  * Cada fila:
  *   { clave, nombre, ruta, tenes, peso (0–100), vigente, motivo,
  *     fondo, corto, rsi, adx, desdeMax, linea, cambio }
- * `vigente` false = «Sin lectura» (sin velas, bono/fondo o velas de hace más
- * de 10 días): esa fila no muestra números y `motivo` dice por qué.
+ * `vigente` false = «Sin lectura» (sin velas, bono/fondo o sin precios de la
+ * última semana, `vieja` del servidor): esa fila no muestra números y `motivo`
+ * dice por qué.
  */
 export function filasDeLaLista({ tenencias = [], seguidos = [], indice, hoy = hoyISO() }) {
   const filas = new Map()
   const armar = (k, base) => {
     const x = indice?.get(k) || null
-    const vigente = !!(x?.disponible && x.lectura && !lecturaVieja(x, hoy))
-    const fondo = tendencia(x, hoy, base.p)
+    const vigente = !!(x?.disponible && x.lectura && !lecturaVieja(x))
+    const fondo = tendencia(x, base.p)
     const l = vigente ? x.lectura : null
     const corto = l ? tarjetas(l).find(t => t.id === 'corto') : null
     const linea = vigente && x.linea?.length > 1 ? x.linea : null
@@ -175,7 +176,7 @@ export function filasDeLaLista({ tenencias = [], seguidos = [], indice, hoy = ho
       porque: vigente ? null : fondo.porque,
       fondo,
       corto: corto ? { palabra: corto.veredicto, motivo: corto.texto } : null,
-      rsi: vigente ? fuerza(x, hoy) : null,
+      rsi: vigente ? fuerza(x) : null,
       adx: l?.adx != null ? { valor: l.adx, texto: fmtAdx(l.adx), palabra: l.adx >= ADX_CLAVE ? 'marcada' : 'lateral' } : null,
       desdeMax: l?.dist_maximo_12m != null ? { pct: l.dist_maximo_12m, enMaximo: l.dist_maximo_12m >= -0.1, anioCompleto: !!l.anio_completo } : null,
       linea,

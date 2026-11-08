@@ -20,7 +20,7 @@ import random
 import sys
 import unittest
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -34,6 +34,7 @@ import tecnico
 import velas_diarias
 from fechas import hoy_art_date
 from tests.test_tecnico import YahooFalso, _ruedas
+from tests.test_ultimos_n_anios import _el_ultimo
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 FIN = date(2026, 10, 30)
@@ -222,8 +223,10 @@ class Cuentas(unittest.TestCase):
         # el S&P 500 y el Nasdaq empiezan el lunes, y quedaban afuera de la
         # comparación («todavía no tenemos la historia»). Arranca el lunes, sin
         # llamarlo recorte.
-        fin = date(2026, 11, 5)
-        pedido = (fin - timedelta(days=5 * tecnico.DIAS_ANIO - 1)).isoformat()
+        # El precio de arranque es el cierre de 5 años atrás, de fecha a fecha
+        # (`tecnico.dia_de_arranque`): con el último precio un viernes, cae domingo.
+        fin = date(2026, 11, 6)
+        pedido = (fin - timedelta(days=5 * tecnico.DIAS_ANIO)).isoformat()
         self.assertEqual(date.fromisoformat(pedido).weekday(), 6)       # domingo
         sabado = (date.fromisoformat(pedido) - timedelta(days=1)).isoformat()
         cripto = [v for v in _todos(2000, lambda i: 30000 + 10 * i, fin=fin) if v["date"] >= sabado]
@@ -278,7 +281,7 @@ class AnioPorAnio(unittest.TestCase):
     def test_cada_anio_es_el_de_la_regla_del_periodo_y_juntos_dan_el_total(self):
         r = self._cartera()
         apa, hasta = r["anio_por_anio"], r["hasta"]
-        uno, dos = tecnico.primer_dia(hasta, tecnico.DIAS_ANIO), tecnico.primer_dia(hasta, 2 * tecnico.DIAS_ANIO)
+        uno, dos = tecnico.dia_de_arranque(hasta, tecnico.DIAS_ANIO), tecnico.dia_de_arranque(hasta, 2 * tecnico.DIAS_ANIO)
         self.assertEqual([(t["desde"], t["hasta"]) for t in apa["tramos"]],
                          [(r["desde"], dos), (dos, uno), (uno, hasta)])
         self.assertTrue(all(t["completo"] for t in apa["tramos"]))
@@ -317,12 +320,12 @@ class AnioPorAnio(unittest.TestCase):
 
     def test_lo_de_antes_del_primer_anio_entero(self):
         hasta = FIN.isoformat()
-        uno, dos = tecnico.primer_dia(hasta, tecnico.DIAS_ANIO), tecnico.primer_dia(hasta, 2 * tecnico.DIAS_ANIO)
+        uno, dos = tecnico.dia_de_arranque(hasta, tecnico.DIAS_ANIO), tecnico.dia_de_arranque(hasta, 2 * tecnico.DIAS_ANIO)
         nueva = lambda desde: [_activo("NUEVA", 100, [v for v in _habiles(800, lambda i: 10 + i * 0.01) if v["date"] >= desde])]
         # Cotiza hace un año y siete meses: un tramo corto, con sus días, y un año entero.
         r = self._cartera(activos=nueva((FIN - timedelta(days=580)).isoformat()))
         self.assertEqual([(t["desde"], t["hasta"], t["completo"], t["dias"]) for t in r["anio_por_anio"]["tramos"]],
-                         [(r["desde"], uno, False, comparar._dias(r["desde"], uno)), (uno, hasta, True, 364)])
+                         [(r["desde"], uno, False, comparar._dias(r["desde"], uno)), (uno, hasta, True, 365)])
         # Menos de un mes antes de un año entero va con ese año.
         r = self._cartera(activos=nueva((date.fromisoformat(dos) - timedelta(days=20)).isoformat()))
         self.assertEqual([(t["desde"], t["hasta"], t["completo"]) for t in r["anio_por_anio"]["tramos"]],
@@ -335,19 +338,22 @@ class AnioPorAnio(unittest.TestCase):
 
     # Las que siguen las propuso la auditoría de las pruebas de «Año por año» (06/11):
     # cada una da rojo con su copia rota de cartera_simulada.py, y las de arriba
-    # quedaban en verde. Con fechas escritas, no con `tecnico.primer_dia`: si LA regla
-    # del período se corre un día, lo esperado no se corre con ella.
+    # quedaban en verde. Con fechas escritas, no con `tecnico.dia_de_arranque`: si LA
+    # regla del período se corre un día, lo esperado no se corre con ella. (Se corrió
+    # a propósito el 06/11: el arranque es el cierre de N años atrás, de fecha a fecha,
+    # como la ficha; con el último precio el viernes 30/10/26, los cortes son el
+    # 30/10/25, el 30/10/24 y el 31/10/23, por el 29 de febrero de 2024.)
 
     def test_un_activo_que_llega_unos_dias_despues_no_achica_el_primer_anio(self):
         # Hasta una semana después de lo pedido no es un recorte (`comparar.DIAS_MARGEN`):
-        # arriba dice «Los 3 años», y el primero de los tres es un año (360 días), no un
+        # arriba dice «Los 3 años», y el primero de los tres es un año (359 días), no un
         # renglón de «12 meses» que el veredicto no cuenta.
         nueva = [_activo("NUEVA", 100, [v for v in _habiles(800, lambda i: 10 + i * 0.01) if v["date"] >= "2023-11-06"])]
         r = self._cartera(activos=nueva)
-        self.assertEqual((r["pedido_desde"], r["desde"], r["recortado"]), ("2023-11-01", "2023-11-06", False))
+        self.assertEqual((r["pedido_desde"], r["desde"], r["recortado"]), ("2023-10-31", "2023-11-06", False))
         self.assertEqual([(t["desde"], t["hasta"], t["dias"], t["completo"]) for t in r["anio_por_anio"]["tramos"]],
-                         [("2023-11-06", "2024-10-31", 360, True), ("2024-10-31", "2025-10-31", 365, True),
-                          ("2025-10-31", "2026-10-30", 364, True)])
+                         [("2023-11-06", "2024-10-30", 359, True), ("2024-10-30", "2025-10-30", 365, True),
+                          ("2025-10-30", "2026-10-30", 365, True)])
 
     def test_cinco_semanas_antes_del_primer_anio_van_aparte(self):
         # «Menos de un mes» va con el año que sigue (`TRAMO_MIN_DIAS`: los 20 días de
@@ -355,14 +361,15 @@ class AnioPorAnio(unittest.TestCase):
         nueva = [_activo("NUEVA", 100, [v for v in _habiles(800, lambda i: 10 + i * 0.01) if v["date"] >= "2024-09-26"])]
         r = self._cartera(activos=nueva)
         self.assertEqual([(t["desde"], t["hasta"], t["dias"], t["completo"]) for t in r["anio_por_anio"]["tramos"]],
-                         [("2024-09-26", "2024-10-31", 35, False), ("2024-10-31", "2025-10-31", 365, True),
-                          ("2025-10-31", "2026-10-30", 364, True)])
+                         [("2024-09-26", "2024-10-30", 34, False), ("2024-10-30", "2025-10-30", 365, True),
+                          ("2025-10-30", "2026-10-30", 365, True)])
 
     def test_un_anio_que_empieza_un_domingo_vale_el_cierre_del_viernes(self):
-        # Con el último precio un lunes, el año de hace dos arranca un domingo (365 días
-        # son 52 semanas y uno). Ese día vale el último cierre, el del viernes: LA regla
-        # del gráfico y de elegir «2 años» (`comparar.base_cien`), no la rueda del lunes.
-        # Arriba todos los bordes caían en días con rueda, y no se veía.
+        # Con el último precio un lunes, el año de hace uno arranca un domingo (el mismo
+        # día de hace 365 días: 52 semanas y uno) y el de hace dos, un sábado. Ese día vale
+        # el último cierre, el del viernes: LA regla del gráfico y de elegir «1 año» o
+        # «2 años» (`comparar.base_cien`), no la rueda del lunes. Arriba todos los bordes
+        # caían en días con rueda, y no se veía.
         lunes = date(2026, 11, 2)
         sube = _habiles(800, lambda i: 100 + 30 * math.sin(i / 50) + i * 0.1, fin=lunes)
         baja = _habiles(800, lambda i: 80 - i * 0.02 + 5 * math.sin(i / 30), fin=lunes)
@@ -372,7 +379,7 @@ class AnioPorAnio(unittest.TestCase):
                                            lunes + timedelta(days=1))
         r = simular(3)
         tramos = r["anio_por_anio"]["tramos"]
-        self.assertEqual([t["desde"] for t in tramos], ["2023-11-04", "2024-11-03", "2025-11-03"])  # sábado, domingo, lunes
+        self.assertEqual([t["desde"] for t in tramos], ["2023-11-03", "2024-11-02", "2025-11-02"])  # viernes, sábado, domingo
         # Cada índice: los últimos años encadenados dan lo mismo que elegir «1 año» y «2 años».
         for n in (1, 2):
             for i in simular(n)["indices"]:
@@ -401,7 +408,7 @@ class AnioPorAnio(unittest.TestCase):
         # 7 días después de él (corren el primer día): el primer año dura menos de 358
         # días. Salía «12 meses» debajo de «Los 2 años» (auditoría de método 06/11, H2).
         hasta = FIN.isoformat()
-        pedido = date.fromisoformat(tecnico.primer_dia(hasta, 2 * tecnico.DIAS_ANIO))
+        pedido = date.fromisoformat(tecnico.dia_de_arranque(hasta, 2 * tecnico.DIAS_ANIO))
         desde_idx = next(d for d in (pedido + timedelta(days=12 + k) for k in range(3)) if d.weekday() < 5)
         activo = [v for v in _todos(900, lambda i: 100 + i * 0.1) if v["date"] >= (desde_idx - timedelta(days=7)).isoformat()]
         idx = {c: [v for v in _habiles(800, f) if v["date"] >= desde_idx.isoformat()]
@@ -414,7 +421,7 @@ class AnioPorAnio(unittest.TestCase):
 
     def test_con_recorte_un_anio_entero_es_desde_358_dias(self):
         hasta = FIN.isoformat()
-        dos = date.fromisoformat(tecnico.primer_dia(hasta, 2 * tecnico.DIAS_ANIO))
+        dos = date.fromisoformat(tecnico.dia_de_arranque(hasta, 2 * tecnico.DIAS_ANIO))
         for dias, completo in ((358, True), (357, False)):
             with self.subTest(dias=dias):
                 desde = (dos - timedelta(days=dias)).isoformat()
@@ -428,7 +435,7 @@ class AnioPorAnio(unittest.TestCase):
         # Con el redondeo de `comparar.base_cien` (4 decimales) vale 0 justo en el corte:
         # el año que arranca ahí queda vacío. Dividía por cero y la ruta contestaba un
         # error (auditoría de método 06/11, H1).
-        corte = tecnico.primer_dia(FIN.isoformat(), tecnico.DIAS_ANIO)
+        corte = tecnico.dia_de_arranque(FIN.isoformat(), tecnico.DIAS_ANIO)
         cerca = (date.fromisoformat(corte) - timedelta(days=6)).isoformat()
         velas = [{**v, **dict.fromkeys(("open", "high", "low", "close"),
                                        1e-5 if cerca <= v["date"] <= corte else 50.0 if v["date"] > corte else 100.0)}
@@ -728,6 +735,7 @@ class LoQueLeeLaPantalla(unittest.TestCase):
 class Ruta(unittest.TestCase):
     """GET /api/backtest/cartera: LAS series de la ficha, los índices de cada noche
     y el freno."""
+    DIA_DE_LA_SEMANA = 1   # martes (ver `setUp`)
 
     def setUp(self):
         main._freno_reiniciar()
@@ -743,6 +751,15 @@ class Ruta(unittest.TestCase):
             self.uid = cur.lastrowid
             conn.commit()
         self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+        # El día de la prueba, fijo (`fechas.ahora_art`, el día argentino de toda la app):
+        # un martes, el último precio es del lunes y «1 año» arranca un domingo, sin rueda
+        # (vale el cierre del viernes). Con el día real, el caso cambiaba con el día de la
+        # semana en que corría la suite (auditoría 06/11 de las pruebas del precio de
+        # arranque, H3). La copia «UnViernes» corre lo mismo con un arranque con rueda.
+        dia = _el_ultimo(self.DIA_DE_LA_SEMANA)
+        reloj = mock.patch("fechas.ahora_art", return_value=datetime(dia.year, dia.month, dia.day, 15, 0))
+        reloj.start()
+        self.addCleanup(reloj.stop)
         self.hoy = hoy_art_date()
         self.yahoo = YahooFalso(self.hoy)
         self.yahoo.precios["AAPL"] = lambda i, d: 200 + 40 * math.sin(i / 12) + i * 0.05
@@ -799,17 +816,22 @@ class Ruta(unittest.TestCase):
     # Las que siguen las propuso la auditoría de las pruebas (05/11): cada una
     # atrapa un error que ninguna otra veía, por el mismo camino que producción.
 
-    def test_sin_recorte_arranca_el_mismo_dia_que_el_backtesting_de_una_regla(self):
+    def test_sin_recorte_arranca_con_el_mismo_precio_que_el_backtesting_de_una_regla(self):
         # Diferencial contra el canónico: el primer día no es «cuando empieza lo
-        # guardado» (B3: «los últimos 2 años» al lado de un gráfico de 3).
+        # guardado» (B3: «los últimos 2 años» al lado de un gráfico de 3). Y el precio
+        # de arranque es el mismo que el de Una regla (`tecnico.dia_de_arranque`, como
+        # la ficha): el cierre de la víspera del primer día que ella prueba. Una cartera
+        # de un activo al 100 % gana lo que Una regla dice que hizo el precio.
         for anios in (1, 2):
             with self.subTest(anios=anios):
                 regla = self.client.get(f"/api/tecnico/AAPL/backtest?reglas=rsi&anios={anios}", headers=self.h).json()
                 res = self._get(f"activos=AAPL&pesos=100&anios={anios}").json()
                 self.assertTrue(res["disponible"], res)
-                self.assertEqual(res["pedido_desde"], regla["pedido_desde"])
+                vispera = (date.fromisoformat(regla["pedido_desde"]) - timedelta(days=1)).isoformat()
+                self.assertEqual(res["pedido_desde"], vispera)
                 self.assertEqual((res["recortado"], res["desde"], res["curva"][0]["d"]),
                                  (False, res["pedido_desde"], res["pedido_desde"]))
+                self.assertAlmostEqual(res["cartera"]["resultado"], regla["variacion_precio"], delta=0.001)
 
     def test_mi_cartera_de_hoy_deja_afuera_lecaps_obligaciones_y_fondos_por_su_tipo(self):
         h = self._persona()
@@ -949,7 +971,7 @@ class Ruta(unittest.TestCase):
         # el primer día hábil después del pedido: con el código de antes da rojo
         # cualquier día del año.
         self.yahoo.precios["BTC-USD"] = lambda i, d: 30000 + 10 * i
-        pedido = self.hoy - timedelta(days=1) - timedelta(days=5 * tecnico.DIAS_ANIO - 1)
+        pedido = self.hoy - timedelta(days=1) - timedelta(days=5 * tecnico.DIAS_ANIO)    # 5 × 365 días
         habil = next(pedido + timedelta(days=k) for k in range(1, 8) if (pedido + timedelta(days=k)).weekday() < 5)
         res = self._cinco_anios("activos=BTC&pesos=100&anios=5", indices_desde=habil)
         self.assertTrue(res["disponible"], res)
@@ -1060,6 +1082,12 @@ class Ruta(unittest.TestCase):
                 self.assertEqual(self._get(q).status_code, 400)
         # Decimales que suman 100 sí.
         self.assertEqual(self._get("activos=AAPL,MSFT&pesos=33.33,66.67&anios=1").status_code, 200)
+
+
+class RutaUnViernes(Ruta):
+    """Las mismas, un viernes: el último precio es del jueves y «1 año» arranca un
+    miércoles, con rueda."""
+    DIA_DE_LA_SEMANA = 4
 
 
 if __name__ == "__main__":

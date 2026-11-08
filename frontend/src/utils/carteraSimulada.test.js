@@ -257,15 +257,15 @@ describe('lo que dicen los números', () => {
     // cartera y la de los índices se ven juntas en la tabla de la respuesta: no van
     // también en una frase.
     expect(l.deLosActivos).toEqual([
-      'De cada US$ 100, AAPL habría sumado US$ 17,8 y GGAL habría restado US$ 6,0: entre todos, la cartera habría dado +21,4%.',
+      'De cada US$ 100, AAPL habría sumado US$ 18,0 y GGAL habría restado US$ 6,0: entre todos, la cartera habría dado +21,7%.',
       'Sin tocarla, GGAL habría pasado de 30% a 19,7% de la cartera.',
     ])
     expect(l.avisos).toEqual([])
     expect([l.titulo, l.aclaracion, ...l.deLosActivos].join(' ')).not.toMatch(/peor caída/i)
     // Debajo de la tabla: de cuándo a cuándo, y los índices sin dividendos como la cartera.
-    expect(notaDelResumen(CASOS.tres)).toBe('Del 31/10/24 al 30/10/26, en dólares. Los índices, sin dividendos, como la cartera.')
+    expect(notaDelResumen(CASOS.tres)).toBe('Del 30/10/24 al 30/10/26, en dólares. Los índices, sin dividendos, como la cartera.')
     // Sin ningún índice, lo de la cartera sola (método 06/11, H7).
-    expect(notaDelResumen({ ...CASOS.tres, indices: [] })).toBe('Del 31/10/24 al 30/10/26, en dólares y sin dividendos.')
+    expect(notaDelResumen({ ...CASOS.tres, indices: [] })).toBe('Del 30/10/24 al 30/10/26, en dólares y sin dividendos.')
     // Armada de cero: el diario del lunes.
     expect(lecturaCartera(CASOS.tres, { origen: 'cero' }).aclaracion)
       .toBe('Elegir los porcentajes mirando este resultado es elegir con el diario del lunes.')
@@ -349,12 +349,12 @@ describe('año por año (Nico, 06/11)', () => {
   it('primero el total, después cada año, y el año que más subió y el que más bajó, en % como la tabla', () => {
     const r = CASOS.tres_anios
     const l = lecturaAnioPorAnio(r)
-    expect(l.total).toEqual({ rotulo: 'Los 3 años', desde: '2023-11-01', hasta: '2026-10-30' })
+    expect(l.total).toEqual({ rotulo: 'Los 3 años', desde: '2023-10-31', hasta: '2026-10-30' })
     expect(l.filas.map(f => [f.rotulo, f.desde, f.hasta])).toEqual([
-      ['Año 1', '2023-11-01', '2024-10-31'], ['Año 2', '2024-10-31', '2025-10-31'], ['Año 3', '2025-10-31', '2026-10-30']])
+      ['Año 1', '2023-10-31', '2024-10-30'], ['Año 2', '2024-10-30', '2025-10-30'], ['Año 3', '2025-10-30', '2026-10-30']])
     const [a1, a2] = r.anio_por_anio.tramos
-    expect(l.frase).toBe(`El año que más habría subido la cartera es el 2 (del 31/10/24 al 31/10/25): ${porcentaje(a2.cartera)}. `
-      + `El que más habría bajado, el 1 (del 01/11/23 al 31/10/24): ${porcentaje(a1.cartera)}.`)
+    expect(l.frase).toBe(`El año que más habría subido la cartera es el 2 (del 30/10/24 al 30/10/25): ${porcentaje(a2.cartera)}. `
+      + `El que menos, el 1 (del 31/10/23 al 30/10/24): ${porcentaje(a1.cartera)}.`)
     expect(l.promedio).toEqual(r.anio_por_anio.por_anio)
     expect(l.nota).toBe(NOTA_ANIO_POR_ANIO)
     expect(l.aviso).toBeNull()
@@ -371,7 +371,7 @@ describe('año por año (Nico, 06/11)', () => {
   })
 
   it('al final, cuántos años habría ganado cada uno contra cada índice, con los números como se ven', () => {
-    // −0,1 contra +5,0 y +7,1; +18,1 contra +12,0 y +13,1; +5,5 contra +7,9 y +13,7.
+    // +0,1 contra +5,0 y +7,2; +18,3 contra +12,0 y +13,1; +5,7 contra +7,9 y +13,7.
     expect(lecturaAnioPorAnio(CASOS.tres_anios).veredicto).toEqual([
       'El S&P 500 le habría ganado a la cartera en 2 de los 3 años; la cartera al S&P 500, en el otro.',
       'El Nasdaq le habría ganado a la cartera en 2 de los 3 años; la cartera al Nasdaq, en el otro.',

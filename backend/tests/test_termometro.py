@@ -132,10 +132,12 @@ class TermometroTest(unittest.TestCase):
                 (simbolo, instante.strftime("%Y-%m-%d %H:%M:%S")))
             conn.commit()
 
-    def _cron_del_termometro(self):
+    def _cron_del_termometro(self, dia=None):
         """El cron de las alertas, 70 minutos después de la noche (las marcas se
-        fijan a mano: así no depende de la hora en que corre la prueba)."""
-        noche = datetime(self.hoy.year, self.hoy.month, self.hoy.day, 3, 15)    # 00:15 de acá
+        fijan a mano: así no depende de la hora en que corre la prueba). `dia`: el
+        día argentino de la corrida (por defecto, hoy)."""
+        dia = dia or self.hoy
+        noche = datetime(dia.year, dia.month, dia.day, 3, 15)    # 00:15 de acá
         self._marca(velas_diarias.MARCA_CORRIDA_NOCHE, noche)
         with main.db_abierta() as conn:
             conn.execute("DELETE FROM velas_estado WHERE symbol=?", (termometro.MARCA_CORRIDA,))
@@ -190,6 +192,62 @@ class TermometroTest(unittest.TestCase):
                          "Describe cómo se mueve el mercado. No dice cuánto tener invertido ni es una recomendación.")
         for palabra in ("tené", "comprá", "vendé", "invertí"):
             self.assertNotIn(palabra, str(t).lower())
+
+    # — «precio viejo»: LA regla de todas las pantallas (tecnico.es_vieja) —
+    # Sin precios de la última semana, contada desde el día argentino, no describe
+    # hoy (Nico, 06/11/2026: 7 días). Hasta ese día el termómetro tenía dos márgenes
+    # propios: 10 días para el S&P y cada acción, y 5 para decir de qué día es el número.
+
+    def _termometro_el(self, dia, hora=15):
+        main._freno_reiniciar()
+        with mock.patch("fechas.ahora_art", return_value=datetime(dia.year, dia.month, dia.day, hora, 0)):
+            r = self.client.get("/api/termometro", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def test_el_numero_es_viejo_desde_el_octavo_dia(self):
+        # «Al cierre del…» o, en ámbar, «Último dato: cierre del…» (utils/termometro.js).
+        self._noche()
+        self._cron_del_termometro()
+        fecha = self.dias[-1]
+        for dias, viejo in ((7, False), (8, True)):
+            with self.subTest(dias=dias):
+                t = self._termometro_el(fecha + timedelta(days=dias))
+                self.assertTrue(t["disponible"], t)
+                self.assertEqual(t["fecha"], fecha.isoformat())
+                self.assertIs(t["viejo"], viejo)
+
+    def _con_el_sp_cortado(self, dias):
+        """Yahoo deja de mandar el S&P (pasó en producción: el 04/11/2026 llevaba dos
+        noches con «Yahoo no devolvió velas») y el resto del universo sigue llegando.
+        El termómetro corre un día de martes a viernes con el último S&P de hace `dias`
+        días; devuelve lo que ve la pantalla ese día."""
+        import pandas as pd
+        ultima = self.dias[-1]
+        dia = ultima + timedelta(days=1 if ultima.weekday() < 4 else 4)
+        corte = dia - timedelta(days=dias)
+        self.assertLess(corte.weekday(), 5, "el último S&P es de un día con rueda")
+        yahoo = self.contador.yahoo
+
+        def sin_sp(ticker, period, interval, auto_adjust, timeout):
+            df = yahoo(ticker, period, interval, auto_adjust, timeout)
+            return df[df.index <= pd.Timestamp(corte)] if ticker == "^GSPC" and len(df) else df
+        self.contador.yahoo = sin_sp
+        self._noche()
+        with mock.patch("fechas.ahora_art", return_value=datetime(dia.year, dia.month, dia.day, 1, 25)):
+            self._cron_del_termometro(dia)
+        return corte, self._termometro_el(dia)
+
+    def test_con_el_sp_de_hace_7_dias_el_numero_sale(self):
+        corte, t = self._con_el_sp_cortado(7)
+        self.assertTrue(t["disponible"], t)
+        self.assertEqual((t["fecha"], t["viejo"]), (corte.isoformat(), False), "la fecha es la del último S&P")
+
+    def test_con_el_sp_de_hace_8_dias_no_sale_un_numero_nuevo(self):
+        # El S&P ya no describe hoy (LA regla de «precio viejo»): no se guarda un número
+        # con él, aunque las acciones estén al día. Antes salía hasta el día 10.
+        _, t = self._con_el_sp_cortado(8)
+        self.assertFalse(t["disponible"], t)
 
     def test_alcista_es_el_de_la_ficha(self):
         # La cuenta del termómetro y la tarjeta «Largo plazo» de cada ficha

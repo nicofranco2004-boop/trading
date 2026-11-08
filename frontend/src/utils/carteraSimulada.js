@@ -540,8 +540,11 @@ export const NOTA_CADA_ACTIVO = 'Sin tocar la cartera, gana peso el que rinde m�
   + 'ese activo.'
 
 /** La aclaración de abajo: cómo se simula y que no es una recomendación. */
-export const COMO_SE_SIMULA_CARTERA = 'La simulación compra todo el primer día, al cierre, con los porcentajes que '
-  + 'pusiste, y no la toca más. Sin comisiones ni dividendos, ni en la cartera ni en los índices (el S&P 500 y el '
+// «Al cierre del primer día»: con «1 año», todos los martes el primer día es un
+// domingo (365 días son 52 semanas y un día) y vale el cierre del viernes, como en
+// Comparar y en la ficha (auditoría 06/11 del precio de arranque, H4).
+export const COMO_SE_SIMULA_CARTERA = 'La simulación compra todo al cierre del primer día (si ese día no hubo '
+  + 'mercado, al último cierre anterior), con los porcentajes que pusiste, y no la toca más. Sin comisiones ni dividendos, ni en la cartera ni en los índices (el S&P 500 y el '
   + 'Nasdaq compuesto, en dólares). Los CEDEAR, con la acción de afuera; las acciones argentinas, en dólares MEP de '
   + 'cada día. Es lo que habría pasado con los precios de cada día: no dice nada de lo que va a pasar y no es una '
   + 'recomendación de compra o de venta.'

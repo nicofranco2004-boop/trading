@@ -143,6 +143,11 @@ class InviuParser(Parser):
     platform_label = "inviu"
     export_label = "Reporte de cuenta corriente (Excel)"
     tenencia_format = "inviu_tenencia"
+    # El `break` en "Disponible - Instrumentos" (ver `parse`) termina la lectura
+    # de UN archivo. Con dos archivos "Consolidada" pegados terminaba la de los
+    # dos, y lo nuevo del segundo no entraba (revisión del 06/11/2026). Ver
+    # `Parser.lee_cada_archivo_aparte`.
+    lee_cada_archivo_aparte = True
 
     def can_handle(self, headers: List[str]) -> bool:
         cols = _resolve_columns(headers)
@@ -206,7 +211,8 @@ class InviuParser(Parser):
             # "Disponible - Instrumentos" abre el registro de TÍTULOS por especie
             # (export "Consolidada"): filas de nominales SIN cash, redundantes con
             # los boletos de la parte monetaria. Cortamos acá — seguir las contaba
-            # como compras en dólares con montos en pesos (cartera inflada).
+            # como compras en dólares con montos en pesos (cartera inflada). Corta
+            # ESTE archivo: con varios en una subida, llegan de a uno.
             if _norm(fecha_raw).startswith("disponible - instrumentos"):
                 break
 
