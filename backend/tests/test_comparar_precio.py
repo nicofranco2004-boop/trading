@@ -456,6 +456,28 @@ class BaseCienTest(unittest.TestCase):
         self.assertEqual(con(sin("2022-12-23", "2023-01-05")), ("2023-01-06", "2023-01-06"), "el último, a 11 días")
         self.assertEqual(con(sin("2022-12-24", "2023-01-05")), ("2023-01-02", "2023-01-02"), "el último, a 10 días")
 
+    def test_quien_corre_el_dia(self):
+        # `arranque_de_los_activos`: repetido hasta que no cambia. Si uno corre el día,
+        # otro puede tener un hueco justo antes del día nuevo (auditoría 08/11 del hueco,
+        # H1); en un empate, el del hueco, en cualquier orden (H2).
+        dias = [(date(2021, 11, 5) + timedelta(days=k)).isoformat() for k in range(1827)]
+        todos = [(d, 1.0) for d in dias]
+        sin = lambda a, b: [p for p in todos if not a <= p[0] <= b]
+        desde = lambda d: [p for p in todos if p[0] >= d]
+        quien = comparar.arranque_de_los_activos
+        self.assertEqual(quien("2023-01-02", [todos, todos]), {"dia": "2023-01-02", "quien": None, "hueco": None})
+        # B cotiza desde el 20/01; A no tiene precios del 10 al 25/01: en el 20/01, su
+        # último es del 09/01 (11 días) y el día se corre al 26/01.
+        a, b = sin("2023-01-10", "2023-01-25"), desde("2023-01-20")
+        self.assertEqual(quien("2023-01-02", [a, b]),
+                         {"dia": "2023-01-26", "quien": 0, "hueco": {"desde": "2023-01-10", "hasta": "2023-01-25"}})
+        self.assertEqual(comparar.dia_del_cien("2023-01-02", [a, b], [], date(2026, 11, 6)), ("2023-01-26", "2023-01-26"))
+        # Empate: el hueco de A termina el 19/01 y B cotiza desde el 20/01.
+        a = sin("2022-12-20", "2023-01-19")
+        hueco = {"desde": "2022-12-20", "hasta": "2023-01-19"}
+        self.assertEqual(quien("2023-01-02", [a, b]), {"dia": "2023-01-20", "quien": 0, "hueco": hueco})
+        self.assertEqual(quien("2023-01-02", [b, a]), {"dia": "2023-01-20", "quien": 1, "hueco": hueco})
+
     def test_regla(self):
         p = [("2025-01-02", 10.0), ("2025-01-03", 12.0), ("2025-01-06", 9.0)]
         self.assertEqual(comparar.base_cien(p, "2025-01-04"),

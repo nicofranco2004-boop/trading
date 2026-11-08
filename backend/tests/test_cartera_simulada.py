@@ -672,6 +672,11 @@ def _casos_de_la_pantalla():
         "hueco": cs.simular(activos[:2] + [_activo("HUECO", 20, [v for v in _habiles(800, lambda i: 30 + i * 0.01)
                                                                  if not "2024-10-01" <= v["date"] <= "2024-11-15"])],
                             {"sp500": sp, "nasdaq": nq}, 2, HOY),
+        # El hueco, en el corte de «1 año» (30/10/2025) de una de 2 años: «Año por año»
+        # no dice que da lo mismo que «1 año» (auditoría 08/11 del hueco, H3).
+        "hueco_en_un_corte": cs.simular(activos[:2] + [_activo("HUECO2", 20, [
+            v for v in _habiles(800, lambda i: 30 + i * 0.01) if not "2025-10-10" <= v["date"] <= "2025-11-05"])],
+            {"sp500": sp, "nasdaq": nq}, 2, HOY),
     }
     for r in casos.values():
         r.pop("curva", None)
@@ -714,6 +719,10 @@ class LoQueLeeLaPantalla(unittest.TestCase):
         self.assertIsNone(casos["todos_restan"]["anio_por_anio"])
         self.assertEqual([t["completo"] for t in casos["tres_anios"]["anio_por_anio"]["tramos"]], [True] * 3)
         self.assertEqual([t["completo"] for t in casos["tramo_corto"]["anio_por_anio"]["tramos"]], [False, True])
+        self.assertTrue(casos["hueco_en_un_corte"]["anio_por_anio"]["hueco_en_un_corte"])
+        self.assertFalse(casos["hueco_en_un_corte"]["recortado"], "el día de arranque, con precio")
+        self.assertFalse(any(c["anio_por_anio"]["hueco_en_un_corte"] for n, c in casos.items()
+                             if n != "hueco_en_un_corte" and c.get("anio_por_anio")))
         h = casos["hueco"]
         self.assertEqual((h["desde"], h["recortado"], h["recorte_por"], h["recorte_hueco"]),
                          ("2024-11-18", True, "HUECO", {"desde": "2024-10-01", "hasta": "2024-11-17"}))

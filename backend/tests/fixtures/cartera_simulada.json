@@ -96,7 +96,8 @@
     "cartera": 10.308635201420202,
     "sp500": 9.936117813937727,
     "nasdaq": 13.4350474941497
-   }
+   },
+   "hueco_en_un_corte": false
   }
  },
  "sin_nasdaq": {
@@ -190,7 +191,8 @@
    "por_anio": {
     "cartera": 10.308635201420202,
     "sp500": 9.936117813937727
-   }
+   },
+   "hueco_en_un_corte": false
   }
  },
  "recortada": {
@@ -446,7 +448,8 @@
     "cartera": 7.733326985235278,
     "sp500": 8.278601676200159,
     "nasdaq": 11.30527657438769
-   }
+   },
+   "hueco_en_un_corte": false
   }
  },
  "tramo_corto": {
@@ -546,7 +549,8 @@
     "cartera": 19.238295875168188,
     "sp500": 8.507275177565754,
     "nasdaq": 10.428225032340288
-   }
+   },
+   "hueco_en_un_corte": false
   }
  },
  "hueco": {
@@ -649,7 +653,109 @@
     "cartera": 5.824581038175181,
     "sp500": 9.98087994760315,
     "nasdaq": 13.292427278478613
+   },
+   "hueco_en_un_corte": false
+  }
+ },
+ "hueco_en_un_corte": {
+  "anios": 2,
+  "moneda": "usd",
+  "pedido_desde": "2024-10-30",
+  "recortado": false,
+  "recorte_por": null,
+  "recorte_hueco": null,
+  "disponible": true,
+  "desde": "2024-10-30",
+  "hasta": "2026-10-30",
+  "dias": 523,
+  "activos": [
+   {
+    "asset": "AAPL",
+    "local": false,
+    "peso": 50.0,
+    "ticker": "AAPL",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": 36.09909999999999,
+    "aporte": 18.049549999999996,
+    "peso_final": 59.07291799140334
+   },
+   {
+    "asset": "GGAL",
+    "local": true,
+    "peso": 30.0,
+    "ticker": "GGAL",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": -20.1318,
+    "aporte": -6.03954,
+    "peso_final": 20.799759713566075
+   },
+   {
+    "asset": "HUECO2",
+    "local": false,
+    "peso": 20.0,
+    "ticker": "HUECO2",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": 15.929199999999994,
+    "aporte": 3.185839999999999,
+    "peso_final": 20.127322295030595
    }
+  ],
+  "cartera": {
+   "resultado": 15.19584999999999,
+   "peor_caida": -19.239471203039827,
+   "final": 115.19585
+  },
+  "indices": [
+   {
+    "clave": "sp500",
+    "nombre": "S&P 500",
+    "ticker": "^GSPC",
+    "resultado": 20.859499999999986,
+    "peor_caida": -0.7537370267517662,
+    "final": 120.85949999999998
+   },
+   {
+    "clave": "nasdaq",
+    "nombre": "Nasdaq",
+    "ticker": "^IXIC",
+    "resultado": 28.675099999999976,
+    "peor_caida": -1.1740675530978795,
+    "final": 128.6751
+   }
+  ],
+  "faltan": [],
+  "anio_por_anio": {
+   "tramos": [
+    {
+     "desde": "2024-10-30",
+     "hasta": "2025-10-30",
+     "dias": 365,
+     "completo": true,
+     "aporte": 9.467529999999996,
+     "cartera": 9.467530000000002,
+     "sp500": 12.038499999999996,
+     "nasdaq": 13.146600000000008
+    },
+    {
+     "desde": "2025-10-30",
+     "hasta": "2026-10-30",
+     "dias": 365,
+     "completo": true,
+     "aporte": 5.7283199999999965,
+     "cartera": 5.2328941741902835,
+     "sp500": 7.873186449300906,
+     "nasdaq": 13.724230334804567
+    }
+   ],
+   "por_anio": {
+    "cartera": 7.329329635472881,
+    "sp500": 9.936117813937727,
+    "nasdaq": 13.4350474941497
+   },
+   "hueco_en_un_corte": true
   }
  }
 }

@@ -18,7 +18,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import {
-  COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_ANIO_POR_ANIO, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, TOLERANCIA,
+  COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_ANIO_POR_ANIO, NOTA_ANIO_POR_ANIO_CON_HUECO, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, TOLERANCIA,
   aLaDireccion, aclaracionDeLaCartera, carteraDe, consultaDe, errorDeHoy, estadoDeLaCartera, filasDeHoy,
   lecturaAnioPorAnio, lecturaCartera,
   limpiar, loQueFalta, motivoCartera, notaDeHoy, notaDeLosQueSobran, notaDelResumen, notaHoy, notaOjito, notaSinActivos,
@@ -537,6 +537,16 @@ describe('un hueco de precios justo antes del día de arranque (Nico, 08/11)', (
       .toContain('Faltan los precios de HUECO del 01/10/24 al 17/11/24: la simulación arranca el 18/11/24.')
     expect(lecturaCartera(r).avisos.join(' ')).not.toMatch(/Tenemos precios de HUECO desde/)
     expect(notaDelResumen(r)).toMatch(/^Del 18\/11\/24 al 30\/10\/26/)
+  })
+
+  // Auditoría 08/11 del hueco, H3: con el hueco en el corte de «1 año», ese año usa el
+  // último precio de antes y «1 año» arranca después: no dan lo mismo y la nota lo decía.
+  it('con el hueco en un corte, «Año por año» no dice que da lo mismo que «1 año»', () => {
+    const conHueco = lecturaAnioPorAnio(CASOS.hueco_en_un_corte)
+    expect(conHueco.nota.startsWith(NOTA_ANIO_POR_ANIO_CON_HUECO)).toBe(true)
+    expect(conHueco.nota).not.toMatch(/dan lo mismo/)
+    expect(lecturaAnioPorAnio(CASOS.tres_anios).nota.startsWith(NOTA_ANIO_POR_ANIO)).toBe(true)
+    expect(NOTA_ANIO_POR_ANIO).toMatch(/dan lo mismo que ahí/)
   })
 
   it('si después del hueco quedan muy pocos días, lo dice así', () => {

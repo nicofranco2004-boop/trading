@@ -126,7 +126,7 @@ def dia_del_cien(desde: str, activos: list, varas: list, hoy: date) -> tuple:
     método 06/11, H1). Una vara que empieza mucho después (no tenemos su historia)
     o que quedó vieja (`tecnico.es_vieja`, contra `hoy`) no corre nada: queda
     afuera y se dice."""
-    de_los_activos = max([desde] + [arranque(p, desde)["dia"] for p in activos if p])
+    de_los_activos = arranque_de_los_activos(desde, activos)["dia"]
     corren = [p[0][0] for p in varas
               if p and de_los_activos < p[0][0] and _dias(de_los_activos, p[0][0]) <= DIAS_MARGEN
               and not tecnico.es_vieja(p[-1][0], hoy)]
@@ -137,6 +137,27 @@ def arranque(puntos: list, desde: str):
     """Desde qué día cuenta `puntos` [(fecha, valor)] en un período que arranca
     `desde`: LA regla, `tecnico.arranque_de_la_serie` ({'dia', 'hueco'})."""
     return tecnico.arranque_de_la_serie([d for d, _ in puntos], desde)
+
+
+def arranque_de_los_activos(desde: str, activos: list) -> dict:
+    """Desde qué día cuentan TODOS los `activos` (listas de puntos [(fecha, valor)])
+    y por qué: {'dia', 'quien' (el índice del que lo fijó, o None si es `desde`),
+    'hueco' (el de ése, o None)}. LA usan `dia_del_cien` y lo que dicen Comparar y
+    «Una cartera».
+
+    El más tardío de los de cada uno (`arranque`), repetido hasta que no cambia:
+    si uno corre el día, otro puede tener un hueco justo antes del día nuevo y su
+    100 era un cierre de semanas antes (auditoría 08/11 del hueco, H1). En un
+    empate, el que tiene hueco (es lo que hay que decir) y después el primero de
+    la lista: las dos pantallas nombran al mismo (H2)."""
+    dia, quien, hueco = desde, None, None
+    while True:
+        tarde = [(a["dia"], a["hueco"] is not None, -i, a["hueco"])
+                 for i, a in ((i, arranque(p, dia)) for i, p in enumerate(activos) if p) if a["dia"] > dia]
+        if not tarde:
+            return {"dia": dia, "quien": quien, "hueco": hueco}
+        dia, _, menos_i, hueco = max(tarde, key=lambda t: t[:3])
+        quien = -menos_i
 
 
 def _mep(conn, desde: str) -> list:
@@ -205,19 +226,18 @@ def comparar(conn, activos: list, moneda: str, desde: str = None, *, anios: int 
     # ése (`dia_del_cien`, LA regla de las dos pantallas).
     sp = _cierres(tecnico.sp500(conn, moneda))
     base, de_los_activos = dia_del_cien(desde, [c["puntos"] for c in crudas], [sp], hoy)
-    # El que llega último, y si llega tarde por un hueco de precios: eso se dice
-    # siempre, aunque el primer precio después caiga en la semana de margen (el
-    # hueco ya tiene más de 10 días: no es un feriado largo).
-    inicios = {c["clave"]: arranque(c["puntos"], desde) for c in crudas}
-    ultimo_en_llegar = max(crudas, key=lambda c: inicios[c["clave"]]["dia"])
-    hueco = inicios[ultimo_en_llegar["clave"]]["hueco"]
+    # El que llegó último y por qué (`arranque_de_los_activos`, la misma cuenta del
+    # día del 100). Un hueco se dice siempre, aunque el primer precio después caiga
+    # en la semana de margen: ya tiene más de 10 días, no es un feriado largo.
+    llegada = arranque_de_los_activos(desde, [c["puntos"] for c in crudas])
+    hueco = llegada["hueco"]
     if _dias(desde, de_los_activos) > DIAS_MARGEN or hueco:
         out["base_corrida"] = True
         # ¿Cotiza hace menos, o es donde empieza lo guardado para todos? El S&P
         # guarda la historia entera: si arranca bastante antes, es el activo.
         guardado = sp[0][0] if sp else min(c["puntos"][0][0] for c in crudas)
-        if hueco or _dias(guardado, inicios[ultimo_en_llegar["clave"]]["dia"]) > DIAS_MARGEN:
-            out["base_corrida_por"] = ultimo_en_llegar["clave"]
+        if llegada["quien"] is not None and (hueco or _dias(guardado, llegada["dia"]) > DIAS_MARGEN):
+            out["base_corrida_por"] = crudas[llegada["quien"]]["clave"]
             out["base_corrida_hueco"] = hueco
     out["base"] = base
 

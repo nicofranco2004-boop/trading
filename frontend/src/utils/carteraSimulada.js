@@ -378,10 +378,13 @@ export const notaDelResumen = (res) => `Del ${fechaCorta(res.desde)} al ${fechaC
 
 // «1 año» con un espacio que no se corta: partido en dos renglones no se lee (auditoría
 // de pantalla 06/11, O4).
-export const NOTA_ANIO_POR_ANIO = 'Cada año son 365 días, contados para atrás desde el último precio, con las fechas de '
-  + '«1 año»: los índices dan lo mismo que ahí, la cartera no siempre. Acá es la misma cartera sin tocar, y cada '
-  + 'año arranca con los pesos que le dejó el anterior; «1 año» la arma de nuevo con sus porcentajes. «Por año, '
-  + 'en promedio»: lo que habría que ganar (o perder) todos los años, igual, para llegar al mismo total.'
+// Sin la comparación con «1 año» cuando un activo no tiene precios en un corte: ahí vale
+// su último precio de antes y «1 año» arranca después del hueco (auditoría 08/11 del hueco, H3).
+const NOTA_ANIO_365 = 'Cada año son 365 días, contados para atrás desde el último precio'
+const NOTA_ANIO_IGUAL = ', con las fechas de «1 año»: los índices dan lo mismo que ahí, la cartera no siempre'
+const NOTA_ANIO_RESTO = '. Acá es la misma cartera sin tocar, y cada año arranca con los pesos que le dejó el anterior; «1 año» la arma de nuevo con sus porcentajes. «Por año, en promedio»: lo que habría que ganar (o perder) todos los años, igual, para llegar al mismo total.'
+export const NOTA_ANIO_POR_ANIO = NOTA_ANIO_365 + NOTA_ANIO_IGUAL + NOTA_ANIO_RESTO
+export const NOTA_ANIO_POR_ANIO_CON_HUECO = NOTA_ANIO_365 + NOTA_ANIO_RESTO
 
 /** Cuántos meses dura el tramo corto del principio, para su renglón: «7 meses». Hasta
  *  11: uno de 351 días no es un año entero y «12 meses» decía que sí (auditoría 06/11, B6). */
@@ -488,7 +491,7 @@ export function lecturaAnioPorAnio(res, { origen = 'cero', cliente = null } = {}
     promedio: apa.por_anio,
     aviso: origen === 'hoy' ? `Es ${deQuien(cliente)} puesta en el pasado: año por año, también da de más.` : null,
     veredicto: veredicto(filas, res),
-    nota: NOTA_ANIO_POR_ANIO
+    nota: (apa.hueco_en_un_corte ? NOTA_ANIO_POR_ANIO_CON_HUECO : NOTA_ANIO_POR_ANIO)
       + (corto ? ' Lo de antes del primer año entero va aparte, con sus meses.' : '')
       + (largo ? ` El año 1 tiene ${largo} días: suma los de antes del primer año entero.` : ''),
   }

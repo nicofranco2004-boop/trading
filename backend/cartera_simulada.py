@@ -169,9 +169,10 @@ def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
     hasta = max(p[-1][0] for p in puntos.values())
     pedido = tecnico.dia_de_arranque(hasta, anios * tecnico.DIAS_ANIO)
     primeras = {s: p[0][0] for s, p in puntos.items()}
-    # Desde cuándo cuenta cada uno: su primer precio, o el primero después de un hueco.
-    inicios = {s: comparar.arranque(p, pedido) for s, p in puntos.items()}
-    ultimo_en_llegar = max(inicios, key=lambda s: (inicios[s]["dia"], s))
+    # Desde cuándo cuentan todos y quién llegó último: su primer precio, o el primero
+    # después de un hueco (`comparar.arranque_de_los_activos`, la de Comparar).
+    llegada = comparar.arranque_de_los_activos(pedido, list(puntos.values()))
+    ultimo_en_llegar = list(puntos)[llegada["quien"]] if llegada["quien"] is not None else None
     # El primer día, con LA regla de Comparar (`comparar.dia_del_cien`): el primero
     # que tienen todos los activos, y si un índice empieza unos días después (con 5
     # años, el lunes después de un sábado), ése. Un índice sin su historia no corre
@@ -180,7 +181,7 @@ def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
     base, de_los_activos = comparar.dia_del_cien(pedido, list(puntos.values()), list(de_los_indices.values()), hoy)
     # Un hueco se dice siempre, aunque el primer precio después caiga en la semana
     # de margen: ya tiene más de 10 días, no es un feriado largo.
-    hueco = inicios[ultimo_en_llegar]["hueco"]
+    hueco = llegada["hueco"]
     recortado = comparar._dias(pedido, de_los_activos) > comparar.DIAS_MARGEN or bool(hueco)
     fechas = sorted({base} | {d for p in puntos.values() for d, _ in p if base < d <= hasta})
     out.update({"pedido_desde": pedido, "recortado": recortado,
@@ -236,6 +237,16 @@ def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
             "aporte": pesos[s] * (v - 100) / 100,
             "peso_final": pesos[s] * v / final,
         })
+    anios_uno_a_uno = _anio_por_anio(base, hasta, {"cartera": valor, **{c: v.al for c, v in varas.items()}},
+                                     recortado)
+    if anios_uno_a_uno:
+        # Un activo sin precios en un corte (un hueco de más de 10 días justo antes):
+        # ahí vale su último precio de antes, y «1 año» arranca después del hueco, así
+        # que esos años no dan lo mismo que elegirlo y la pantalla no lo dice
+        # (auditoría 08/11 del hueco, H3).
+        anios_uno_a_uno["hueco_en_un_corte"] = any(
+            comparar.arranque(p, t["desde"])["hueco"] is not None
+            for t in anios_uno_a_uno["tramos"][1:] for p in puntos.values())
     return {
         **out,
         "disponible": True,
@@ -246,8 +257,7 @@ def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
         "cartera": backtest._resumen([v / 100 for v in cartera]),
         "indices": resumen_indices,
         "faltan": faltan,
-        "anio_por_anio": _anio_por_anio(base, hasta, {"cartera": valor, **{c: v.al for c, v in varas.items()}},
-                                        recortado),
+        "anio_por_anio": anios_uno_a_uno,
         "curva": [{"d": d, "cartera": round(cartera[k], 2), **{c: round(curvas[c][k], 2) for c in curvas}}
                   for k, d in enumerate(fechas)],
     }

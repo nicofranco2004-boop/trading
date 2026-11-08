@@ -369,6 +369,38 @@ class LasTresPantallas(unittest.TestCase):
         c, k, b, ficha = self._las_tres(hoy, yahoo, 1, ficha=True)
         self._arrancan_despues_del_hueco(c, k, b, ficha, yahoo, viernes, arranque)
 
+    def test_dos_activos_el_que_corre_el_dia_y_un_hueco_justo_antes_del_dia_nuevo(self):
+        # ARM cotiza desde 30 días después del día de arranque y corre el día para todos;
+        # a MU le faltan los precios justo antes de ese día nuevo. Su 100 era un cierre de
+        # 16 días antes: el día se corre otra vez, al primer precio de MU después, y las
+        # dos pantallas nombran al mismo (auditoría 08/11 del hueco, H1 y H2).
+        hoy = _el_ultimo(SABADO)
+        viernes = hoy - timedelta(days=1)
+        arranque = viernes - timedelta(days=365)
+        yahoo = self._mercado(hoy, viernes)
+        yahoo.series["ARM"] = {d: 50.0 + d.toordinal() % 37 for d in _habiles(arranque + timedelta(days=30), viernes)}
+        self._sin_precios(yahoo, arranque + timedelta(days=15), arranque + timedelta(days=33))
+        serie = yahoo.series["MU"]
+        llega_arm = min(yahoo.series["ARM"])
+        antes = max(d for d in serie if d <= llega_arm)
+        despues = min(d for d in serie if d > llega_arm)
+        self.assertGreater((llega_arm - antes).days, 10, "en el día de ARM, el último de MU es viejo")
+        hueco = {"desde": (antes + timedelta(days=1)).isoformat(), "hasta": (despues - timedelta(days=1)).isoformat()}
+        # ARM también es de la persona, como MU: si no, ninguna pantalla lo baja.
+        r = self.client.post("/api/positions", json={"broker": "Schwab", "asset": "ARM", "quantity": 1,
+                                                     "buy_price": 50, "asset_type": "STOCK"}, headers=self.h)
+        self.assertIn(r.status_code, (200, 201), r.text)
+        with self._un_dia(hoy, yahoo):
+            main._run_velas_diarias_job()
+            c = self._get("/api/comparar/precio?activos=MU,ARM&moneda=usd&plazo=1a")
+            k = self._get("/api/backtest/cartera?activos=MU,ARM&pesos=50,50&anios=1")
+        self.assertEqual((c["base"], c["base_corrida_por"], c["base_corrida_hueco"]), (despues.isoformat(), "MU", hueco))
+        self.assertEqual((k["desde"], k["recorte_por"], k["recorte_hueco"]), (despues.isoformat(), "MU", hueco))
+        self.assertAlmostEqual(self._serie(c, "MU")["final"], serie[viernes] / serie[despues] * 100, places=2)
+        mu = next(a for a in k["activos"] if a["asset"] == "MU")
+        # «Una cartera» lleva cada línea a 100 con 4 decimales (`comparar.base_cien`).
+        self.assertAlmostEqual(mu["resultado"], serie[viernes] / serie[despues] * 100 - 100, places=3)
+
     def test_con_el_ultimo_precio_a_10_dias_justos_arrancan_el_dia_pedido(self):
         # El borde: a 10 días justos todavía vale ese cierre, en las cuatro pantallas
         # (la ficha también da su número).
