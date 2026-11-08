@@ -22,6 +22,33 @@
     "hasta": "2026-08-14"
    }
   ],
-  "parte": 80
+  "parte": 80,
+  "efectivo_o_plazos": false
+ },
+ "vieja_con_efectivo": {
+  "activos": [
+   {
+    "asset": "AAPL",
+    "local": false,
+    "peso": 62.5,
+    "tipo": "STOCK"
+   },
+   {
+    "asset": "NVDA",
+    "local": false,
+    "peso": 37.5,
+    "tipo": "STOCK"
+   }
+  ],
+  "afuera": [
+   {
+    "asset": "MU",
+    "tipo": "STOCK",
+    "motivo": "vieja",
+    "hasta": "2026-08-14"
+   }
+  ],
+  "parte": 62,
+  "efectivo_o_plazos": true
  }
 }

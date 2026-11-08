@@ -273,10 +273,13 @@ def de_hoy(car: dict, hasta, hoy: date) -> dict:
         con la fecha de LA serie con que se simula (`hasta`). Un activo que dejó
         de cotizar frenaba la cartera entera, y al sacarlo quedaba «Faltan 20%»:
         la única forma de volver a tus pesos era hacer la cuenta a mano
-        (auditoría de pantalla 06/11, H3; Nico, 06/11: «Sí, así»). Si no queda
-        ninguno al día (la noche sin correr más de una semana), no se saca
-        ninguno: sin ellos la tabla quedaba vacía y decía «Todavía no tenés
-        acciones…»; con ellos, la simulación dice desde cuándo no hay precios;
+        (auditoría de pantalla 06/11, H3; Nico, 06/11: «Sí, así»). Si ninguno
+        tiene precios de la última semana (la noche sin correr más de una
+        semana), no se saca ninguno: sin ellos la tabla quedaba vacía y decía
+        «Todavía no tenés acciones…»; con ellos, la simulación dice desde cuándo
+        no hay precios. Uno sin precios guardados no cuenta como al día: con la
+        noche caída y uno comprado después, quedaba ése solo, al 100 %, y los
+        demás afuera como si hubieran dejado de cotizar (revisión 06/11);
       · si son más de `MAX_ACTIVOS`, los que menos pesan.
     `hasta(asset, local)`: el día del último precio con que se simularía
     (`ultimo_precio`), o None si todavía no hay ninguno (lo baja la simulación,
@@ -291,7 +294,12 @@ def de_hoy(car: dict, hasta, hoy: date) -> dict:
     `parte`: qué porcentaje de toda tu plata (`car['total']`: también el
     efectivo, los bonos, los fondos y los plazos fijos) es lo que se simula. Sin
     él, una cartera mitad fondo y mitad CEDEARs se veía como «tu cartera», toda en
-    CEDEARs (auditoría de producto 05/11, A4). Un porcentaje, nunca la plata."""
+    CEDEARs (auditoría de producto 05/11, A4). Un porcentaje, nunca la plata.
+    `efectivo_o_plazos`: si en lo que no se simula hay efectivo o plazos fijos
+    (`car['sin_medir']`), un sí o un no, nunca cuánto. Con MU afuera por sus
+    precios, la nota decía «el 62% de tu plata» sin nombrar el 23 % en efectivo, y
+    parecía que lo que faltaba era todo MU (revisión 06/11; Nico, 06/11: «Sí, que
+    lo nombre»)."""
     from cripto import yahoo_de_cripto
     juntos, afuera = {}, []
     for (asset, local), valor in car["tenencias"].items():
@@ -307,7 +315,7 @@ def de_hoy(car: dict, hasta, hoy: date) -> dict:
         if valor > j["mayor"]:
             j.update(mayor=valor, tipo=tipo)
     orden = sorted(juntos.values(), key=lambda j: (-j["valor"], j["asset"]))
-    quedan, viejas, k = [], [], 0
+    quedan, viejas, k, al_dia = [], [], 0, False
     while k < len(orden) and len(quedan) < MAX_ACTIVOS:
         j, k = orden[k], k + 1
         h = hasta(j["asset"], j["local"])
@@ -315,8 +323,9 @@ def de_hoy(car: dict, hasta, hoy: date) -> dict:
             viejas.append({"asset": j["asset"], "tipo": j["tipo"], "motivo": "vieja", "hasta": h})
         else:
             quedan.append(j)
+            al_dia = al_dia or bool(h)
     sobran = orden[k:]
-    if not quedan:
+    if not al_dia:
         quedan, sobran, viejas = orden[:MAX_ACTIVOS], orden[MAX_ACTIVOS:], []
     afuera += viejas + [{"asset": j["asset"], "tipo": j["tipo"], "motivo": "tope"} for j in sobran]
     pesos = _sobre_cien([j["valor"] for j in quedan]) if quedan else []
@@ -325,7 +334,8 @@ def de_hoy(car: dict, hasta, hoy: date) -> dict:
     return {"activos": [{"asset": j["asset"], "local": j["local"], "peso": p, "tipo": j["tipo"]}
                         for j, p in zip(quedan, pesos)],
             "afuera": sorted(afuera, key=lambda x: (x["motivo"], x["asset"])),
-            "parte": round(simulado / total * 100) if total > 0 and quedan else None}
+            "parte": round(simulado / total * 100) if total > 0 and quedan else None,
+            "efectivo_o_plazos": (car.get("sin_medir") or 0) > 0}
 
 
 def _serie(conn, asset: str, local: bool) -> dict:

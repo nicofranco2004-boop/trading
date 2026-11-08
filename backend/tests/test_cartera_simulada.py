@@ -546,6 +546,59 @@ class DeHoy(unittest.TestCase):
         self.assertEqual(r, self._de_hoy(self._car(tenencias)))
         self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]], [("AAPL", 62.5), ("NVDA", 37.5)])
 
+    def test_dice_si_hay_efectivo_o_plazos_fijos_afuera_sin_decir_cuanto(self):
+        # Con MU afuera y efectivo, la nota decía «el 62% de tu plata» sin nombrar el
+        # efectivo (revisión 06/11): el servidor dice si hay, un sí o un no.
+        car = self._car([("AAPL", False, 500.0, "STOCK"), ("MU", False, 200.0, "STOCK")])
+        self.assertFalse(self._de_hoy(car)["efectivo_o_plazos"])
+        r = self._de_hoy({**car, "sin_medir": 300.0, "total": 1000.0}, viejas={"MU": FIN.replace(month=8).isoformat()})
+        self.assertEqual((r["parte"], r["efectivo_o_plazos"]), (50, True))
+        self.assertNotIn("300", json.dumps(r), "sólo si hay, nunca cuánto")
+
+    def test_uno_sin_precios_guardados_no_alcanza_para_decir_que_hay_uno_al_dia(self):
+        # La noche caída (AAPL y NVDA viejos) y NUEVA comprada después, sin velas: quedaba
+        # NUEVA sola al 100 % y los otros afuera, como si hubieran dejado de cotizar
+        # (revisión 06/11). Ninguno tiene precios de la última semana: no se saca ninguno.
+        viejo = (FIN - timedelta(days=9)).isoformat()
+        tenencias = [("AAPL", False, 500.0, "STOCK"), ("NVDA", False, 300.0, "STOCK"), ("NUEVA", False, 100.0, "STOCK")]
+        r = self._de_hoy(self._car(tenencias), viejas={"AAPL": viejo, "NVDA": viejo, "NUEVA": None})
+        self.assertEqual(r, self._de_hoy(self._car(tenencias)))
+        self.assertEqual(r["afuera"], [])
+
+    def test_pregunta_por_la_serie_con_la_marca_de_la_ficha(self):
+        # LA marca de cada activo (`local`), la misma con que lo simula la pantalla: tu GGAL
+        # de IOL se mide con BYMA ÷ el MEP; con el ADR de Schwab al lado, con el ADR. Acá
+        # sólo la serie de BYMA de GGAL está parada (sin MEP), en cualquier orden de lotes.
+        parado = FIN.replace(month=8).isoformat()
+        for tenencias, preguntas in (
+                ([("GGAL", True, 300.0, "ACCION"), ("AAPL", False, 100.0, "STOCK")], [("GGAL", True), ("AAPL", False)]),
+                ([("GGAL", True, 300.0, "ACCION"), ("GGAL", False, 100.0, "STOCK"), ("AAPL", False, 50.0, "STOCK")],
+                 [("GGAL", False), ("AAPL", False)]),
+                ([("AAPL", False, 400.0, "STOCK"), ("GGAL", True, 100.0, "ACCION")], [("AAPL", False), ("GGAL", True)])):
+            with self.subTest(tenencias=tenencias):
+                pedidos = []
+
+                def hasta(asset, local):
+                    pedidos.append((asset, local))
+                    return parado if (asset, local) == ("GGAL", True) else FIN.isoformat()
+                r = cs.de_hoy(self._car(tenencias), hasta, HOY)
+                self.assertEqual(pedidos, preguntas)
+                self.assertEqual([x["asset"] for x in r["afuera"] if x["motivo"] == "vieja"],
+                                 ["GGAL"] if ("GGAL", True) in preguntas else [])
+
+    def test_el_ultimo_precio_es_el_de_las_velas_que_sirven_como_en_la_simulacion(self):
+        # La misma serie y el mismo filtro que `simular` (`_puntos`): una última vela sin
+        # cierre no cuenta. Lo guardado ya viene limpio; esto es para que las dos cuentas
+        # no se separen si alguna vez llega una así.
+        velas = _habiles(30, lambda i: 100.0)
+        for ultima, esperado in (({**velas[-1], "close": None}, velas[-2]["date"]),
+                                 ({**velas[-1], "close": 0}, velas[-2]["date"]), (velas[-1], velas[-1]["date"])):
+            with self.subTest(cierre=ultima["close"]), \
+                 mock.patch.object(cs, "_serie", lambda conn, asset, local: {"velas": velas[:-1] + [ultima]}):
+                self.assertEqual(cs.ultimo_precio(None, "X", False), esperado)
+        with mock.patch.object(cs, "_serie", lambda conn, asset, local: {"velas": []}):
+            self.assertIsNone(cs.ultimo_precio(None, "X", False))
+
     def test_sin_precios_guardados_todavia_no_es_viejo(self):
         # Lo que nadie bajó todavía (lo compraste hoy) lo baja la simulación, como a un
         # activo que nadie sigue: no queda afuera.
@@ -617,10 +670,15 @@ def _de_hoy_de_la_pantalla():
     """Las respuestas de «Mi cartera de hoy» que leen las pruebas de la pantalla."""
     tenencias = {("AAPL", False): 500.0, ("NVDA", False): 300.0, ("MU", False): 200.0}
     car = {"tenencias": tenencias, "tipos": dict.fromkeys(tenencias, "STOCK")}
+
+    def hasta(asset, local):
+        return "2026-08-14" if asset == "MU" else FIN.isoformat()
     return json.loads(json.dumps({
         # MU parado desde el 14/08 (pantalla 06/11, H3): MU afuera, y AAPL y NVDA en su
         # proporción. Es lo que se le mostró a Nico el 06/11.
-        "vieja": cs.de_hoy(car, lambda asset, local: "2026-08-14" if asset == "MU" else FIN.isoformat(), HOY),
+        "vieja": cs.de_hoy(car, hasta, HOY),
+        # Lo mismo con US$ 300 de efectivo: la nota tiene que nombrarlo (revisión 06/11).
+        "vieja_con_efectivo": cs.de_hoy({**car, "sin_medir": 300.0, "total": 1300.0}, hasta, HOY),
     }))
 
 
@@ -657,6 +715,8 @@ class LoQueLeeLaPantalla(unittest.TestCase):
             self.assertEqual(json.load(f), casos)
         self.assertEqual([(a["asset"], a["peso"]) for a in casos["vieja"]["activos"]], [("AAPL", 62.5), ("NVDA", 37.5)])
         self.assertEqual(casos["vieja"]["afuera"], [{"asset": "MU", "tipo": "STOCK", "motivo": "vieja", "hasta": "2026-08-14"}])
+        self.assertEqual((casos["vieja"]["parte"], casos["vieja"]["efectivo_o_plazos"]), (80, False))
+        self.assertEqual((casos["vieja_con_efectivo"]["parte"], casos["vieja_con_efectivo"]["efectivo_o_plazos"]), (62, True))
 
     def test_los_indices_de_la_cartera_se_bajan_todas_las_noches(self):
         # Dos listas: contra cuáles se compara y cuáles baja la noche. Uno que se
@@ -974,8 +1034,10 @@ class Ruta(unittest.TestCase):
         self.assertEqual(sorted(a["asset"] for a in res["activos"]), ["AAPL", "MSFT"])
         self.assertAlmostEqual(sum(a["peso"] for a in res["activos"]), 100.0, places=9)
         self.assertEqual(res["afuera"], [])
-        self.assertEqual(set(res), {"activos", "afuera", "parte"})
+        self.assertEqual(set(res), {"activos", "afuera", "parte", "efectivo_o_plazos"})
         self.assertEqual(res["parte"], 100)   # sólo acciones: se simula toda tu plata
+        # Si hay efectivo o plazos fijos: un sí o un no, nunca cuánto (revisión 06/11).
+        self.assertIs(res["efectivo_o_plazos"], False)
         self.assertEqual({k for a in res["activos"] for k in a}, {"asset", "local", "peso", "tipo"})
         # Y lo que arma se puede simular tal cual.
         q = (f"activos={','.join(a['asset'] for a in res['activos'])}"

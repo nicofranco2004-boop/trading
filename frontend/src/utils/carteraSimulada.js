@@ -233,10 +233,14 @@ export function notaDeHoy(r, cliente = null) {
   const tope = afuera.filter(x => x.motivo === 'tope').map(x => x.asset)
   const out = []
   if (r?.parte != null && r.parte < 100) {
-    // Con un activo afuera (por sus precios o por el tope), «lo demás (efectivo, plazos
-    // fijos, bonos o fondos)» era falso: lo demás era ese activo, y la nota lo nombra.
+    // «Lo demás (efectivo, plazos fijos, bonos o fondos)», si algo de eso quedó afuera (un
+    // bono o un fondo en `sin`; efectivo o plazos fijos, el sí o no del servidor). Con sólo
+    // un activo afuera por sus precios o por el tope era falso: lo demás era ese activo, y
+    // la nota lo nombra. Con efectivo, sin el paréntesis parecía que todo lo que faltaba
+    // era ese activo (revisión 06/11; Nico, 06/11: «Sí, que lo nombre»).
+    const loDemas = sin.length || r.efectivo_o_plazos || !(viejas.length || tope.length)
     out.push(`Lo que se simula es el ${r.parte}% de ${cliente ? 'su' : 'tu'} plata`
-      + (viejas.length || tope.length ? '.' : ': lo demás (efectivo, plazos fijos, bonos o fondos) no lo podemos simular.'))
+      + (loDemas ? ': lo demás (efectivo, plazos fijos, bonos o fondos) no lo podemos simular.' : '.'))
   }
   if (sin.length) {
     out.push(`${sin.length === 1 ? 'Quedó' : 'Quedaron'} afuera ${enLista(sin)}: no tenemos sus precios de cada día.`)

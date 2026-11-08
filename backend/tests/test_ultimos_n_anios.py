@@ -503,12 +503,27 @@ class MiCarteraDeHoy(unittest.TestCase):
             mu = self._get("/api/backtest/cartera?activos=MU&pesos=100&anios=1")
         self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]], [("AAPL", 62.5), ("NVDA", 37.5)])
         self.assertEqual(r["afuera"], [{"asset": "MU", "tipo": "STOCK", "motivo": "vieja", "hasta": parado.isoformat()}])
-        self.assertEqual(r["parte"], 80)
+        self.assertEqual((r["parte"], r["efectivo_o_plazos"]), (80, False))
         # La pantalla la simula de entrada, con tus pesos entre los dos.
         self.assertTrue(k["disponible"], k)
         self.assertEqual([(a["asset"], round(a["peso"], 9)) for a in k["activos"]], [("AAPL", 62.5), ("NVDA", 37.5)])
         # Y lo que dice de MU es lo que dice la simulación de MU: la misma fecha.
         self.assertEqual(mu["faltan"], [{"asset": "MU", "motivo": "vieja", "hasta": parado.isoformat()}])
+
+    def test_con_efectivo_dice_que_lo_hay_sin_decir_cuanto(self):
+        # US$ 300 de efectivo, cargados por donde los carga la pantalla: la nota tiene que
+        # nombrarlo, o parecía que todo lo que faltaba era MU (revisión 06/11).
+        hoy = _el_ultimo(MIERCOLES)
+        ayer, parado = hoy - timedelta(days=1), hoy - timedelta(days=61)
+        with self._un_dia(hoy, self._mercado(hoy, {"AAPL": ayer, "NVDA": ayer, "MU": parado})):
+            r = self.client.post("/api/cash/flow", json={"broker_name": "Schwab", "direction": "deposit", "amount": 300},
+                                 headers=self.h)
+            self.assertEqual(r.status_code, 200, r.text)
+            main._run_velas_diarias_job()
+            r = self._get("/api/backtest/cartera/hoy")
+        self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]], [("AAPL", 62.5), ("NVDA", 37.5)])
+        self.assertEqual((r["parte"], r["efectivo_o_plazos"]), (62, True))
+        self.assertEqual([x["asset"] for x in r["afuera"]], ["MU"])
 
     def test_una_semana_justa_todavia_entra_y_ocho_dias_ya_no(self):
         # El borde de LA regla, por la ruta: MU de hace 7 días entra; NVDA de hace 8, no.
@@ -575,6 +590,24 @@ class MiCarteraDeHoy(unittest.TestCase):
         self.assertEqual((k["disponible"], k["motivo"]), (False, "vieja"))
         self.assertEqual(sorted((f["asset"], f["hasta"]) for f in k["faltan"]),
                          [(s, ultimo.isoformat()) for s in ("AAPL", "MU", "NVDA")])
+
+    def test_con_la_noche_caida_y_uno_comprado_despues_tampoco_saca_ninguno(self):
+        # AMD se compró con la noche caída: sin velas guardadas, no dice que haya alguno al
+        # día. Quedaba AMD sola al 100 % y AAPL, NVDA y MU afuera, como si hubieran dejado
+        # de cotizar, cuando la falla era nuestra (revisión 06/11).
+        hoy = _el_ultimo(MIERCOLES)
+        ultimo = hoy - timedelta(days=9)
+        yahoo = self._mercado(hoy, {**dict.fromkeys(("AAPL", "NVDA", "MU"), ultimo), "AMD": hoy - timedelta(days=1)},
+                              indices_hasta=ultimo)
+        with self._un_dia(hoy, yahoo):
+            main._run_velas_diarias_job()
+            self._lote("Schwab", "USD", "AMD", "STOCK", 10, 10)
+            r = self._get("/api/backtest/cartera/hoy")
+            k = self._simular(r)
+        self.assertEqual([a["asset"] for a in r["activos"]], ["AAPL", "NVDA", "MU", "AMD"])
+        self.assertEqual(r["afuera"], [])
+        self.assertEqual((k["disponible"], k["motivo"]), (False, "vieja"))
+        self.assertEqual(sorted(f["asset"] for f in k["faltan"]), ["AAPL", "MU", "NVDA"])
 
     def test_lo_que_todavia_no_tiene_precios_no_queda_afuera_y_lo_baja_la_simulacion(self):
         # AMD lo compraste después de la corrida de la noche: no tiene velas guardadas.
