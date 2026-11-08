@@ -462,7 +462,7 @@ def _casos_de_la_pantalla():
     casos = {}
     for clave, series in (("normal", {"MU": mu}), ("hueco", {"MU": hueco}), ("corrida_por", {"MU": mu, "NUEV": nuev})):
         with unittest.mock.patch("tecnico.serie", lambda c, a, m, l, **k: {"velas": series[a]}), \
-             unittest.mock.patch("tecnico.sp500", lambda c, m: sp):
+             unittest.mock.patch("tecnico.indice_con_dolar", lambda c, si, m, d=None: (sp, None)):
             r = comparar.comparar(None, [(a, False) for a in series], "usd", anios=1, hoy=date(2026, 11, 5))
         for s in r["series"]:
             s["puntos"] = s["puntos"][:1] + s["puntos"][-1:]
@@ -501,7 +501,7 @@ class HuecoEnElBorde(unittest.TestCase):
         mu = [{"date": d, "close": 100.0 + i * 0.1} for i, d in enumerate(dias) if not "2021-10-20" <= d <= "2021-11-10"]
         sp = [{"date": d, "close": 5000.0 + i} for i, d in enumerate(d for d in dias if d >= "2021-11-08")]
         with unittest.mock.patch("tecnico.serie", lambda c, a, m, l, **k: {"velas": mu}), \
-             unittest.mock.patch("tecnico.sp500", lambda c, m: sp):
+             unittest.mock.patch("tecnico.indice_con_dolar", lambda c, si, m, d=None: (sp, None)):
             r = comparar.comparar(None, [("MU", False)], "usd", "2021-11-05", hoy=date(2026, 11, 5))
         self.assertEqual((r["base"], r["base_corrida"], r["base_corrida_por"], r["base_corrida_hueco"]),
                          ("2021-11-11", True, "MU", {"desde": "2021-10-20", "hasta": "2021-11-10"}))
