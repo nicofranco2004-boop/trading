@@ -176,6 +176,23 @@
   "variacion_desde": "2024-11-11",
   "variacion_precio": -34.696155932286544
  },
+ "hueco_pocos_dias": {
+  "anios": 2,
+  "asset": "GGAL",
+  "disponible": false,
+  "motivo": "poca_historia",
+  "pedido_desde": "2024-10-28",
+  "primera_vela": "2024-07-01",
+  "recortado": true,
+  "recorte_hueco": {
+   "desde": "2024-10-01",
+   "hasta": "2026-09-15"
+  },
+  "recorte_por": null,
+  "reglas": [
+   "rsi"
+  ]
+ },
  "media200": {
   "anios": 2,
   "asset": "GGAL",

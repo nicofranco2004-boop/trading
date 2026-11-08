@@ -558,7 +558,7 @@
   "moneda": "usd",
   "pedido_desde": "2024-10-30",
   "recortado": true,
-  "recorte_por": "HUECO",
+  "recorte_por": "ACME",
   "recorte_hueco": {
    "desde": "2024-10-01",
    "hasta": "2024-11-17"
@@ -591,10 +591,10 @@
     "peso_final": 21.322540580740196
    },
    {
-    "asset": "HUECO",
+    "asset": "ACME",
     "local": false,
     "peso": 20.0,
-    "ticker": "HUECO",
+    "ticker": "ACME",
     "convertida": null,
     "primera_vela": "2023-10-09",
     "resultado": 15.471100000000007,
@@ -656,6 +656,19 @@
    },
    "hueco_en_un_corte": false
   }
+ },
+ "hueco_pocos_dias": {
+  "anios": 2,
+  "moneda": "usd",
+  "pedido_desde": "2024-10-30",
+  "recortado": true,
+  "recorte_por": "ACME",
+  "recorte_hueco": {
+   "desde": "2024-10-01",
+   "hasta": "2026-09-20"
+  },
+  "disponible": false,
+  "motivo": "poca_historia"
  },
  "hueco_en_un_corte": {
   "anios": 2,

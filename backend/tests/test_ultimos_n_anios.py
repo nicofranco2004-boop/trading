@@ -401,6 +401,61 @@ class LasTresPantallas(unittest.TestCase):
         # «Una cartera» lleva cada línea a 100 con 4 decimales (`comparar.base_cien`).
         self.assertAlmostEqual(mu["resultado"], serie[viernes] / serie[despues] * 100 - 100, places=3)
 
+    def test_con_pocas_ruedas_despues_del_hueco_las_dos_dicen_el_hueco(self):
+        # Sin precios desde 20 días antes del día de arranque hasta 40 días antes del
+        # último: después del hueco quedan menos de 60 ruedas. «Una cartera» y Una regla
+        # no simulan, y mandan el hueco para decir por qué; antes la pantalla lo armaba a
+        # mano (auditoría 08/11 de las pruebas del hueco, M18 y M25).
+        hoy = _el_ultimo(MIERCOLES)
+        martes = hoy - timedelta(days=1)
+        arranque = martes - timedelta(days=365)
+        yahoo = self._mercado(hoy, martes)
+        self._sin_precios(yahoo, arranque - timedelta(days=20), martes - timedelta(days=40))
+        serie = yahoo.series["MU"]
+        antes = max(d for d in serie if d <= arranque)
+        despues = min(d for d in serie if d > arranque)
+        hueco = {"desde": (antes + timedelta(days=1)).isoformat(), "hasta": (despues - timedelta(days=1)).isoformat()}
+        _, k, b = self._las_tres(hoy, yahoo, 1)
+        self.assertEqual((k["disponible"], k["motivo"], k["recorte_por"], k["recorte_hueco"]),
+                         (False, "poca_historia", "MU", hueco), "«Una cartera»")
+        self.assertEqual((b["disponible"], b["motivo"], b["recorte_por"], b["recorte_hueco"]),
+                         (False, "poca_historia", None, hueco), "Una regla")
+
+    def test_si_la_regla_corre_el_principio_mas_que_el_hueco_se_dice_la_regla(self):
+        # MU cotiza desde 120 días antes del día de arranque y le faltan precios justo
+        # antes: la media de 200 días recién existe meses después del hueco. La que corre
+        # el principio es la regla, no el hueco (auditoría 08/11 de las pruebas, M23).
+        hoy = _el_ultimo(MIERCOLES)
+        martes = hoy - timedelta(days=1)
+        arranque = martes - timedelta(days=365)
+        yahoo = self._mercado(hoy, martes)
+        self._sin_precios(yahoo, date.min, arranque - timedelta(days=120))
+        self._sin_precios(yahoo, arranque - timedelta(days=20), arranque + timedelta(days=13))
+        with self._un_dia(hoy, yahoo):
+            main._run_velas_diarias_job()
+            b = self._get("/api/tecnico/MU/backtest?reglas=media200&anios=1")
+        self.assertTrue(b["recortado"], b)
+        self.assertEqual((b["recorte_por"], b["recorte_hueco"]), ("media200", None))
+
+    def test_desde_tu_primera_compra_con_un_hueco_justo_antes_arranca_despues(self):
+        # «Desde tu primera compra», con la misma regla: si le faltan los precios de más
+        # de 10 días justo antes del día de la compra, arranca con el primero después y lo
+        # dice (auditoría 08/11 de las pruebas del hueco).
+        hoy = _el_ultimo(SABADO)
+        viernes = hoy - timedelta(days=1)
+        compra = viernes - timedelta(days=200)
+        yahoo = self._mercado(hoy, viernes)
+        self._sin_precios(yahoo, compra - timedelta(days=20), compra + timedelta(days=9))
+        serie = yahoo.series["MU"]
+        antes = max(d for d in serie if d <= compra)
+        despues = min(d for d in serie if d > compra)
+        hueco = {"desde": (antes + timedelta(days=1)).isoformat(), "hasta": (despues - timedelta(days=1)).isoformat()}
+        with self._un_dia(hoy, yahoo):
+            main._run_velas_diarias_job()
+            c = self._get(f"/api/comparar/precio?activos=MU&moneda=usd&plazo=compra&desde={compra.isoformat()}")
+        self.assertEqual((c["base"], c["base_corrida_por"], c["base_corrida_hueco"]), (despues.isoformat(), "MU", hueco))
+        self.assertAlmostEqual(self._serie(c, "MU")["final"], serie[viernes] / serie[despues] * 100, places=2)
+
     def test_con_el_ultimo_precio_a_10_dias_justos_arrancan_el_dia_pedido(self):
         # El borde: a 10 días justos todavía vale ese cierre, en las cuatro pantallas
         # (la ficha también da su número).

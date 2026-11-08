@@ -527,15 +527,15 @@ function dolares(x) {
 }
 
 describe('un hueco de precios justo antes del día de arranque (Nico, 08/11)', () => {
-  // HUECO sin precios del 01/10 al 15/11/2024: el día de arranque de «2 años» (30/10)
+  // ACME sin precios del 01/10 al 15/11/2024: el día de arranque de «2 años» (30/10)
   // cae adentro. La cartera arranca con el primer precio después y dice qué días faltan.
   const r = CASOS.hueco
   it('arranca con el primer precio después y lo dice', () => {
     expect([r.desde, r.recorte_por, r.recorte_hueco])
-      .toEqual(['2024-11-18', 'HUECO', { desde: '2024-10-01', hasta: '2024-11-17' }])
+      .toEqual(['2024-11-18', 'ACME', { desde: '2024-10-01', hasta: '2024-11-17' }])
     expect(lecturaCartera(r).avisos)
-      .toContain('Faltan los precios de HUECO del 01/10/24 al 17/11/24: la simulación arranca el 18/11/24.')
-    expect(lecturaCartera(r).avisos.join(' ')).not.toMatch(/Tenemos precios de HUECO desde/)
+      .toContain('Faltan los precios de ACME del 01/10/24 al 17/11/24: la simulación arranca el 18/11/24.')
+    expect(lecturaCartera(r).avisos.join(' ')).not.toMatch(/Tenemos precios de ACME desde/)
     expect(notaDelResumen(r)).toMatch(/^Del 18\/11\/24 al 30\/10\/26/)
   })
 
@@ -550,8 +550,10 @@ describe('un hueco de precios justo antes del día de arranque (Nico, 08/11)', (
   })
 
   it('si después del hueco quedan muy pocos días, lo dice así', () => {
-    const corta = { ...r, disponible: false, motivo: 'poca_historia' }
-    expect(motivoCartera(corta, 3)).toBe('Faltan los precios de HUECO del 01/10/24 al 17/11/24: después quedan muy '
+    // La respuesta del servidor, no una armada a mano (auditoría 08/11 de las pruebas, M18).
+    const corta = CASOS.hueco_pocos_dias
+    expect([corta.disponible, corta.motivo]).toEqual([false, 'poca_historia'])
+    expect(motivoCartera(corta, 3)).toBe('Faltan los precios de ACME del 01/10/24 al 20/09/26: después quedan muy '
       + 'pocos días para simular. Sacalo para probar el resto.')
     expect(motivoCartera(corta, 1)).toMatch(/: después quedan muy pocos días para simular\. Cambialo por otro\.$/)
   })

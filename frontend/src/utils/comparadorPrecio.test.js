@@ -1,6 +1,9 @@
 // La pestaña «Precio» de Comparar: qué se le pide al servidor (con las reglas
 // de la ficha para tus lotes) y las palabras de abajo. La cuenta del 100 la
 // prueba el servidor (backend/tests/test_comparar_precio.py).
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, it, expect, beforeEach } from 'vitest'
 import { setBrokersRegistry } from './valuation'
 import {
@@ -141,17 +144,20 @@ describe('el panel vacío cuando todo lo pedido está viejo (H1, 06/11)', () => 
   })
 })
 
+// Lo que contesta el servidor (backend/tests/test_comparar_precio.py, LoQueLeeLaPantalla).
+const COMPARAR = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)),
+  '../../../backend/tests/fixtures/comparar_precio.json'), 'utf8'))
+
 describe('por qué todos arrancan en 100 ese día', () => {
   // Un hueco de precios justo antes del día pedido: arrancan con el primer precio
-  // después, y se dice qué días faltan (Nico, 08/11). La forma la manda el servidor
-  // (backend/tests/test_ultimos_n_anios.py, `_arrancan_despues_del_hueco`).
-  it('el hueco, el que cotiza hace menos, el borde de lo guardado o nada', () => {
-    const hueco = { desde: '2025-09-23', hasta: '2025-10-19' }
-    expect(porQueArrancaAhi(res([], { base_corrida: true, base_corrida_por: 'MU', base_corrida_hueco: hueco })))
-      .toBe(' (faltan los precios de MU del 23/09/25 al 19/10/25)')
-    expect(porQueArrancaAhi(res([], { base_corrida: true, base_corrida_por: 'MU' })))
-      .toBe(' (de MU tenemos precios desde ese día)')
+  // después, y se dice qué días faltan (Nico, 08/11).
+  it('el hueco, el que cotiza hace menos o nada, como lo contesta el servidor', () => {
+    expect(porQueArrancaAhi(COMPARAR.hueco)).toBe(' (faltan los precios de MU del 15/10/25 al 17/11/25)')
+    expect(porQueArrancaAhi(COMPARAR.corrida_por)).toBe(' (de NUEV tenemos precios desde ese día)')
+    expect(porQueArrancaAhi(COMPARAR.normal)).toBe('')
+  })
+
+  it('el borde de lo guardado, sin un activo que lo explique', () => {
     expect(porQueArrancaAhi(res([], { base_corrida: true }))).toBe(' (los precios guardados empiezan ese día)')
-    expect(porQueArrancaAhi(res([]))).toBe('')
   })
 })

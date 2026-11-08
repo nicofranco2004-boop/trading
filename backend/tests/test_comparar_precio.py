@@ -18,6 +18,7 @@ Los casos que importan:
 
 Corre con: cd backend && python3 -m pytest tests/test_comparar_precio.py
 """
+import json
 import os
 import sys
 import unittest
@@ -410,6 +411,57 @@ class CompararUnViernes(CompararTest):
     """Las mismas, un viernes: el último precio es del jueves y «1 año» arranca un
     miércoles, con rueda."""
     DIA_DE_LA_SEMANA = 4
+
+
+def _habiles_entre(desde: date, hasta: date) -> list:
+    out, d = [], desde
+    while d <= hasta:
+        if d.weekday() < 5:
+            out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
+
+
+def _casos_de_la_pantalla():
+    """Las respuestas de Comparar que leen las pruebas de la pantalla
+    (utils/comparadorPrecio.test.js, components/fundamentals/PrecioComparado.render.test.jsx),
+    sin los puntos, que son largos: la salida de `comparar.comparar` con estas velas."""
+    dias = _habiles_entre(date(2024, 10, 1), date(2026, 11, 4))
+    velas = lambda fechas, f: [{"date": d, "close": f(i)} for i, d in enumerate(fechas)]
+    mu = velas(dias, lambda i: 100 + i * 0.1)
+    # «1 año» del 04/11/2026 arranca el 04/11/2025; sin precios del 15/10 al 17/11.
+    hueco = [v for v in mu if not "2025-10-15" <= v["date"] <= "2025-11-17"]
+    nuev = velas([d for d in dias if d >= "2026-01-05"], lambda i: 20 + i * 0.05)
+    sp = velas(dias, lambda i: 5000 + i)
+    casos = {}
+    for clave, series in (("normal", {"MU": mu}), ("hueco", {"MU": hueco}), ("corrida_por", {"MU": mu, "NUEV": nuev})):
+        with unittest.mock.patch("tecnico.serie", lambda c, a, m, l, **k: {"velas": series[a]}), \
+             unittest.mock.patch("tecnico.sp500", lambda c, m: sp):
+            r = comparar.comparar(None, [(a, False) for a in series], "usd", anios=1, hoy=date(2026, 11, 5))
+        for s in r["series"]:
+            s["puntos"] = s["puntos"][:1] + s["puntos"][-1:]
+        casos[clave] = {**r, "plazo": "1a"}
+    return json.loads(json.dumps(casos))
+
+
+class LoQueLeeLaPantalla(unittest.TestCase):
+
+    def test_las_pruebas_de_la_pantalla_leen_lo_que_da_el_servidor(self):
+        """fixtures/comparar_precio.json tiene que ser la salida de ESTE código, no una
+        armada a mano (auditoría 08/11 de las pruebas del hueco, F04). Para rearmarlo:
+        COMPARAR_REESCRIBIR=1."""
+        ruta = os.path.join(HERE, "fixtures", "comparar_precio.json")
+        casos = _casos_de_la_pantalla()
+        if os.environ.get("COMPARAR_REESCRIBIR"):
+            with open(ruta, "w") as f:
+                json.dump(casos, f, ensure_ascii=False, indent=1)
+        with open(ruta) as f:
+            self.assertEqual(json.load(f), casos)
+        h = casos["hueco"]
+        self.assertEqual((h["base"], h["base_corrida"], h["base_corrida_por"], h["base_corrida_hueco"]),
+                         ("2025-11-18", True, "MU", {"desde": "2025-10-15", "hasta": "2025-11-17"}))
+        self.assertEqual((casos["corrida_por"]["base"], casos["corrida_por"]["base_corrida_por"]), ("2026-01-05", "NUEV"))
+        self.assertEqual((casos["normal"]["base"], casos["normal"]["base_corrida"]), ("2025-11-04", False))
 
 
 class BaseCienTest(unittest.TestCase):

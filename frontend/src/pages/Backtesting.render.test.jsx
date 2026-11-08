@@ -234,6 +234,17 @@ describe('Análisis técnico → Backtesting', () => {
     expect(montado.t()).toContain('la media de 200 días necesita 200 días de precios antes: la prueba arranca el 17/04/25.')
   })
 
+  // Un hueco de precios justo antes del día de arranque: la página dice qué días faltan
+  // y desde cuándo se prueba, con la respuesta del servidor (test_backtest.py, `_con_hueco`).
+  // Ninguna prueba mostraba el caso en la página (auditoría 08/11 de las pruebas, F14).
+  it('un hueco de precios justo antes: dice qué días faltan y desde cuándo prueba', async () => {
+    respuesta = () => ({ ...GGAL.hueco, curva: [] })
+    montado = await abrir('/analisis-tecnico?tab=backtesting&activo=GGAL&reglas=rsi')
+    const t = montado.t()
+    expect(t).toContain('Faltan los precios de GGAL del 01/10/24 al 10/11/24: la prueba arranca el 12/11/24.')
+    expect(t).toContain('GGAL bajó 35% desde el cierre del 11/11/24')
+  })
+
   it('mientras otra persona baja los precios, lo dice en vez de quedar en gris', async () => {
     respuesta = () => ({ asset: 'NVDA', disponible: false, motivo: 'bajando' })
     montado = await abrir('/analisis-tecnico?tab=backtesting&activo=NVDA')

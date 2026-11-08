@@ -54,6 +54,12 @@ def _con_hueco(velas):
     return [v for v in velas if not "2024-10-01" <= v["date"] <= "2024-11-08"]
 
 
+def _con_hueco_largo(velas):
+    """GGAL sin precios del 01/10/2024 al 15/09/2026: después del hueco quedan menos
+    de `MIN_RUEDAS` ruedas. El caso «hueco_pocos_dias» de lo que lee la pantalla."""
+    return [v for v in velas if not "2024-10-01" <= v["date"] <= "2026-09-15"]
+
+
 def _ggal():
     with open(FIXTURE) as f:
         return [{"date": r["date"], "open": float(r["open"]), "high": float(r["high"]),
@@ -164,14 +170,18 @@ class ContraElEstudio(unittest.TestCase):
             guardado = json.load(f)
         casos = {",".join(p): (self.velas, p) for p in PRUEBAS_DE_LA_PANTALLA}
         casos["hueco"] = (_con_hueco(self.velas), ["rsi"])
+        casos["hueco_pocos_dias"] = (_con_hueco_largo(self.velas), ["rsi"])
         self.assertEqual(sorted(guardado), sorted(casos))
         for clave, (velas, reglas) in casos.items():
             with self.subTest(caso=clave):
                 r = backtest.probar(velas, reglas, 2, hoy=_al_dia(velas))
-                r.pop("curva")
+                r.pop("curva", None)                    # sin probar (pocos días), no hay curva
                 self.assertEqual(json.loads(json.dumps({"asset": "GGAL", **r})), guardado[clave])
         # El caso del hueco: la prueba arranca la rueda después del primer precio
         # después del hueco, y el precio se mide desde ese cierre.
+        p = guardado["hueco_pocos_dias"]
+        self.assertEqual((p["disponible"], p["motivo"], p["recorte_por"], p["recorte_hueco"]),
+                         (False, "poca_historia", None, {"desde": "2024-10-01", "hasta": "2026-09-15"}))
         h = guardado["hueco"]
         self.assertEqual((h["recortado"], h["recorte_por"], h["recorte_hueco"], h["variacion_desde"], h["desde"]),
                          (True, None, {"desde": "2024-10-01", "hasta": "2024-11-10"}, "2024-11-11", "2024-11-12"))

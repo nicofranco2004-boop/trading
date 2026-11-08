@@ -669,9 +669,15 @@ def _casos_de_la_pantalla():
                                   {"sp500": sp, "nasdaq": nq}, 3, HOY),
         # Un hueco de precios justo antes del día de arranque (30/10/2024): arranca
         # con el primero después y lo dice (Nico, 08/11).
-        "hueco": cs.simular(activos[:2] + [_activo("HUECO", 20, [v for v in _habiles(800, lambda i: 30 + i * 0.01)
-                                                                 if not "2024-10-01" <= v["date"] <= "2024-11-15"])],
+        # Se llama ACME: entre AAPL y GGAL en el abecedario, el desempate viejo por
+        # nombre no lo elegía por casualidad (auditoría 08/11 de las pruebas del hueco).
+        "hueco": cs.simular(activos[:2] + [_activo("ACME", 20, [v for v in _habiles(800, lambda i: 30 + i * 0.01)
+                                                                if not "2024-10-01" <= v["date"] <= "2024-11-15"])],
                             {"sp500": sp, "nasdaq": nq}, 2, HOY),
+        # Después del hueco quedan muy pocos días para simular: lo dice así.
+        "hueco_pocos_dias": cs.simular(activos[:2] + [_activo("ACME", 20, [
+            v for v in _habiles(800, lambda i: 30 + i * 0.01) if not "2024-10-01" <= v["date"] <= "2026-09-20"])],
+            {"sp500": sp, "nasdaq": nq}, 2, HOY),
         # El hueco, en el corte de «1 año» (30/10/2025) de una de 2 años: «Año por año»
         # no dice que da lo mismo que «1 año» (auditoría 08/11 del hueco, H3).
         "hueco_en_un_corte": cs.simular(activos[:2] + [_activo("HUECO2", 20, [
@@ -725,7 +731,10 @@ class LoQueLeeLaPantalla(unittest.TestCase):
                              if n != "hueco_en_un_corte" and c.get("anio_por_anio")))
         h = casos["hueco"]
         self.assertEqual((h["desde"], h["recortado"], h["recorte_por"], h["recorte_hueco"]),
-                         ("2024-11-18", True, "HUECO", {"desde": "2024-10-01", "hasta": "2024-11-17"}))
+                         ("2024-11-18", True, "ACME", {"desde": "2024-10-01", "hasta": "2024-11-17"}))
+        p = casos["hueco_pocos_dias"]
+        self.assertEqual((p["disponible"], p["motivo"], p["recorte_por"], p["recorte_hueco"]),
+                         (False, "poca_historia", "ACME", {"desde": "2024-10-01", "hasta": "2026-09-20"}))
 
     def test_las_pruebas_de_la_pantalla_leen_la_cartera_de_hoy_que_da_el_servidor(self):
         """fixtures/cartera_de_hoy.json, lo mismo para «Mi cartera de hoy»: la salida de

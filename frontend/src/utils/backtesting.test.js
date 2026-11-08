@@ -220,7 +220,7 @@ describe('una regla: lo que dicen los números', () => {
   })
 
   it('A3: ninguna regla general en presente («estar afuera ayuda»)', () => {
-    for (const r of Object.values(GGAL)) {
+    for (const r of Object.values(GGAL).filter(x => x.disponible)) {
       expect(lectura(r).frases.join(' '), r.reglas.join(',')).not.toMatch(/ayuda|cuando el precio/i)
     }
   })
@@ -424,7 +424,10 @@ describe('nunca promete', () => {
     const motivos = ['sin_serie', 'sin_datos', 'tope', 'bajando', 'demo', 'poca_historia']
       .map(motivo => motivoEnPalabras({ motivo, recorte_por: 'media200', reglas: ['rsi', 'media200'] }, 'GGAL'))
     const textos = [
-      ...Object.values(GGAL).flatMap(r => { const l = lectura(r); return [l.titulo, ...l.frases, textoDelRecorte(r) || ''] }),
+      ...Object.values(GGAL).filter(r => r.disponible)
+        .flatMap(r => { const l = lectura(r); return [l.titulo, ...l.frases, textoDelRecorte(r) || ''] }),
+      // Las que no se pudieron probar (pocos días después de un hueco), con su motivo.
+      ...Object.values(GGAL).filter(r => !r.disponible).map(r => motivoEnPalabras(r)),
       ...REGLAS.flatMap(r => [r.nombre, r.corto, r.explica, r.necesita]),
       ...motivos, comoSeSimula(RSI), comoSeSimula(GGAL['rsi,adx_squeeze']), queSePrueba(false), queSePrueba(true),
     ].join(' ')
@@ -442,7 +445,10 @@ describe('un hueco de precios justo antes del día de arranque (Nico, 08/11)', (
   })
 
   it('si después del hueco quedan muy pocos días, lo dice así', () => {
-    expect(motivoEnPalabras({ ...H, disponible: false, motivo: 'poca_historia' }))
-      .toBe('Faltan los precios de GGAL del 01/10/24 al 10/11/24: después quedan muy pocos días para probar una regla.')
+    // La respuesta del servidor, no una armada a mano (auditoría 08/11 de las pruebas, M25).
+    const corta = GGAL.hueco_pocos_dias
+    expect([corta.disponible, corta.motivo]).toEqual([false, 'poca_historia'])
+    expect(motivoEnPalabras(corta))
+      .toBe('Faltan los precios de GGAL del 01/10/24 al 15/09/26: después quedan muy pocos días para probar una regla.')
   })
 })

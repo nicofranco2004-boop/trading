@@ -743,7 +743,8 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
       todos_restan: `${DE_CERO}&activos=BAJA1,BAJA2&pesos=60,40&anios=1`,
       tres_anios: `${DE_CERO}&activos=AAPL,GGAL,BTC&pesos=50,30,20&local=GGAL&anios=3`,
       tramo_corto: `${DE_CERO}&activos=AAPL,GGAL,NUEVA&pesos=50,30,20&local=GGAL&anios=3`,
-      hueco: `${DE_CERO}&activos=AAPL,GGAL,HUECO&pesos=50,30,20&local=GGAL&anios=2`,
+      hueco: `${DE_CERO}&activos=AAPL,GGAL,ACME&pesos=50,30,20&local=GGAL&anios=2`,
+      hueco_pocos_dias: `${DE_CERO}&activos=AAPL,GGAL,ACME&pesos=50,30,20&local=GGAL&anios=2`,
       hueco_en_un_corte: `${DE_CERO}&activos=AAPL,GGAL,HUECO2&pesos=50,30,20&local=GGAL&anios=2`,
     }
     expect(Object.keys(DE).sort()).toEqual(Object.keys(CASOS).sort())
