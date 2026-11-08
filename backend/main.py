@@ -46606,8 +46606,27 @@ def import_tenencia_preview(
                 "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                 (uid, bname)).fetchone()
             return float(row["invested"] or 0) if row else 0.0
-        _sib = next((b for b in _import_persister.broker_pair(conn, uid, broker) if b != broker), None)
+        _par_caja = list(_import_persister.broker_pair(conn, uid, broker))
+        _sib = next((b for b in _par_caja if b != broker), None)
         _adj = []
+        # 🔴 LA CAJA DE HOY NO ES LA DE LA FECHA DE LA FOTO. Las tenencias se
+        # comparan a la fecha de la foto (`_qty_a_fecha`); la caja se comparaba
+        # con la de HOY. Una foto del 05/09 que dice $500, subida después de un
+        # cobro de $1.000.000 del 20/10, retiraba el millón (medido el 07/11, en
+        # todos los brokers que pasan por acá). Rodar la caja hacia atrás sería un
+        # segundo motor de caja; lo que no se puede rodar no se adivina: con plata
+        # movida después de la foto, la caja NO se ajusta y se avisa por qué.
+        _plata_post = (_import_proyeccion.plata_posterior(
+                           conn, uid, pair=_par_caja, fecha=seed_date)
+                       if (snap.cash_ars is not None or snap.cash_usd is not None) else [])
+        caja_sin_ajustar = None
+        if _complete and _plata_post:
+            caja_sin_ajustar = {"motivo": "movimientos_posteriores", "fecha_foto": seed_date,
+                                "movimientos": len(_plata_post),
+                                "hasta": max(m["fecha"] for m in _plata_post)}
+            log.info("tenencia cash true-up SALTEADO uid=%s broker=%s: %d movimientos de "
+                     "plata posteriores a la foto (%s, hasta %s)", uid, broker,
+                     len(_plata_post), seed_date, caja_sin_ajustar["hasta"])
         # El true-up del efectivo sólo corre si la foto se leyó ENTERA. Los
         # parsers dejan cash_ars/cash_usd en 0.0 —no None— cuando el archivo no
         # trae filas de saldo, así que sobre una lectura PARCIAL el ajuste
@@ -46618,6 +46637,8 @@ def import_tenencia_preview(
         if not _complete:
             log.info("tenencia cash true-up SALTEADO uid=%s broker=%s: foto parcial "
                      "(cash_ars=%s cash_usd=%s)", uid, broker, snap.cash_ars, snap.cash_usd)
+        elif caja_sin_ajustar:
+            pass
         else:
             # Cualquier foto que PISA: si trae USD MATERIAL (≥ 1) y no hay sibling '· USD'
             # (el usuario no tuvo movimientos en dólares), lo CREAMOS para dejar el saldo en
@@ -46799,12 +46820,21 @@ def import_tenencia_preview(
                             "indique su fecha."),
             }
         if not seed_txs and not _fund_overrides:
+            # Sin caja comparada, "tu cartera ya coincide" afirmaría algo que no se
+            # miró: se dice qué coincide y qué no se pudo comparar.
+            _msg = "Tu cartera ya coincide con la foto — no hay nada que completar."
+            if caja_sin_ajustar:
+                _f = caja_sin_ajustar["fecha_foto"]
+                _msg = (f"Tus tenencias coinciden con la foto. El efectivo no lo comparamos: "
+                        f"la foto es del {_f[8:10]}/{_f[5:7]}/{_f[:4]} y después hubo "
+                        f"movimientos de plata, así que no sabemos cuánto tenías ese día.")
             return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
                     "foto_completa": _foto_completa, "warnings": _warnings,
                     "tickers_normalizados": tickers_normalizados,
                     "fecha_origen": fecha_origen, "fecha_usada": seed_date,
                     "avisos_escala": _avisos_escala,
-                    "message": "Tu cartera ya coincide con la foto — no hay nada que completar."}
+                    "caja_sin_ajustar": caja_sin_ajustar,
+                    "message": _msg}
         with conn:
             sid = _import_pipeline.store_preview_txs(
                 conn, uid, broker=broker, parser_format=parser_format,
@@ -46829,6 +46859,9 @@ def import_tenencia_preview(
             "cash_ajustes": [{"broker": _b, "moneda": _ccy, "rendi": round(_cur, 2),
                               "foto": round(_tgt, 2), "diff": round(_diff, 2)}
                              for _b, _ccy, _cur, _tgt, _diff in _cash_applied],
+            # Cuando el ajuste NO corrió porque hubo plata movida después de la
+            # foto: la pantalla lo dice en vez de mostrar un efectivo "en orden".
+            "caja_sin_ajustar": caja_sin_ajustar,
             "date": snap.date,
             "matched": len(rec.matched),
             "foto_completa": _foto_completa,

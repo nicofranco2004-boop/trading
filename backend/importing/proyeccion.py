@@ -169,6 +169,52 @@ def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
     return limpio, no_rec
 
 
+def plata_posterior(conn, uid: int, *, pair: List[str], fecha: str) -> List[dict]:
+    """Movimientos de PLATA del par posteriores a la fecha de la foto.
+
+    Es el otro lado de `proyectar` para la caja. El ajuste de efectivo de la foto
+    comparaba la caja de HOY contra la de la foto: con una foto del 05/09 y un
+    cobro del 20/10, el ajuste retiraba el cobro (medido el 07/11: $1.000.000 →
+    $500). Para las tenencias eso no pasa porque `proyectar` deshace lo posterior;
+    para la plata NO se deshace —haría falta repetir las reglas de caja del
+    persister, un segundo motor de caja—, así que la decisión es la del paso 4 de
+    `proyectar`: lo que no se puede rodar hacia atrás no se adivina. Si esto
+    devuelve algo, el ajuste de efectivo no corre.
+
+    «Posterior» es lo mismo que en `proyectar`: fecha estrictamente mayor que la
+    de la foto. Cuenta TODO lo que mueve plata del par:
+      · lo importado (cualquier tipo: una compra también saca plata);
+      · los depósitos y retiros a mano (`flujos_a_mano`); los que no tienen día
+        (conciliación, edición de /mensual) cuentan por el día en que se cargaron;
+      · las operaciones a mano (alta/venta desde la pantalla).
+    """
+    D = str(fecha)[:10]
+    ph = ",".join("?" * len(pair))
+    out: List[dict] = []
+    for r in conn.execute(
+            f"""SELECT n.date d, n.broker b, n.operation_type op FROM {TX_VIVAS}
+                 WHERE b.user_id=? AND n.broker IN ({ph}) AND n.date > ?""",
+            (uid, *pair, D)):
+        out.append({"origen": "importado", "fecha": str(r["d"])[:10], "broker": r["b"],
+                    "tipo": r["op"]})
+    for r in conn.execute(
+            f"""SELECT fecha, cargado_at, broker, direction FROM flujos_a_mano
+                 WHERE user_id=? AND broker IN ({ph}) AND anulado_at IS NULL
+                   AND COALESCE(fecha, SUBSTR(cargado_at, 1, 10)) > ?""",
+            (uid, *pair, D)):
+        out.append({"origen": "a_mano", "fecha": str(r["fecha"] or r["cargado_at"])[:10],
+                    "broker": r["broker"], "tipo": r["direction"]})
+    for r in conn.execute(
+            f"""SELECT o.date d, o.broker b FROM operations o
+                 WHERE o.user_id=? AND o.date > ? AND o.broker IN ({ph})
+                   AND NOT EXISTS (SELECT 1 FROM import_op_links l
+                                    WHERE l.operation_id = o.id)""",
+            (uid, D, *pair)):
+        out.append({"origen": "operacion_a_mano", "fecha": str(r["d"])[:10],
+                    "broker": r["b"], "tipo": "operacion"})
+    return out
+
+
 MOTIVO_NO_VERIFICA = "proyeccion_no_verifica"
 
 # 🔴 TRES ESTADOS, Y NINGUNO PUEDE COLAPSAR CON OTRO.

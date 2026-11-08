@@ -2242,6 +2242,15 @@ export function ReconcileStep({ data, decisiones, onDecidir, sujeto = 'vos' }) {
         </RecSection>
       )}
 
+      {/* La caja de hoy no es la de la fecha de la foto: con plata movida
+          después, el servidor no ajusta el efectivo. Se dice, para que nadie
+          lea la ausencia de ajuste como «el efectivo coincide». */}
+      {data.caja_sin_ajustar && (
+        <RecSection titulo="Efectivo sin comparar"
+                    sub={`La foto es del ${fechaCorta(data.caja_sin_ajustar.fecha_foto)} y después hubo movimientos de plata (hasta el ${fechaCorta(data.caja_sin_ajustar.hasta)}). No sabemos cuánto efectivo había ese día, así que no lo tocamos.`}
+                    chip={<Chip ok={false} no="no se ajusta" />} tono="warn" />
+      )}
+
       {(data.tickers_normalizados || []).length > 0 && (
         <p className="text-[11px] text-ink-3">
           Ajustamos {data.tickers_normalizados.length} nombre(s) de la foto para que coincidan
@@ -2251,6 +2260,12 @@ export function ReconcileStep({ data, decisiones, onDecidir, sujeto = 'vos' }) {
       )}
     </div>
   )
+}
+
+/** 'AAAA-MM-DD' → 'DD/MM/AAAA' (las fechas que manda el servidor). */
+function fechaCorta(iso) {
+  const s = String(iso || '')
+  return s.length >= 10 ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}` : s
 }
 
 function RecSection({ titulo, sub, chip, tono, children }) {
@@ -3153,7 +3168,9 @@ function DoneStep({ result }) {
           result.tenencia.error ? (
             <p className="text-xs text-rendi-warn px-4">Los Movimientos se importaron bien, pero no pudimos aplicar la foto de tenencia ({result.tenencia.error}). Volvé a importar incluyéndola — no duplicamos lo que ya está.</p>
           ) : result.tenencia.nothing_to_do ? (
-            <p className="text-xs text-ink-3">Tu tenencia ya coincidía con lo importado.</p>
+            <p className="text-xs text-ink-3">{result.tenencia.caja_sin_ajustar
+              ? result.tenencia.message
+              : 'Tu tenencia ya coincidía con lo importado.'}</p>
           ) : (result.tenencia.to_seed?.length > 0) ? (
             <p className="text-xs text-rendi-pos">+ completamos <strong className="tabular">{result.tenencia.to_seed.length}</strong> posiciones que ya tenías, desde tu foto de tenencia (Tenencia / Estado de Cuenta).</p>
           ) : null
