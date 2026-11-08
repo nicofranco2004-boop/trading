@@ -978,6 +978,20 @@ def _falta_estructural(asset_type, base_sym, universo_bonos):
     return True
 
 
+def cuenta_con_cartera(conn, uid: int, *, con_posiciones: bool = True) -> bool:
+    """¿Hay algo que fotografiar? La regla de `take_snapshot_for_user` para no
+    escribir una foto: sin brokers o sin posiciones, no hay.
+
+    `con_posiciones=False` es la del POST /api/snapshots del navegador: allá se
+    fotografían también las cuentas cargadas a mano por mes, que no tienen
+    posiciones; lo que no puede pasar es fotografiar una cuenta sin brokers
+    (vaciada con «Empezar de cero», con la pestaña vieja abierta en otro lado)."""
+    if conn.execute("SELECT 1 FROM brokers WHERE user_id=? LIMIT 1", (uid,)).fetchone() is None:
+        return False
+    return (not con_posiciones
+            or conn.execute("SELECT 1 FROM positions WHERE user_id=? LIMIT 1", (uid,)).fetchone() is not None)
+
+
 def take_snapshot_for_user(
     conn: sqlite3.Connection,
     uid: int,
@@ -1181,6 +1195,17 @@ def take_snapshot_for_user(
     # espera. Es la misma ventana que tenía SQLite (lee, busca precios, escribe).
     if tomar_turno is not None:
         tomar_turno(conn, uid)
+    # Y con el turno tomado, la MISMA regla del principio («sin brokers o sin
+    # posiciones no hay foto»), preguntada de nuevo: lo de arriba se leyó sin el
+    # turno y después se salió a la red, y en esa ventana la persona pudo vaciar
+    # la cuenta («Empezar de cero», borrar su último broker). Escribir igual
+    # dejaba una foto 'cron' con la cartera de ANTES que ya nadie borraba: la del
+    # navegador no pisa una del cron, la reconstrucción sólo toca las suyas y el
+    # cron siguiente saltea la cuenta por vacía (auditoría del 07/11, medido).
+    if not cuenta_con_cartera(conn, uid):
+        log.info(f"user={uid}: la cuenta se vació mientras se valuaba, no se escribe la foto")
+        return {'ok': False, 'reason': 'no_data', 'total_value': 0,
+                'total_invested': 0, 'net_deposited': 0, 'symbols_fetched': len(all_symbols)}
     # SQLite UPSERT syntax: INSERT...ON CONFLICT(user_id, date) DO UPDATE
     # Phase C: stampamos fx_to_usd_blue (= tc_blue del día) para que cuando
     # el user mire la curva en ARS, cada punto use SU PROPIO blue (no el de hoy).

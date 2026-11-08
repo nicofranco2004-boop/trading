@@ -12,7 +12,7 @@
 // Desktop: PageHeader + sub-sidebar vertical + contenido de la sección activa.
 // Mobile:  lista de secciones (sin ?tab) → drill-in a la sección (con back).
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap, Loader2,
@@ -46,6 +46,8 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { alTerminar, vecesMas } from '../data/prueba'
 import { TRIAL_TOTAL_DAYS, TRIAL_PLUS_DAYS, FREE_FEATURES, PRO_FEATURES } from '../data/planCatalog'
 import { confirmar } from '../utils/confirmar'
+import { clearChatSession } from '../utils/chatSession'
+import { seguirElBorrado as seguirElBorradoHasta } from '../utils/seguirElBorrado'
 import { brokersParaElegir } from '../utils/pataDeLaMoneda'
 import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
@@ -262,10 +264,30 @@ export default function Config() {
   const isMobile = useIsMobile()
   const [searchParams, setSearchParams] = useSearchParams()
   const [delState, setDelState] = useState({ loading: false, error: '' })
-  // `pct`/`tabla` alimentan la barra. El reset puede tardar minutos en una cuenta
-  // con mucho import, y "Reseteando…" a secas no se distingue de un cuelgue —
+  // `pct`/`etapa` alimentan la barra. El reset puede tardar en una cuenta con
+  // mucho import, y "Reseteando…" a secas no se distingue de un cuelgue —
   // reporte textual del usuario: "no sé si estaría cargando o si está bugeado".
-  const [resetState, setResetState] = useState({ loading: false, error: '', pct: 0, tabla: null })
+  // `etapa` es el texto que arma el servidor ("tus importaciones"), nunca el
+  // nombre interno de una tabla.
+  const [resetState, setResetState] = useState({ loading: false, error: '', pct: 0, etapa: null })
+  // Mientras la página está montada. Al irse a otra pantalla el seguimiento se
+  // corta: antes seguía solo y, al terminar el borrado, mandaba a la persona al
+  // inicio desde donde estuviera (con un formulario o un import a medio hacer).
+  const resetMontado = useRef(true)
+  useEffect(() => {
+    resetMontado.current = true
+    return () => { resetMontado.current = false }
+  }, [])
+  // Si el borrado ya estaba corriendo (la persona se fue y volvió, o recargó),
+  // retomar la barra en vez de ofrecer el botón como si nada pasara.
+  useEffect(() => {
+    let cancelado = false
+    api.get('/me/reset-data/status')
+      .then(st => { if (!cancelado && st?.estado === 'corriendo') seguirElBorrado() })
+      .catch(() => {})
+    return () => { cancelado = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [brokers, setBrokers] = useState([])  // sólo para contador en "Cuenta"
   const [dolar, setDolar] = useState(null)
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
@@ -360,43 +382,54 @@ export default function Config() {
 
   async function resetData() {
     // Doble confirmación: es destructivo (irreversible) aunque conserve la cuenta.
+    // Lo que dice que se borra y lo que se conserva tiene que coincidir con
+    // `_RESET_PORTFOLIO_TABLES` del servidor: si cambia una, cambia la otra.
     const ok = await confirmar(
       'Vas a EMPEZAR DE CERO.\n\n' +
-      'Se borra toda tu cartera: brokers, posiciones, operaciones, imports, historial y ' +
-      'snapshots, como si recién entraras a Rendi. Tu cuenta, tu plan y tus credenciales de ' +
-      'brokers NO se tocan.\n\nEsta acción NO se puede deshacer. ¿Seguís?')
+      'Se borra toda tu cartera: brokers, posiciones, operaciones, importaciones, ' +
+      'historial, objetivos, plazos fijos y lo que le contaste a Mervall-E AI sobre ella.\n\n' +
+      'Se conservan tu cuenta, tu plan, las claves de tus brokers, tus alertas, tu lista de ' +
+      'seguimiento y tus preferencias.\n\nEsta acción NO se puede deshacer. ¿Seguís?',
+      { si: 'Seguir', peligro: true })
     if (!ok) return
-    const ok2 = await confirmar('Última confirmación: se borra TODA tu cartera. ¿Empezar de cero?')
+    const ok2 = await confirmar(
+      'Última confirmación: se borra TODA tu cartera y no hay forma de recuperarla.',
+      { si: 'Borrar mi cartera', peligro: true })
     if (!ok2) return
-    setResetState({ loading: true, error: '', pct: 0, tabla: null })
+    setResetState({ loading: true, error: '', pct: 0, etapa: null })
     try {
       // Arranca y vuelve al instante: el borrado corre en el server, por tandas.
       await api.post('/me/reset-data')
     } catch (err) {
-      setResetState({ loading: false, error: err.message || 'No se pudo resetear los datos.', pct: 0, tabla: null })
+      // Sin `status` no hubo respuesta: la red. El texto crudo del navegador
+      // ("Failed to fetch") está en inglés y no dice qué hacer.
+      setResetState({ loading: false, pct: 0, etapa: null, error: err?.status
+        ? (err.message || 'No se pudo empezar de cero.')
+        : 'No pudimos conectarnos con el servidor. Revisá tu conexión y probá de nuevo.' })
       return
     }
-    // Polleo el progreso. Un fallo suelto del GET no cancela nada: el trabajo
-    // sigue del lado del server, así que reintentamos en el próximo tick en vez
-    // de mostrar un error que no es.
-    while (true) {
-      await new Promise(r => setTimeout(r, 700))
-      let st
-      try {
-        st = await api.get('/me/reset-data/status')
-      } catch { continue }
-      if (st.estado === 'corriendo') {
-        setResetState({ loading: true, error: '', pct: st.pct || 0, tabla: st.tabla })
-        continue
-      }
-      if (st.estado === 'error') {
-        setResetState({ loading: false, error: st.error || 'No se pudo resetear los datos.', pct: 0, tabla: null })
-        return
-      }
+    await seguirElBorrado()
+  }
+
+  // Mira el progreso hasta que el servidor dice cómo terminó. Sólo 'listo' es
+  // terminado: los demás finales y su porqué están en utils/seguirElBorrado.js.
+  async function seguirElBorrado() {
+    setResetState(s => ({ ...s, loading: true, error: '' }))
+    const r = await seguirElBorradoHasta({
+      pedir: () => api.get('/me/reset-data/status'),
+      sigue: () => resetMontado.current,
+      alAvanzar: (st) => setResetState({ loading: true, error: '', pct: st.pct || 0, etapa: st.etapa || null }),
+    })
+    if (r.fin === 'desmontado') return
+    if (r.fin === 'listo') {
+      // La conversación con Mervall-E vive en la pestaña: sin esto, después de
+      // la recarga seguía hablando de la cartera recién borrada.
+      clearChatSession()
       // Recarga dura: la app vuelve a arrancar sin cartera, como una cuenta nueva.
       window.location.href = '/'
       return
     }
+    setResetState({ loading: false, pct: 0, etapa: null, error: r.mensaje })
   }
 
   async function deleteAccount() {
@@ -577,17 +610,22 @@ export default function Config() {
             alternativa al "borrar la cuenta y recrearla" para quien siente que
             al re-importar le quedan arrastres de datos viejos: acá el reset
             limpia también los overlays que sobreviven a un re-import (splits,
-            operaciones borradas, fotos de tenencia, el TC histórico). */}
-        <Panel padding="none" className="border-amber-500/30">
-          <div className="px-4 py-3 border-b border-amber-500/20 flex items-center gap-2">
-            <RotateCcw size={14} className="text-amber-500" strokeWidth={1.75} />
-            <h2 className="text-sm font-medium text-amber-500">Empezar de cero</h2>
+            operaciones borradas, fotos de tenencia, el TC histórico).
+            Color: el token del tema `rendi-warn` y no `amber-500`. Con `amber-500`
+            el borde del Panel salía gris (pierde contra `border-line`, R5 de
+            frontend/CLAUDE.md) y el texto, en modo claro, quedaba en 2:1 de
+            contraste; el token va después de `line` en la hoja y da 5,9:1. */}
+        <Panel padding="none" className="border-rendi-warn/30">
+          <div className="px-4 py-3 border-b border-rendi-warn/20 flex items-center gap-2">
+            <RotateCcw size={14} className="text-rendi-warn" strokeWidth={1.75} />
+            <h2 className="text-sm font-medium text-rendi-warn">Empezar de cero</h2>
           </div>
           <div className="px-4 py-4 flex items-center justify-between gap-4 flex-wrap">
             <p className="text-xs text-ink-3 leading-relaxed max-w-md">
-              Borra <b>toda tu cartera</b> (brokers, posiciones, operaciones, imports, historial y
-              snapshots) para volver a importar desde cero, sin arrastres. Tu cuenta, tu plan y las
-              credenciales de brokers <b>se conservan</b>. Esta acción <b>no se puede deshacer</b>.
+              Borra <b>toda tu cartera</b> (brokers, posiciones, operaciones, importaciones,
+              historial, objetivos y plazos fijos) para volver a cargarla desde cero, sin arrastres.
+              Tu cuenta, tu plan, las claves de tus brokers, tus alertas y tu lista de seguimiento
+              <b> se conservan</b>. Esta acción <b>no se puede deshacer</b>.
             </p>
             <div className="flex flex-col items-end gap-1">
               {/* Estuvo pausado del 13/08 al pasaje a Postgres: sobre SQLite, de un
@@ -598,30 +636,34 @@ export default function Config() {
               <button
                 onClick={resetData}
                 disabled={resetState.loading}
-                className="inline-flex items-center gap-1.5 text-xs bg-amber-500/10 hover:bg-amber-500/15 text-amber-500 border border-amber-500/30 px-3 py-2 rounded-sm transition-colors disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 text-xs bg-rendi-warn/10 hover:bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30 px-3 py-2 rounded-sm transition-colors disabled:opacity-50"
               >
                 <RotateCcw size={12} strokeWidth={1.75} />
                 {resetState.loading ? 'Borrando…' : 'Empezar de cero'}
               </button>
               {/* Barra + qué está borrando. Sin esto el botón decía "Reseteando…"
                   durante minutos y no se distinguía de un cuelgue. El % es real:
-                  sale de filas borradas sobre filas contadas al empezar. */}
+                  sale de filas borradas sobre filas contadas al empezar. El
+                  texto va FUERA del progressbar (adentro, el lector de pantalla
+                  no lo lee) y en una región que se anuncia sola; mientras cuenta,
+                  la barra no dice un 0 que no es. */}
               {resetState.loading && (
-                <div className="w-52 flex flex-col gap-1" role="progressbar"
-                     aria-valuenow={Math.round(resetState.pct)} aria-valuemin={0} aria-valuemax={100}
-                     aria-label="Progreso del borrado">
-                  <div className="h-1 w-full bg-amber-500/15 rounded-full overflow-hidden">
+                <div className="w-52 flex flex-col gap-1">
+                  <div className="h-1 w-full bg-rendi-warn/15 rounded-full overflow-hidden"
+                       role="progressbar" aria-label="Progreso del borrado"
+                       aria-valuemin={0} aria-valuemax={100}
+                       aria-valuenow={resetState.etapa ? Math.round(resetState.pct) : undefined}>
                     <div
-                      className="h-full bg-amber-500 rounded-full transition-[width] duration-500 ease-out"
+                      className="h-full bg-rendi-warn rounded-full transition-[width] duration-500 ease-out"
                       style={{ width: `${Math.max(2, Math.min(100, resetState.pct))}%` }}
                     />
                   </div>
-                  <span className="text-[11px] text-ink-3 tabular-nums">
-                    {resetState.tabla ? `Borrando ${resetState.tabla}…` : 'Contando lo que hay que borrar…'}
+                  <span className="text-[11px] text-ink-3 tabular-nums" aria-live="polite">
+                    {resetState.etapa ? `Borrando ${resetState.etapa}…` : 'Contando lo que hay que borrar…'}
                   </span>
                 </div>
               )}
-              {resetState.error && <span className="text-[11px] text-rendi-neg max-w-52 text-right">{resetState.error}</span>}
+              {resetState.error && <span role="alert" className="text-[11px] text-rendi-neg max-w-52 text-right">{resetState.error}</span>}
             </div>
           </div>
         </Panel>

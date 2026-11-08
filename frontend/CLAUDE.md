@@ -129,9 +129,12 @@ El fix es el modificador important de Tailwind: `!border-data-violet/30`. Es el 
 `!` del repo a propósito — no es un idioma para usar en cualquier lado, es la salida para
 *pisar un default que emite un átomo*. Único uso hoy: la tarjeta de Mervall-E AI en `More.jsx`.
 
-**`Config.jsx:500` tiene HOY este bug sin arreglar**: pide `border-amber-500/30` y renderiza
-gris. `Config.jsx:554` (`border-rendi-neg/30`) zafa sólo porque `rendi-neg` va después de
-`line` en el alfabeto. Queda anotado, no arreglado.
+**El panel «Empezar de cero» de `Config.jsx` tuvo este bug hasta 2026-11**: pedía
+`border-amber-500/30` y renderizaba gris. Se arregló cambiando al token del tema
+`rendi-warn` (que además da contraste en modo claro: `amber-500` quedaba en 2:1) y no con
+`!`: `rendi-warn`, como `rendi-neg` en el panel de «Eliminar cuenta», va después de `line`
+en el alfabeto. Ojo que eso es por casualidad alfabética: un color nuevo anterior a `line`
+vuelve a caer en la trampa.
 
 Para re-verificarlo: `npm run build` y buscar en `dist/assets/*.css` el offset de cada
 `.border-*` — el que aparece más adelante es el que pinta.

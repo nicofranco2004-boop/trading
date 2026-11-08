@@ -117,6 +117,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from snapshots_job import (
     run_daily_snapshot,
+    cuenta_con_cartera,
     compute_live_portfolio_value,
     fetch_prices_for_symbols,
     compute_broker_value_usd,
@@ -6321,19 +6322,25 @@ def _reset_data_worker(uid: int, *, tablas: tuple = None, toda_la_config: bool =
     """
     conn = get_db()
     try:
+        tablas = tablas or _RESET_PORTFOLIO_TABLES
         # Plan de trabajo + total, para que la barra sea real y no una animación.
-        plan = _reset_plan(conn, uid, tablas or _RESET_PORTFOLIO_TABLES)
+        plan = _reset_plan(conn, uid, tablas)
 
+        # Se saltea SÓLO una tabla que no existe (una base vieja), preguntándole
+        # al catálogo. Antes se salteaba cualquier error al contar, y en Postgres
+        # eso incluye una consulta cancelada o una conexión que se cae: la tabla
+        # quedaba sin borrar y el borrado decía «listo» (auditoría del 07/11,
+        # medido). Ahora un error así corta y la persona ve «volvé a tocar».
+        existen = {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         total = 0
         vivas = []
         for t, where, args in plan:
-            try:
-                total += conn.execute(f"SELECT COUNT(*) FROM {t} WHERE {where}", args).fetchone()[0]
-                vivas.append((t, where, args))
-            except ERR_OPERACIONAL as ex:
-                # Tabla ausente en una DB vieja: se saltea, pero se LOGUEA — un
-                # `pass` mudo convertía un reset PARCIAL en un "ok" indistinguible.
-                log.warning("reset uid=%s: no puedo contar %s (%s)", uid, t, ex)
+            if t not in existen:
+                log.warning("reset uid=%s: la tabla %s no existe en esta base, se saltea", uid, t)
+                continue
+            total += conn.execute(f"SELECT COUNT(*) FROM {t} WHERE {where}", args).fetchone()[0]
+            vivas.append((t, where, args))
         _reset_set(uid, estado="corriendo", total=total, hechas=0, tabla=None, cleared={})
 
         cleared = {}
@@ -6365,26 +6372,123 @@ def _reset_data_worker(uid: int, *, tablas: tuple = None, toda_la_config: bool =
             if n:
                 cleared["users.investor_profile"] = n
 
+        # Las claves de los brokers se conservan, pero la marca de Wallbit de
+        # «hasta dónde ya traje» es CARTERA: con ella, la primera sincronización
+        # después de vaciar la cuenta traía sólo los últimos 3 días y el resto de
+        # la historia no volvía (auditoría del 07/11). Sin marca, trae todo, como
+        # al conectar por primera vez (`_wallbit_last_from_date`). La de `iol_lab`
+        # no se toca: ahí dice cuándo renovar una clave, no qué datos hay.
+        if "user_broker_credentials" not in tablas:
+            with conn:
+                n = conn.execute(
+                    "UPDATE user_broker_credentials SET last_sync_at=NULL, last_sync_status=NULL "
+                    "WHERE user_id=? AND broker='wallbit' AND last_sync_at IS NOT NULL",
+                    (uid,)).rowcount
+            if n:
+                cleared["user_broker_credentials.last_sync_at"] = n
+
         # Sin esto el chat de IA sigue respondiendo con la cartera RECIÉN BORRADA
         # hasta 60s — justo el síntoma de "datos fantasma" que este botón elimina.
         _ai_cache_invalidate(uid)
         log.info("reset_my_data uid=%s cleared=%s", uid, cleared)
         _reset_set(uid, estado="listo", cleared=cleared, tabla=None)
-    except Exception as e:
+    except Exception:
         log.exception("reset_my_data FAILED uid=%s", uid)
         # El mensaje tiene que decir que se puede reintentar: en chunks, lo ya
-        # borrado quedó borrado y re-correr termina el trabajo.
+        # borrado quedó borrado y re-correr termina el trabajo. El tipo de error
+        # va al registro (la línea de arriba), no a la pantalla: "(OperationalError)"
+        # no le dice nada a quien apretó el botón.
         _reset_set(uid, estado="error", error=(
-            "Se cortó a mitad del borrado. Lo que ya se borró quedó borrado — "
-            "volvé a tocar 'Empezar de cero' y termina el trabajo. "
-            f"({type(e).__name__})"))
+            "Se cortó a mitad del borrado. Lo que ya se borró quedó borrado: "
+            "volvé a tocar «Empezar de cero» y termina el trabajo."))
     finally:
         conn.close()
+        # Suelta la bandera que tomó quien lo arrancó (`_arrancar_reset`).
+        _soltar_corrida(_corrida_del_reset(uid))
+
+
+def _corrida_del_reset(uid: int) -> str:
+    """El nombre de la bandera del borrado de UNA cuenta. Es la misma para el
+    botón del usuario y el de admin: los dos a la vez sobre la misma cuenta no."""
+    return f"empezar-de-cero:{uid}"
+
+
+def _arrancar_reset(uid: int, *, total: int = 0, **kw) -> bool:
+    """La única puerta para arrancar un borrado (botón del usuario y de admin).
+    False si ya había uno corriendo para esa cuenta.
+
+    Por qué una BANDERA de corrida (`_tomar_corrida`) y no mirar `_reset_progress`:
+      · Es atómica. Mirar el progreso y después escribirlo eran dos pasos: dos
+        pedidos al mismo tiempo veían «no corre» y arrancaban dos borrados, y el
+        segundo le ponía la barra en 0 al primero (auditoría del 07/11).
+      · El apagado la espera. Railway reinicia en cada publicación, y el apagado
+        espera hasta `CORRIDAS_ESPERA_AL_APAGAR_SEG` a las corridas anotadas; el
+        borrado no lo estaba y se cortaba en seco con la cuenta a medio borrar.
+        Si igual no le alcanza el tiempo, la pantalla lo dice («se cortó a mitad,
+        volvé a tocar»: frontend/src/utils/seguirElBorrado.js)."""
+    if not _tomar_corrida(_corrida_del_reset(uid)):
+        return False
+    _reset_set(uid, estado="corriendo", total=total, hechas=0, tabla=None,
+               cleared={}, error=None)
+    try:
+        threading.Thread(target=_reset_data_worker, args=(uid,), kwargs=kw,
+                         daemon=True, name=f"reset-{uid}").start()
+    except Exception:
+        _soltar_corrida(_corrida_del_reset(uid))
+        _reset_set(uid, estado="error", error="No se pudo arrancar el borrado. Probá de nuevo.")
+        raise
+    return True
+
+
+def _reset_pausa_s(conn) -> float:
+    """Freno entre tandas, por MOTOR (la misma pregunta que `_empezar_de_cero_abierto`).
+
+    En SQLite el freno deja entrar a los demás en la fila del escritor único. En
+    Postgres no hay fila: nadie espera al borrado, sólo comparten máquina, y frenar
+    sólo estira la molestia. Medido el 06/11 con la copia de producción y seis
+    usuarios trabajando: sin freno, la cuenta más grande en 7 s y los demás ~2×
+    más lentos esos 7 s; con 130 ms por tanda, 37 s y los demás hasta 5× más
+    lentos. `RENDI_RESET_PAUSA_MS` manda por encima, en los dos motores."""
+    fijada = os.environ.get("RENDI_RESET_PAUSA_MS")
+    if fijada not in (None, ""):
+        return max(0, int(fijada)) / 1000.0
+    import pgsesion as _ps
+    return 0.0 if _ps.habla_postgres(conn) else _RESET_PAUSA_SQLITE_MS / 1000.0
+
+
+# 60 ms sobre tandas de 5.000 filas ≈ +12 s por cada millón de filas (SQLite).
+_RESET_PAUSA_SQLITE_MS = 60
+
+
+# Lo que ve la persona mientras se borra cada tabla, en vez de su nombre interno
+# («Borrando import_raw_rows…»). Las de import son casi todo el trabajo.
+_RESET_ETAPA = {
+    "import_normalized_tx": "tus importaciones", "import_op_links": "tus importaciones",
+    "import_raw_rows": "tus importaciones", "import_batches": "tus importaciones",
+    "brokers": "tus brokers",
+    "positions": "tus posiciones", "archived_positions": "tus posiciones",
+    "futures_positions": "tus posiciones",
+    "operations": "tus operaciones", "deleted_ops_journal": "tus operaciones",
+    "snapshots": "tu historial", "monthly_entries": "tu historial",
+    "flujos_a_mano": "tu historial", "twr_periods": "tu historial",
+    "mtm_huella": "tu historial", "medicion_original": "tu historial",
+    "tendencia_semanal": "tu historial",
+}
+
+
+def _reset_etapa(tabla) -> Optional[str]:
+    return None if not tabla else _RESET_ETAPA.get(tabla, "el resto de tu cartera")
 
 
 @app.get("/api/me/reset-data/status")
 def reset_my_data_status(uid: int = Depends(get_effective_user)):
     """Progreso del reset, para la barra. Sin corrida previa → 'inactivo'."""
+    return _reset_estado_publico(uid)
+
+
+def _reset_estado_publico(uid: int) -> dict:
+    """Lo que contestan los dos «¿cómo va?» (el del usuario y el del admin): eran
+    dos copias del mismo cálculo."""
     st = _reset_estado(uid)
     if not st:
         return {"estado": "inactivo"}
@@ -6395,6 +6499,7 @@ def reset_my_data_status(uid: int = Depends(get_effective_user)):
         "hechas": min(hechas, total) if total else hechas,
         "pct": round(100.0 * min(hechas, total) / total, 1) if total else (100.0 if st.get("estado") == "listo" else 0.0),
         "tabla": st.get("tabla"),
+        "etapa": _reset_etapa(st.get("tabla")),
         "cleared": st.get("cleared"),
         "error": st.get("error"),
     }
@@ -6458,7 +6563,10 @@ def reset_my_data(uid: int = Depends(get_effective_user)):
 
     La puerta la decide `_empezar_de_cero_abierto`: abierta en Postgres, cerrada en
     SQLite (el motivo está ahí)."""
-    if not _empezar_de_cero_abierto():
+    with db_abierta() as conn:
+        abierto = _empezar_de_cero_abierto(conn)
+        pausa = _reset_pausa_s(conn)
+    if not abierto:
         # OJO si se te ocurre ofrecer "lo hacemos por vos" sobre SQLite: sería ESTE
         # MISMO código y ESTE MISMO lock. Con tráfico encima reproduce el incidente.
         raise HTTPException(503,
@@ -6466,14 +6574,9 @@ def reset_my_data(uid: int = Depends(get_effective_user)):
             # migración, que en producción ya pasó.
             "«Empezar de cero» está pausado por un rato. Lo frenamos a propósito para "
             "que la app siga andando rápido para todos. Probá de nuevo más tarde.")
-    st = _reset_estado(uid)
-    if st.get("estado") == "corriendo":
+    if not _arrancar_reset(uid, pausa=pausa):
         # Idempotente: dos clicks no lanzan dos borrados. Devolvemos el que corre.
         return {"ok": True, "estado": "corriendo", "ya_corriendo": True}
-    _reset_set(uid, estado="corriendo", total=0, hechas=0, tabla=None,
-               cleared={}, error=None)
-    threading.Thread(target=_reset_data_worker, args=(uid,), daemon=True,
-                     name=f"reset-{uid}").start()
     return {"ok": True, "estado": "corriendo"}
 
 
@@ -8233,6 +8336,15 @@ def post_snapshot(data: SnapshotIn, request: Request,
     conn = get_db()
     try:
         _tomar_turno_de_la_puerta(conn, uid)
+        # El total lo calculó el NAVEGADOR: una pestaña vieja (otro dispositivo)
+        # abierta después de «Empezar de cero» mandaba la cartera de antes, y la
+        # cuenta vaciada amanecía con una foto que ya no borraba nadie. Sin
+        # brokers no hay nada que fotografiar (`cuenta_con_cartera`, la regla del
+        # cron; acá sin exigir posiciones: las cuentas cargadas a mano por mes no
+        # tienen y sí se fotografían).
+        if not cuenta_con_cartera(conn, uid, con_posiciones=False):
+            conn.rollback()
+            return {"ok": True, "skipped": "cuenta sin brokers"}
         # ⚠️ UN CIERRE DEL CRON NO SE PISA — NI LA MARCA NI EL VALOR.
         # Antes se conservaba `source='cron'` pero se sobreescribía `total_value`
         # con el número de media rueda del browser: la fila quedaba diciendo
@@ -26251,10 +26363,9 @@ def admin_repair_user_history(data: RepairUserIn, uid: int = Depends(get_admin_u
 # parámetros: dos copias del borrado serían dos lugares donde arreglar el
 # próximo bug y uno donde olvidárselo.
 
-# Freno entre tandas del reset de admin, en milisegundos. 60 ms sobre tandas de
-# 5.000 filas ≈ +12 s por cada millón de filas: nada de reloj, mucha ventana para
-# los demás. Se puede subir sin deployar con RENDI_RESET_PAUSA_MS.
-_RESET_ADMIN_PAUSA_MS = int(os.environ.get("RENDI_RESET_PAUSA_MS", "60") or 60)
+# El freno entre tandas ya no es propio del admin: lo decide `_reset_pausa_s`
+# por motor, para los dos botones (60 ms en SQLite, nada en Postgres, donde
+# frenar empeora; `RENDI_RESET_PAUSA_MS` manda por encima).
 
 
 class AdminResetUserIn(BaseModel):
@@ -26379,7 +26490,7 @@ def admin_reset_user_preview(email: str, uid: int = Depends(get_admin_user)):
             "protegido": _reset_admin_protegido(conn, u["id"]),
             "avisos": _reset_admin_avisos(conn, u),
             "estado_actual": _reset_estado(u["id"]).get("estado", "inactivo"),
-            "pausa_ms": _RESET_ADMIN_PAUSA_MS,
+            "pausa_ms": round(_reset_pausa_s(conn) * 1000),
         }
     finally:
         conn.close()
@@ -26388,21 +26499,7 @@ def admin_reset_user_preview(email: str, uid: int = Depends(get_admin_user)):
 @app.get("/api/admin/reset-user/status")
 def admin_reset_user_status(user_id: int, uid: int = Depends(get_admin_user)):
     """Progreso del reset de OTRO usuario (el de /api/me/... sólo mira el propio)."""
-    st = _reset_estado(user_id)
-    if not st:
-        return {"estado": "inactivo", "user_id": user_id}
-    total, hechas = st.get("total") or 0, st.get("hechas") or 0
-    return {
-        "user_id": user_id,
-        "estado": st.get("estado", "inactivo"),
-        "total": total,
-        "hechas": min(hechas, total) if total else hechas,
-        "pct": round(100.0 * min(hechas, total) / total, 1) if total else (
-            100.0 if st.get("estado") == "listo" else 0.0),
-        "tabla": st.get("tabla"),
-        "cleared": st.get("cleared"),
-        "error": st.get("error"),
-    }
+    return {"user_id": user_id, **_reset_estado_publico(user_id)}
 
 
 @app.post("/api/admin/reset-user")
@@ -26430,24 +26527,19 @@ def admin_reset_user(data: AdminResetUserIn, uid: int = Depends(get_admin_user))
         u = _reset_admin_usuario(conn, data.email)
         tu = u["id"]
         conteo = _reset_admin_conteo(conn, tu)
+        pausa = _reset_pausa_s(conn)
     finally:
         conn.close()
 
-    st = _reset_estado(tu)
-    if st.get("estado") == "corriendo":
-        # Idempotente: dos clicks no lanzan dos borrados.
+    # Idempotente: dos clicks —o el admin y la persona a la vez— no lanzan dos
+    # borrados (la bandera es la misma para los dos botones).
+    if not _arrancar_reset(tu, total=conteo["total_filas"],
+                           tablas=_reset_admin_tablas(), toda_la_config=True,
+                           borrar_perfil=True, pausa=pausa):
         return {"ok": True, "estado": "corriendo", "ya_corriendo": True,
                 "user_id": tu, "email": u["email"]}
-
     log.warning("ADMIN RESET admin_uid=%s → user_id=%s email=%s filas=%s",
                 uid, tu, u["email"], conteo["total_filas"])
-    _reset_set(tu, estado="corriendo", total=conteo["total_filas"], hechas=0,
-               tabla=None, cleared={}, error=None)
-    threading.Thread(
-        target=_reset_data_worker, args=(tu,),
-        kwargs={"tablas": _reset_admin_tablas(), "toda_la_config": True,
-                "borrar_perfil": True, "pausa": _RESET_ADMIN_PAUSA_MS / 1000.0},
-        daemon=True, name=f"reset-admin-{tu}").start()
     return {"ok": True, "estado": "corriendo", "user_id": tu, "email": u["email"],
             "total_filas": conteo["total_filas"]}
 
