@@ -464,6 +464,23 @@ class LoQueLeeLaPantalla(unittest.TestCase):
         self.assertEqual((casos["normal"]["base"], casos["normal"]["base_corrida"]), ("2025-11-04", False))
 
 
+class HuecoEnElBorde(unittest.TestCase):
+
+    def test_un_hueco_cerca_del_borde_de_lo_guardado_se_dice(self):
+        # «Desde tu primera compra» del 05/11/2021: a MU le faltan los precios del 20/10
+        # al 10/11 y el primero después cae a 3 días del primer día guardado del S&P 500.
+        # No es «los precios guardados empiezan ese día»: es el hueco (auditoría 08/11 de
+        # las pruebas del hueco, M12).
+        dias = _habiles_entre(date(2021, 10, 1), date(2026, 11, 4))
+        mu = [{"date": d, "close": 100.0 + i * 0.1} for i, d in enumerate(dias) if not "2021-10-20" <= d <= "2021-11-10"]
+        sp = [{"date": d, "close": 5000.0 + i} for i, d in enumerate(d for d in dias if d >= "2021-11-08")]
+        with unittest.mock.patch("tecnico.serie", lambda c, a, m, l, **k: {"velas": mu}), \
+             unittest.mock.patch("tecnico.sp500", lambda c, m: sp):
+            r = comparar.comparar(None, [("MU", False)], "usd", "2021-11-05", hoy=date(2026, 11, 5))
+        self.assertEqual((r["base"], r["base_corrida"], r["base_corrida_por"], r["base_corrida_hueco"]),
+                         ("2021-11-11", True, "MU", {"desde": "2021-10-20", "hasta": "2021-11-10"}))
+
+
 class BaseCienTest(unittest.TestCase):
     """La regla de arrancar en 100, suelta."""
 
