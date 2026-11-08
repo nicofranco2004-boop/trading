@@ -46458,8 +46458,11 @@ def import_tenencia_preview(
                 sub = broker if ccy == "ARS" else usd_broker
                 snap_ccy = _import_tenencia.TenenciaSnapshot(holdings=hs, date=snap.date)
                 cur_q = _cur_qty(sub)
+                # Lo que la proyección no pudo llevar a la fecha de la foto queda
+                # AFUERA de la comparación (si no, falta → «tenías 0» → se recompra).
                 r1 = _import_tenencia.compute_reconcile(
-                    cur_q, snap_ccy, no_reconciliable_motivo=motivo_corte)
+                    cur_q, snap_ccy, no_reconciliable_motivo=motivo_corte,
+                    no_comparables={d.get("ticker") for d in _proy_no_rec})
                 #
                 # ⚠️ LOS TRES BALDES SALEN DE ESTA COMPARACIÓN, PERO SÓLO DOS SE
                 #    CORRIGEN CROSS-PARTICIÓN. `compute_reconcile` midió contra
@@ -46552,7 +46555,8 @@ def import_tenencia_preview(
             # Proyectado a la fecha de la foto (ver `_qty_a_fecha`).
             current = _qty_a_fecha(pair)  # proyectado a la fecha de la foto
             rec = _import_tenencia.compute_reconcile(
-                current, snap, no_reconciliable_motivo=motivo_corte)
+                current, snap, no_reconciliable_motivo=motivo_corte,
+                no_comparables={d.get("ticker") for d in _proy_no_rec})
             _import_tenencia.marcar_bonos_amortizantes(rec, current)
             _import_tenencia.marcar_ausentes(rec)
 
@@ -46689,7 +46693,13 @@ def import_tenencia_preview(
         # split) entra al MISMO balde que el resto: el asesor ve una sola lista
         # de "de esto no sé", no dos mecanismos distintos.
         if _proy_no_rec:
-            rec.no_reconciliable += _proy_no_rec
+            # Una vez por activo: `proyectar` corre por cada broker del par y por
+            # el par entero, así que el mismo dudoso venía repetido.
+            _vistos_nr = {(d.get("ticker"), d.get("motivo")) for d in rec.no_reconciliable}
+            for d in _proy_no_rec:
+                if (d.get("ticker"), d.get("motivo")) not in _vistos_nr:
+                    _vistos_nr.add((d.get("ticker"), d.get("motivo")))
+                    rec.no_reconciliable.append(d)
         # Brokers fuera del par CON tenencia (un broker creado y vacío no cambia
         # la composición que el cron estampó, así que no invalida la comparación).
         _otros_brokers = [r["broker"] for r in conn.execute(
@@ -46808,19 +46818,39 @@ def import_tenencia_preview(
                             "indique su fecha."),
             }
         if not seed_txs and not _fund_overrides:
-            # "Tu cartera ya coincide" sólo si se comparó TODO. Lo que no se pudo
-            # comparar (activos cambiados después de la foto por algo que no se
-            # deshace —una carga a mano, un split, un vencimiento— o el efectivo con
-            # plata movida después) se dice, en vez de darlo por coincidente.
-            _msg = "Tu cartera ya coincide con la foto — no hay nada que completar."
-            if rec.no_reconciliable or caja_sin_ajustar:
-                _sin = sorted({d.get("ticker") for d in rec.no_reconciliable if d.get("ticker")})
-                _msg = ("Lo que pudimos comparar coincide con la foto." if _sin
-                        else "Tus tenencias coinciden con la foto.")
-                if _sin:
-                    _msg += (f" No comparamos {', '.join(_sin)}: cambió después de la fecha "
-                             f"de la foto por algo que no podemos deshacer (una carga a mano, "
-                             f"un split o un vencimiento).")
+            # "Tu cartera ya coincide" sólo si se comparó TODO y no quedó nada sin
+            # ajustar. Cada caso se dice con su nombre, sin mezclarlos (revisión del
+            # 2026-11-08: un ausente salía como «cambió después de la foto» y una
+            # diferencia frenada como «tus tenencias coinciden»):
+            #   · no comparado: lo que la proyección no pudo llevar a la fecha;
+            #   · diferencias sin ajustar: comparado, distinto, y no se tocó solo
+            #     (frenado por datos a mano, ausente a decidir, bono a aprobar…);
+            #   · el freno de seguridad (cap) y el efectivo sin comparar.
+            _proy_mot = {_import_proyeccion.MOTIVO_MANUAL, _import_proyeccion.MOTIVO_SPLIT,
+                         _import_proyeccion.MOTIVO_VENCIMIENTO}
+            _sin_comparar = sorted({d["ticker"] for d in rec.no_reconciliable
+                                    if d.get("ticker") and d.get("motivo") in _proy_mot})
+            _difs = ({x[0] for x in rec.over} | {x[0] for x in rec.not_in_snapshot}
+                     | set((override_info or {}).get("skipped_manual") or [])
+                     | {d["ticker"] for d in rec.no_reconciliable
+                        if d.get("ticker") and d.get("motivo") not in _proy_mot})
+            _difs = sorted(t for t in _difs if t and t not in _sin_comparar)
+            _cap = bool((override_info or {}).get("capped"))
+            todo_coincide = not (_sin_comparar or _difs or _cap or caja_sin_ajustar)
+            if todo_coincide:
+                _msg = "Tu cartera ya coincide con la foto — no hay nada que completar."
+            else:
+                _msg = "No hay nada para completar automáticamente."
+                if _difs:
+                    _msg += (f" Hay diferencias con la foto que no ajustamos solos: "
+                             f"{', '.join(_difs)}. Revisalas.")
+                if _cap:
+                    _msg += (" El ajuste tocaría más de la mitad de tu cartera y lo frenamos "
+                             "por seguridad.")
+                if _sin_comparar:
+                    _msg += (f" No comparamos {', '.join(_sin_comparar)}: cambió después de "
+                             f"la fecha de la foto por algo que no podemos deshacer (una "
+                             f"carga a mano, un split o un vencimiento).")
                 if caja_sin_ajustar:
                     _f = caja_sin_ajustar["fecha_foto"]
                     _msg += (f" El efectivo no lo comparamos: la foto es del "
@@ -46833,6 +46863,7 @@ def import_tenencia_preview(
                     "avisos_escala": _avisos_escala,
                     "caja_sin_ajustar": caja_sin_ajustar,
                     "no_reconciliable": rec.no_reconciliable,
+                    "todo_coincide": todo_coincide,
                     "message": _msg}
         with conn:
             sid = _import_pipeline.store_preview_txs(

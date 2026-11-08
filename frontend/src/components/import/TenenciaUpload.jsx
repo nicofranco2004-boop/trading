@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react'
 import { api } from '../../utils/api'
 import { fechaCorta } from '../../utils/cuantoSeMueve'
 
+// Los motivos de `importing/proyeccion.py` (no se pudo llevar a la fecha de la foto).
+const MOTIVOS_NO_COMPARADO = new Set(['datos_manuales', 'split_en_ventana', 'vencimiento_en_ventana'])
+
 // Completar la cartera con la "Tenencia valorizada" (PDF) de Bull Market — la
 // foto de posiciones. Reconcilia contra lo ya importado de la Cuenta Corriente:
 // completa SOLO lo que falta (comprado antes de la ventana de la CC), sin
@@ -59,6 +62,12 @@ export default function TenenciaUpload({
   }
 
   const fmt = n => (n ?? 0).toLocaleString('es-AR', { maximumFractionDigits: 2 })
+  // Sólo lo que la foto NO pudo comparar (cambió después de su fecha). La lista
+  // del servidor trae también ausentes y bonos a decidir, que esta pantalla ya
+  // muestra por su lado: mezclados, un ausente salía como «no comparamos».
+  const noComparados = [...new Set((preview?.no_reconciliable || [])
+    .filter(d => d.ticker && MOTIVOS_NO_COMPARADO.has(d.motivo))
+    .map(d => d.ticker))]
   const seeded = preview?.to_seed || []
   // Total POR MONEDA (no sumamos ARS + USD en un solo número): la foto de PPI
   // puede traer holdings en pesos y en dólares.
@@ -216,9 +225,9 @@ export default function TenenciaUpload({
                 El efectivo no lo tocamos: {docLabel} es del {fechaCorta(preview.caja_sin_ajustar.fecha_foto)} y después hubo movimientos de plata (hasta el {fechaCorta(preview.caja_sin_ajustar.hasta)}), así que no sabemos cuánto había ese día.
               </p>
             )}
-            {(preview.no_reconciliable?.length > 0) && (
+            {noComparados.length > 0 && (
               <p className="text-xs text-rendi-warn mb-2">
-                No comparamos {preview.no_reconciliable.map(d => d.ticker).join(', ')}: cambió después de la fecha de {docLabel} por algo que no podemos deshacer (una carga a mano, un split o un vencimiento).
+                No comparamos {noComparados.join(', ')}: cambió después de la fecha de {docLabel} por algo que no podemos deshacer (una carga a mano, un split o un vencimiento).
               </p>
             )}
             <p className="text-xs text-ink-3 mb-3">

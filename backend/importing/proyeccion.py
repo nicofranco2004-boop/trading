@@ -221,8 +221,13 @@ def plata_posterior(conn, uid: int, *, pair: List[str], fecha: str) -> List[dict
       · los plazos fijos armados o cobrados después: la tabla NO guarda de qué
         broker salió o a cuál entró la plata, así que cuentan todos (la duda
         frena el ajuste: lo que se pierde es una corrección, no plata).
-    Los borrados y los «deshacer» no hace falta mirarlos: sacan el renglón y su
-    plata juntos, la caja queda coherente con lo que queda.
+    Los borrados y los «deshacer» de movimientos sacan el renglón y su plata
+    juntos: la caja queda coherente con lo que queda y no hace falta mirarlos.
+    ⚠️ DOS EXCEPCIONES CONOCIDAS, sin arreglar (revisión del 2026-11-08):
+    borrar un plazo fijo saca el renglón pero NO le devuelve la plata al broker
+    (la tabla no sabe de cuál salió), y archivar una sección de renta fija saca
+    posiciones sin tocar la caja. En los dos casos el débito queda sin rastro y
+    este control no lo ve.
     """
     from fechas import dia_art_de_texto
     D = str(fecha)[:10]

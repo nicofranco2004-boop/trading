@@ -343,7 +343,8 @@ def tolerancia_qty(rendi_qty, foto_qty, *, rel: float = REL_QTY,
 
 def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
                       eps: float = EPS_QTY_ABS, rel_eps: float = REL_QTY,
-                      no_reconciliable_motivo: str = None) -> ReconcileResult:
+                      no_reconciliable_motivo: str = None,
+                      no_comparables=None) -> ReconcileResult:
     """Concilia la foto (Tenencia = verdad) contra lo que Rendi YA tiene por activo
     (sumando broker padre + sibling '· USD'). Por activo de la foto:
       • Rendi == foto  → matched (no se toca → NO duplica).
@@ -364,7 +365,19 @@ def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
     setea fecha NUNCA), o sea que compara contra una fecha INVENTADA. Mostrarle
     a alguien un `over` o un `not_in_snapshot` salido de ahí, y encima pedirle
     que decida si borra una tenencia, es peor que no mostrarle nada.
+
+    `no_comparables` son los activos que `proyeccion.proyectar` NO pudo llevar
+    a la fecha de la foto (algo cargado a mano después, un split, un
+    vencimiento). No están en `current_qty_by_asset` —`proyectar` los saca—, y
+    sin esta lista un activo que falta se leía como «tenías 0»: iba a `to_seed`,
+    el ÚNICO balde que se aplica solo, y la foto lo volvía a comprar entero con
+    un aporte sintético que lo pagaba (revisión del 2026-11-08: AVGO 23 → 51,
+    KO cargado sin fecha 10 → 20, un cupón a mano recompraba 640 AL30). La
+    regla «lo que no se puede comparar no se toca» valía para `over` y
+    `not_in_snapshot`; ahora vale para los tres. Quien llama los informa en
+    `no_reconciliable` con su motivo (acá sólo se los deja afuera).
     """
+    _fuera = {str(t).strip().upper() for t in (no_comparables or ()) if t}
     if no_reconciliable_motivo:
         res = ReconcileResult()
         vistos = set()
@@ -385,6 +398,8 @@ def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
     snap_tickers = set()
     for h in snapshot.holdings:
         snap_tickers.add(h.ticker)
+        if str(h.ticker).strip().upper() in _fuera:
+            continue
         rq = current_qty_by_asset.get(h.ticker, 0.0)
         gap = h.quantity - rq
         # Tolerancia RELATIVA a la tenencia comparada: la foto redondea, y ese
@@ -396,7 +411,8 @@ def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
         else:
             res.over.append((h.ticker, rq, h.quantity))
     for asset, q in current_qty_by_asset.items():
-        if asset not in snap_tickers and abs(q) > eps:
+        if (asset not in snap_tickers and abs(q) > eps
+                and str(asset).strip().upper() not in _fuera):
             res.not_in_snapshot.append((asset, q))
     return res
 
