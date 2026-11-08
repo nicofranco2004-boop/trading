@@ -346,11 +346,14 @@ class BacConBaCTest(unittest.TestCase):
 
     def test_sin_ba_c_en_la_bolsa_bac_vuelve_al_estimado(self):
         # El respaldo: el feed no trae BA.C (sí el otro 'BAC', en dólares, que no
-        # se usa). Precio = Nueva York × contado con liqui de ahora ÷ 4; cierre
-        # anterior = el de Nueva York de su día × el contado con liqui de ese día.
+        # se usa). Precio y cierre anterior = Nueva York de su día × el contado con
+        # liqui de ESE día ÷ 4: el último cierre de Nueva York es de la rueda de
+        # ayer, y va con el dólar de ayer, como su gráfico (auditoría del contado
+        # con liqui, H5 de la pantalla: con el de ahora, BAC tenía dos precios).
         self.mundo.ba_c_en_el_feed = False
         precio, anterior, _ = self._cartera()
-        self.assertAlmostEqual(precio, ny(N - 1) * CCL_AHORA / RATIO, places=2)
+        self.assertAlmostEqual(precio, estimado(N - 1), places=2)
+        self.assertNotAlmostEqual(precio, ny(N - 1) * CCL_AHORA / RATIO, places=2)
         self.assertAlmostEqual(anterior, estimado(N - 2), places=2)
 
     def test_la_foto_de_la_noche_valua_bac_con_ba_c(self):

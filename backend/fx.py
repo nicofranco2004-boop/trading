@@ -375,10 +375,15 @@ def fechas_de_argentinadatos(filas: list, hoy: str) -> list:
     cierre, `FUENTE_PROPIA`). Con la fecha corregida y no antes: en una semana
     corrida la fila de HOY es el cierre de AYER, y descartándola antes de
     corregirla, ayer quedaba sin su dólar hasta la noche siguiente (medido el
-    06/11/2026 a las 21: la vela del 05/11 iba con el cierre del 04/11)."""
+    06/11/2026 a las 21: la vela del 05/11 iba con el cierre del 04/11).
+
+    Una fila con la fecha o el valor rotos no entra, y se descarta ANTES de juntar
+    las filas por fecha: si no, una rota que llegaba después de la buena del mismo
+    día la borraba, y ese día quedaba sin dólar (`guardar_ccl` descarta la rota,
+    pero ya sin la buena)."""
     from bisect import bisect_left
     from datetime import date, timedelta
-    validas = {f: (c, v) for f, c, v in filas if _fecha_valida(f)}
+    validas = {f: (c, v) for f, c, v in filas if _fecha_valida(f) and punta_media(c, v)}
     medio = {f: punta_media(c, v) for f, (c, v) in validas.items()}
     marcas = []                                     # [(sábado, corrida)]
     for f in sorted(medio):

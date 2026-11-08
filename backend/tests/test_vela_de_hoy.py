@@ -148,7 +148,12 @@ class VelaDeHoyTest(unittest.TestCase):
                    mock.patch("pricing.yahoo._historia", self.yahoo),
                    mock.patch("cambios_ratio._splits_de_yahoo", lambda t: []),
                    mock.patch("cambios_ratio._historia_byma", lambda c: {}),
+                   # La Bolsa sin nada y sin red: ni el precio de ahora, ni los bonos,
+                   # ni la historia de cada rueda (la de BA.C, el CEDEAR de BAC en
+                   # pesos, la pide el mini-gráfico antes que el estimado).
                    mock.patch("main._fetch_data912_equities", lambda: {}),
+                   mock.patch("main._fetch_data912_bonds", lambda: {}),
+                   mock.patch("pricing.data912.filas", lambda tipo, papel, timeout=10: []),
                    mock.patch("main._get_dolar_data", lambda: self.dolar),
                    mock.patch("alerts_engine.rueda_en_horario", self._horario),
                    # Desde las 13 de Nueva York `en_rueda` le pregunta a Yahoo (SPY)

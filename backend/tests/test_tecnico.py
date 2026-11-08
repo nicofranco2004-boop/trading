@@ -1267,9 +1267,13 @@ class FichaTest(unittest.TestCase):
         # `main._actualizar_ccl` corre antes de las velas de la noche: la primera
         # vez guarda todo lo que manda la fuente; después, lo que falta y los
         # últimos días (el de hoy se publica en vivo y la noche guarda el del
-        # cierre). Lo de antes no se reescribe. Un renglón roto no entra.
+        # cierre). Lo de antes no se reescribe. Un renglón roto no entra, y uno
+        # con el valor roto no borra al bueno del mismo día aunque llegue después
+        # (hasta el 07/11 esta prueba lo traía con una fecha fija, el 06/11: ese
+        # sábado fue la última rueda y el día quedó sin dólar).
         dias = [d.isoformat() for d in self.dias]
         fuente = [(d, 1000.0 + i, 1010.0 + i) for i, d in enumerate(dias)]
+        sin_fila = (self.dias[0] - timedelta(days=7)).isoformat()
 
         def guardado(d):
             with main.db_abierta() as conn:
@@ -1278,7 +1282,8 @@ class FichaTest(unittest.TestCase):
             return r["value"] if r else None
 
         with mock.patch("main._bajar_ccl", lambda: fuente + [("mal", 1.0, 2.0), ("2026-01-0x", 1, 2),
-                                                             ("2026-02-30", 1, 2), (None, 1, 2), ("2026-11-06", 0, 0)]):
+                                                             ("2026-02-30", 1, 2), (None, 1, 2),
+                                                             (sin_fila, 0, 0), (dias[-1], 0, 0)]):
             main._run_velas_diarias_job()
         self.assertEqual((guardado(dias[0]), guardado(dias[-1])), (1005.0, 1005.0 + len(dias) - 1))
         with main.db_abierta() as conn:
