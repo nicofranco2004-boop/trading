@@ -17,6 +17,12 @@
  *
  * POR QUÉ EL SEGUNDO TEST LEE CÓDIGO. Un test sobre `hoyISO()` pasa igual aunque
  * mañana alguien escriba el número 28 en otro archivo — y ese es el bug.
+ *
+ * LAS PRUEBAS TAMBIÉN (07/11/2026). El guard salteaba los `.test.`, y un servidor
+ * falso armado con el día de Londres pone rojo sólo de 21 a 24: el de
+ * AnalisisTecnico.test.jsx mandaba `hasta` con toISOString y la semana pasada con
+ * `hoyISO()`, y el Panorama contaba 8 días («el viernes 30/10» en vez de «la
+ * semana pasada»). El «hoy» de una prueba es el de la app.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -72,7 +78,7 @@ describe('"hoy" se calcula en un solo lugar', () => {
     for (const nombre of readdirSync(dir)) {
       const ruta = join(dir, nombre)
       if (statSync(ruta).isDirectory()) { salida.push(...fuentes(ruta)); continue }
-      if (!/\.jsx?$/.test(nombre) || nombre.includes('.test.') || EXCLUIDOS.has(nombre)) continue
+      if (!/\.jsx?$/.test(nombre) || EXCLUIDOS.has(nombre)) continue
       salida.push(ruta)
     }
     return salida

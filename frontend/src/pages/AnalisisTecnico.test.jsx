@@ -27,7 +27,11 @@ vi.mock('../hooks/usePushNotifications', () => ({ usePushNotifications: () => nu
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { tier: 'pro' } }) }))
 vi.mock('../contexts/AdvisorContext', () => ({ useAdvisorContext: () => ({ clientCtx: null }) }))
 
-const HOY = new Date().toISOString().slice(0, 10)
+// El «hoy» del servidor es el día de acá (`hoy_art_date`, también el `hasta`
+// de /tus-senales), no el de Londres (toISOString): de 21 a 24 h ése ya es
+// mañana, y el Panorama, que cuenta los días entre `hasta` y la semana pasada,
+// leía 8 y no 7.
+const HOY = hoyISO()
 const LECTURA = (l = {}) => ({
   ruedas: 760, fecha: HOY, media200: 90, dist_media200: 11, tendencia: 'alcista', pendiente_media200: 2, media50: 95,
   dist_media50: 5, rsi: 60, adx: 30, dist_maximo_12m: -3, anio_completo: true, ...l,
@@ -62,9 +66,9 @@ function servidor() {
       alcista: {
         pct: 74,
         grupos: { alcista: { pct: 74, fraccion: 0.74, nombres: ['NVDA'] }, bajista: { pct: 26, fraccion: 0.26, nombres: ['KO'] }, sin: { pct: 0, fraccion: 0, nombres: [] } },
-        // Hace 7 días contados desde el «hoy» de la pantalla (hoyISO, el día de
-        // acá): con toISOString (el de Londres) de 21 a 24 h daba 6 días.
-        motivos: [], semana_pasada: { semana: new Date(Date.parse(hoyISO() + 'T00:00:00Z') - 7 * 86400000).toISOString().slice(0, 10), pct: 70 },
+        // Hace 7 días contados desde `hasta`, con el mismo reloj: los dos los
+        // pone el servidor con el día de acá.
+        motivos: [], semana_pasada: { semana: new Date(Date.parse(HOY + 'T00:00:00Z') - 7 * 86400000).toISOString().slice(0, 10), pct: 70 },
       },
       tenes: { activos: 2, con_cambios: 2 }, watchlist: 1,
       senales: [

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { selectDiagnostics, DIAGNOSTIC_GENERATORS, dayOfYearKey, hashString } from './diagnostics.js'
 import { computeOpenPositionExtremes } from './insightsModel.js'
+import { hoyISO } from './fecha.js'
 
 // Helper: encontrar un generador por id
 const findGen = (id) => DIAGNOSTIC_GENERATORS.find(g => g.id === id)
@@ -236,7 +237,7 @@ describe('overtrading', () => {
 
   it('no dispara con poca actividad', () => {
     expect(fire('overtrading', {
-      tradeOps: [{ date: new Date().toISOString().slice(0, 10), pnl_usd: 10 }],
+      tradeOps: [{ date: hoyISO(), pnl_usd: 10 }],
     })).toBe(null)
   })
 })
