@@ -18,6 +18,7 @@ Los casos que importan:
 
 Corre con: cd backend && python3 -m pytest tests/test_comparar_precio.py
 """
+import json
 import os
 import sys
 import unittest
@@ -236,6 +237,32 @@ class CompararTest(unittest.TestCase):
         self.assertEqual((cer["ticker"], cer["nombre"]), ("CER", "Inflación (CER)"))
         self.assertAlmostEqual(cer["final"], (10 + ult * 0.01) / (10 + ib * 0.01) * 100, places=2)
 
+    def test_en_pesos_el_sp500_va_con_el_dolar_de_los_cedears(self):
+        # Un CEDEAR en pesos va con el contado con liqui de cada día (Nico, 06/11), y
+        # el S&P 500 con el MISMO dólar: es el que se compra en la Bolsa, con el
+        # CEDEAR de SPY. Con el MEP, en Comparar SPY le «ganaba» 4,45 % en un año al
+        # S&P 500, la misma canasta, y la ficha medía «cuántas veces se mueve lo que
+        # el S&P 500» con dos dólares (auditoría del contado con liqui, H2 del
+        # servidor). Acá MSFT se mueve igual que el S&P 500, y el contado con liqui
+        # se separa del MEP con el tiempo y salta de un día al otro.
+        self._mep(lambda i: 1000 + i)
+        ccl = lambda i: (1000 + i) * (1 + i / 2000) * (1.005 if i % 2 else 0.995)   # noqa: E731
+        fuente = [(d.isoformat(), ccl(i) - 1, ccl(i) + 1) for i, d in enumerate(self.dias)]
+        with mock.patch("main._bajar_ccl", lambda: fuente):
+            main._actualizar_ccl()
+        self.yahoo.precios["MSFT"] = lambda i, d: 100.0 + i
+        self.yahoo.precios["^GSPC"] = lambda i, d: 5000.0 + 50 * i
+        main._run_velas_diarias_job()
+        ars = self._comparar("MSFT", "ars", "1a")
+        msft, sp = self._serie(ars, "MSFT"), self._serie(ars, "sp500")
+        self.assertEqual((msft["convertida"], sp["convertida"]), ("ccl", "ccl"))
+        self.assertAlmostEqual(msft["final"], sp["final"], places=1)
+        ib, ult = self._i(self._un_anio()), len(self.dias) - 1
+        self.assertAlmostEqual(self._serie(ars, "mep")["final"], (1000 + ult) / (1000 + ib) * 100, places=2,
+                               msg="guardar dólares sigue siendo el MEP")
+        ficha = self.client.get("/api/tecnico/MSFT?moneda=ars", headers=self.h).json()
+        self.assertAlmostEqual(ficha["movimiento"]["dia_normal"]["veces_el_sp500"], 1.0, places=3)
+
     def test_sin_cer_se_usa_la_uva_y_se_dice(self):
         # La fuente del CER da 404 desde 09/2026: se mide con la UVA (el BCRA la
         # ajusta por CER) y el nombre lo dice.
@@ -412,6 +439,74 @@ class CompararUnViernes(CompararTest):
     DIA_DE_LA_SEMANA = 4
 
 
+def _habiles_entre(desde: date, hasta: date) -> list:
+    out, d = [], desde
+    while d <= hasta:
+        if d.weekday() < 5:
+            out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
+
+
+def _casos_de_la_pantalla():
+    """Las respuestas de Comparar que leen las pruebas de la pantalla
+    (utils/comparadorPrecio.test.js, components/fundamentals/PrecioComparado.render.test.jsx),
+    sin los puntos, que son largos: la salida de `comparar.comparar` con estas velas."""
+    dias = _habiles_entre(date(2024, 10, 1), date(2026, 11, 4))
+    velas = lambda fechas, f: [{"date": d, "close": f(i)} for i, d in enumerate(fechas)]
+    mu = velas(dias, lambda i: 100 + i * 0.1)
+    # «1 año» del 04/11/2026 arranca el 04/11/2025; sin precios del 15/10 al 17/11.
+    hueco = [v for v in mu if not "2025-10-15" <= v["date"] <= "2025-11-17"]
+    nuev = velas([d for d in dias if d >= "2026-01-05"], lambda i: 20 + i * 0.05)
+    sp = velas(dias, lambda i: 5000 + i)
+    casos = {}
+    for clave, series in (("normal", {"MU": mu}), ("hueco", {"MU": hueco}), ("corrida_por", {"MU": mu, "NUEV": nuev})):
+        with unittest.mock.patch("tecnico.serie", lambda c, a, m, l, **k: {"velas": series[a]}), \
+             unittest.mock.patch("tecnico.indice_con_dolar", lambda c, si, m, d=None: (sp, None)):
+            r = comparar.comparar(None, [(a, False) for a in series], "usd", anios=1, hoy=date(2026, 11, 5))
+        for s in r["series"]:
+            s["puntos"] = s["puntos"][:1] + s["puntos"][-1:]
+        casos[clave] = {**r, "plazo": "1a"}
+    return json.loads(json.dumps(casos))
+
+
+class LoQueLeeLaPantalla(unittest.TestCase):
+
+    def test_las_pruebas_de_la_pantalla_leen_lo_que_da_el_servidor(self):
+        """fixtures/comparar_precio.json tiene que ser la salida de ESTE código, no una
+        armada a mano (auditoría 08/11 de las pruebas del hueco, F04). Para rearmarlo:
+        COMPARAR_REESCRIBIR=1."""
+        ruta = os.path.join(HERE, "fixtures", "comparar_precio.json")
+        casos = _casos_de_la_pantalla()
+        if os.environ.get("COMPARAR_REESCRIBIR"):
+            with open(ruta, "w") as f:
+                json.dump(casos, f, ensure_ascii=False, indent=1)
+        with open(ruta) as f:
+            self.assertEqual(json.load(f), casos)
+        h = casos["hueco"]
+        self.assertEqual((h["base"], h["base_corrida"], h["base_corrida_por"], h["base_corrida_hueco"]),
+                         ("2025-11-18", True, "MU", {"desde": "2025-10-15", "hasta": "2025-11-17"}))
+        self.assertEqual((casos["corrida_por"]["base"], casos["corrida_por"]["base_corrida_por"]), ("2026-01-05", "NUEV"))
+        self.assertEqual((casos["normal"]["base"], casos["normal"]["base_corrida"]), ("2025-11-04", False))
+
+
+class HuecoEnElBorde(unittest.TestCase):
+
+    def test_un_hueco_cerca_del_borde_de_lo_guardado_se_dice(self):
+        # «Desde tu primera compra» del 05/11/2021: a MU le faltan los precios del 20/10
+        # al 10/11 y el primero después cae a 3 días del primer día guardado del S&P 500.
+        # No es «los precios guardados empiezan ese día»: es el hueco (auditoría 08/11 de
+        # las pruebas del hueco, M12).
+        dias = _habiles_entre(date(2021, 10, 1), date(2026, 11, 4))
+        mu = [{"date": d, "close": 100.0 + i * 0.1} for i, d in enumerate(dias) if not "2021-10-20" <= d <= "2021-11-10"]
+        sp = [{"date": d, "close": 5000.0 + i} for i, d in enumerate(d for d in dias if d >= "2021-11-08")]
+        with unittest.mock.patch("tecnico.serie", lambda c, a, m, l, **k: {"velas": mu}), \
+             unittest.mock.patch("tecnico.indice_con_dolar", lambda c, si, m, d=None: (sp, None)):
+            r = comparar.comparar(None, [("MU", False)], "usd", "2021-11-05", hoy=date(2026, 11, 5))
+        self.assertEqual((r["base"], r["base_corrida"], r["base_corrida_por"], r["base_corrida_hueco"]),
+                         ("2021-11-11", True, "MU", {"desde": "2021-10-20", "hasta": "2021-11-10"}))
+
+
 class BaseCienTest(unittest.TestCase):
     """La regla de arrancar en 100, suelta."""
 
@@ -422,7 +517,7 @@ class BaseCienTest(unittest.TestCase):
         nuevas = [{"date": f"2025-11-{d:02d}", "close": 50.0 + d} for d in range(3, 29)]
         series = {"VIEJ": viejas, "NUEV": nuevas}
         with unittest.mock.patch("tecnico.serie", lambda c, a, m, l, **k: {"velas": series[a]}), \
-             unittest.mock.patch("tecnico.sp500", lambda c, m: nuevas):
+             unittest.mock.patch("tecnico.indice_con_dolar", lambda c, s, m, d=None: (nuevas, None)):
             r = comparar.comparar(None, [("VIEJ", False), ("NUEV", False)], "usd", "2025-11-03",
                                   hoy=__import__("datetime").date(2025, 11, 29))
         self.assertEqual([s["clave"] for s in r["series"]], ["NUEV", "sp500", "mep"])
@@ -432,7 +527,10 @@ class BaseCienTest(unittest.TestCase):
         # LA regla del día del 100 de Comparar y de «Una cartera» (H1, 06/11).
         hasta = "2026-11-05"
         hoy = date(2026, 11, 6)                             # lo viejo se mide contra hoy
-        activo = [("2021-11-05", 1.0), (hasta, 2.0)]        # desde un viernes
+        # Desde un viernes, con un precio cada día: con dos precios a años de
+        # distancia, cualquier día del medio sería un hueco (`arranque_de_la_serie`).
+        activo = [((date(2021, 11, 5) + timedelta(days=k)).isoformat(), 1.0)
+                  for k in range((date(2026, 11, 5) - date(2021, 11, 5)).days + 1)]
         sp = [("2021-11-08", 1.0), (hasta, 2.0)]            # desde el lunes
         lejos = [("2021-11-20", 1.0), (hasta, 2.0)]         # no tenemos su historia
         vieja = [("2021-11-08", 1.0), ("2026-10-01", 2.0)]  # dejó de actualizarse
@@ -446,6 +544,34 @@ class BaseCienTest(unittest.TestCase):
         siete, ocho = [("2021-11-12", 1.0), (hasta, 2.0)], [("2021-11-13", 1.0), (hasta, 2.0)]
         self.assertEqual(cien("2019-03-15", [siete])[0], "2021-11-12")
         self.assertEqual(cien("2019-03-15", [ocho])[0], "2021-11-05")
+        # Con un hueco de más de 10 días justo antes, el primer precio después
+        # (`tecnico.arranque_de_la_serie`; Nico, 08/11). A 10 días justos, lo pedido.
+        sin = lambda a, b: [p for p in activo if not a <= p[0] <= b]
+        con = lambda serie: comparar.dia_del_cien("2023-01-02", [serie], [sp], hoy)
+        self.assertEqual(con(sin("2022-12-23", "2023-01-05")), ("2023-01-06", "2023-01-06"), "el último, a 11 días")
+        self.assertEqual(con(sin("2022-12-24", "2023-01-05")), ("2023-01-02", "2023-01-02"), "el último, a 10 días")
+
+    def test_quien_corre_el_dia(self):
+        # `arranque_de_los_activos`: repetido hasta que no cambia. Si uno corre el día,
+        # otro puede tener un hueco justo antes del día nuevo (auditoría 08/11 del hueco,
+        # H1); en un empate, el del hueco, en cualquier orden (H2).
+        dias = [(date(2021, 11, 5) + timedelta(days=k)).isoformat() for k in range(1827)]
+        todos = [(d, 1.0) for d in dias]
+        sin = lambda a, b: [p for p in todos if not a <= p[0] <= b]
+        desde = lambda d: [p for p in todos if p[0] >= d]
+        quien = comparar.arranque_de_los_activos
+        self.assertEqual(quien("2023-01-02", [todos, todos]), {"dia": "2023-01-02", "quien": None, "hueco": None})
+        # B cotiza desde el 20/01; A no tiene precios del 10 al 25/01: en el 20/01, su
+        # último es del 09/01 (11 días) y el día se corre al 26/01.
+        a, b = sin("2023-01-10", "2023-01-25"), desde("2023-01-20")
+        self.assertEqual(quien("2023-01-02", [a, b]),
+                         {"dia": "2023-01-26", "quien": 0, "hueco": {"desde": "2023-01-10", "hasta": "2023-01-25"}})
+        self.assertEqual(comparar.dia_del_cien("2023-01-02", [a, b], [], date(2026, 11, 6)), ("2023-01-26", "2023-01-26"))
+        # Empate: el hueco de A termina el 19/01 y B cotiza desde el 20/01.
+        a = sin("2022-12-20", "2023-01-19")
+        hueco = {"desde": "2022-12-20", "hasta": "2023-01-19"}
+        self.assertEqual(quien("2023-01-02", [a, b]), {"dia": "2023-01-20", "quien": 0, "hueco": hueco})
+        self.assertEqual(quien("2023-01-02", [b, a]), {"dia": "2023-01-20", "quien": 1, "hueco": hueco})
 
     def test_regla(self):
         p = [("2025-01-02", 10.0), ("2025-01-03", 12.0), ("2025-01-06", 9.0)]

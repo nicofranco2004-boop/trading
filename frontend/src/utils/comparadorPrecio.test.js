@@ -1,11 +1,14 @@
 // La pestaña «Precio» de Comparar: qué se le pide al servidor (con las reglas
 // de la ficha para tus lotes) y las palabras de abajo. La cuenta del 100 la
 // prueba el servidor (backend/tests/test_comparar_precio.py).
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, it, expect, beforeEach } from 'vitest'
 import { setBrokersRegistry } from './valuation'
 import {
   marcaLocal, primeraCompraDe, urlDelPedido, urlDeComparar, filasDelGrafico, fraseComparacion, monto,
-  vaciaPorVieja,
+  notaDelDolar, porQueArrancaAhi, vaciaPorVieja,
 } from './comparadorPrecio'
 
 const serie = (clave, final, tipo = 'activo') => ({ clave, nombre: clave, tipo, final, puntos: [] })
@@ -123,6 +126,33 @@ describe('lo que dicen los números', () => {
   })
 })
 
+describe('con qué dólar va cada línea (auditoría del contado con liqui, 06/11)', () => {
+  const con = (clave, convertida, tipo = 'activo') => ({ ...serie(clave, 100, tipo), convertida })
+  const enPesos = (...series) => notaDelDolar(res(series, { moneda: 'ars' }))
+
+  it('en pesos: los CEDEARs y el S&P 500 con el contado con liqui; lo demás de afuera, con el MEP', () => {
+    expect(enPesos(con('AAPL', 'ccl'), con('sp500', 'ccl', 'vara'), con('mep', null, 'vara')))
+      .toBe('Los CEDEARs y el S&P 500 se pasan a pesos con el dólar contado con liqui (CCL) de cada día.')
+    expect(enPesos(con('AAPL', 'ccl'), con('SCHD', 'mep'), con('sp500', 'ccl', 'vara')))
+      .toBe('Los CEDEARs y el S&P 500 se pasan a pesos con el dólar contado con liqui (CCL) de cada día; '
+        + 'lo demás que cotiza afuera, con el MEP.')
+    // Una acción argentina va con su precio de BYMA: sólo el S&P 500 se pasa.
+    expect(enPesos(con('GGAL', null), con('sp500', 'ccl', 'vara')))
+      .toBe('El S&P 500 se pasa a pesos con el dólar contado con liqui (CCL) de cada día.')
+    // Sacaste el S&P: se habla de lo que ves.
+    expect(enPesos(con('AAPL', 'ccl')))
+      .toBe('Los CEDEARs se pasan a pesos con el dólar contado con liqui (CCL) de cada día.')
+  })
+
+  it('sin la historia del contado con liqui, todo con el MEP; y en dólares, lo de siempre', () => {
+    expect(enPesos(con('AAPL', 'mep'), con('sp500', 'mep', 'vara')))
+      .toBe('Lo que cotiza afuera se pasa a pesos con el MEP de cada día.')
+    expect(enPesos(con('GGAL', null))).toBe('')
+    expect(notaDelDolar(res([con('GGAL', 'mep'), con('sp500', null, 'vara')])))
+      .toBe('Las acciones argentinas se pasan a dólares con el MEP de cada día.')
+  })
+})
+
 describe('el panel vacío cuando todo lo pedido está viejo (H1, 06/11)', () => {
   const vieja = (clave, hasta) => ({ clave, motivo: 'vieja', hasta })
   it('dice que faltan precios recientes, con el último que hay; no «probá con otro activo»', () => {
@@ -138,5 +168,23 @@ describe('el panel vacío cuando todo lo pedido está viejo (H1, 06/11)', () => 
     expect(vaciaPorVieja(r, ['MU', 'AL30'])).toBeNull()
     expect(vaciaPorVieja({ series: [], faltan: [{ clave: 'AL30', motivo: 'sin_serie' }] }, ['AL30'])).toBeNull()
     expect(vaciaPorVieja({ series: [], faltan: [] }, ['MU'])).toBeNull()
+  })
+})
+
+// Lo que contesta el servidor (backend/tests/test_comparar_precio.py, LoQueLeeLaPantalla).
+const COMPARAR = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)),
+  '../../../backend/tests/fixtures/comparar_precio.json'), 'utf8'))
+
+describe('por qué todos arrancan en 100 ese día', () => {
+  // Un hueco de precios justo antes del día pedido: arrancan con el primer precio
+  // después, y se dice qué días faltan (Nico, 08/11).
+  it('el hueco, el que cotiza hace menos o nada, como lo contesta el servidor', () => {
+    expect(porQueArrancaAhi(COMPARAR.hueco)).toBe(' (faltan los precios de MU del 15/10/25 al 17/11/25)')
+    expect(porQueArrancaAhi(COMPARAR.corrida_por)).toBe(' (de NUEV tenemos precios desde ese día)')
+    expect(porQueArrancaAhi(COMPARAR.normal)).toBe('')
+  })
+
+  it('el borde de lo guardado, sin un activo que lo explique', () => {
+    expect(porQueArrancaAhi(res([], { base_corrida: true }))).toBe(' (los precios guardados empiezan ese día)')
   })
 })

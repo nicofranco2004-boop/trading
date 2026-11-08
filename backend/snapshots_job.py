@@ -180,6 +180,48 @@ def simbolo_byma(asset) -> str:
     return f"{BYMA_EXCEPCIONES.get(base, base)}.BA"
 
 
+# ─── El código con que data912 lista la especie en pesos ─────────────────────
+#
+# Casi siempre es el símbolo de arriba sin el '.BA', pero son dos cosas: el
+# SÍMBOLO es con el que la app pide y guarda el precio en pesos ('BAC.BA': el de
+# la pantalla, el de Yahoo, el de cada tabla), y el CÓDIGO es con el que la Bolsa
+# (data912: el precio en vivo y la historia de cada rueda) lista ese papel.
+#
+#   BAC → BA.C. El CEDEAR de Bank of America en pesos es 'BA.C' (desde 2020, 4
+#   CEDEARs por acción todos los años); el 'BAC' de data912 es otro papel, en
+#   dólares (7,29 el 06/11/2026 contra 20.660 de BA.C), y el 'BAC.BA' de Yahoo es
+#   ese mismo (una sola rueda). 'BA.C.BA' no sirve de símbolo: ni Yahoo ni
+#   `main._SYMBOL_RE` lo aceptan. Sin esta tabla, BAC se ESTIMABA en cinco lugares
+#   (Nueva York × contado con liqui ÷ 4, `main.CEDEAR_USD_RATIOS`; hoy es el
+#   respaldo si la Bolsa no tiene precio) y la ficha medía la liquidez de otro
+#   papel (audit/_scripts/medir_ba_c.out).
+#
+# Un papel de esta tabla no tiene serie en Yahoo: su historia diaria es la de la
+# Bolsa (`velas_diarias._bajar`) y velas de 1 hora no tiene ninguna fuente.
+EN_DATA912 = {'BAC': 'BA.C'}
+
+
+def codigo_en_byma(simbolo) -> str:
+    """El código de data912 de la especie en pesos de `simbolo` ('BAC.BA' o
+    'BAC' → 'BA.C'; 'AAPL.BA' → 'AAPL'; 'BRK-B' → 'BRKB'). Todo lo que lee la
+    Bolsa por el símbolo de la app pasa por acá: el precio de ahora, el cierre
+    anterior, la historia de cada rueda y la liquidez."""
+    s = (simbolo or '').strip().upper()
+    base = s[:-3] if s.endswith('.BA') else s
+    base = BYMA_EXCEPCIONES.get(base, base)
+    return EN_DATA912.get(base, base)
+
+
+def solo_en_byma(simbolo) -> bool:
+    """¿Es el '.BA' de un papel que Yahoo no tiene (`EN_DATA912`: el 'BAC.BA' de
+    Yahoo es otro papel)? Su historia sale de la Bolsa, nunca de Yahoo."""
+    s = (simbolo or '').strip().upper()
+    if not s.endswith('.BA'):
+        return False
+    base = s[:-3]
+    return BYMA_EXCEPCIONES.get(base, base) in EN_DATA912
+
+
 def position_price_key(p: dict, ars_names: set, ar_usd_names: set) -> str:
     """Símbolo de precio que valúa esta posición: '<ASSET>.BA' (precio LOCAL ARS)
     si se valúa por su .BA — holdings en broker ARS, en sub-broker '· USD',
@@ -616,24 +658,20 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict,
 
     # CEDEARs que las fuentes cotizan en USD (ej. BAC): fetcheamos el subyacente
     # US y devolvemos el precio en pesos (× CCL ÷ ratio), igual que main.get_prices.
-    # Sin esto, el snapshot diario guardaría el valor en USD (~9) en vez de ~20.570
-    # ARS → historia de portfolio subvaluada. Lazy import para evitar el ciclo
+    # Es el RESPALDO: más abajo la Bolsa pisa todo '.BA' que tenga, y BAC.BA lo
+    # tiene con su código ('BA.C', `codigo_en_byma`). Sin ninguno de los dos, el
+    # snapshot diario guardaría el valor en USD (~9) en vez de ~20.570 ARS →
+    # historia de portfolio subvaluada. Lazy import para evitar el ciclo
     # snapshots_job ↔ main.
     try:
-        from main import (CEDEAR_USD_RATIOS as _CED_RATIOS,
-                          _current_ccl as _cur_ccl, _fetch_dolar as _fd)
+        from main import (CEDEAR_USD_RATIOS as _CED_RATIOS, _ccl_de_las_fechas as _ccls_de,
+                          _fetch_dolar as _fd, get_db as _get_db)
     except Exception:
-        _CED_RATIOS, _cur_ccl, _fd = {}, (lambda: None), (lambda casa: None)
+        _CED_RATIOS, _ccls_de, _fd, _get_db = {}, None, (lambda casa: None), None
     cedear_usd = {s: s[:-3] for s in symbols
                   if s.endswith('.BA') and s[:-3] in _CED_RATIOS}
-    _ccl = None
-    if cedear_usd:
-        _ccl = _cur_ccl()
-        if not _ccl:
-            _d = _fd("contadoconliqui")  # cron sin caché de dólar → fetch directo
-            # medio, igual que la valuación live: `_fetch_dolar` lo estampa, con
-            # fallback a venta para caché/casas sin compra.
-            _ccl = (_d or {}).get("medio") or (_d or {}).get("venta")
+    # La fecha de cada cierre de Yahoo: con ella, el contado con liqui de SU día.
+    _fecha_de = {}
 
     def _to_yf_us(s):
         # Acción US: yfinance cotiza las CLASES con guión ('BRK-B'). Un import US
@@ -683,18 +721,46 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict,
         cierres = _yahoo.ultimos_cierres(data, yf_tickers)
         for sym, yf_t in sym_to_yf.items():
             if yf_t in cierres:
-                result[sym] = cierres[yf_t][0]
+                result[sym], _fecha_de[sym] = cierres[yf_t]
     except Exception as e:
         log.warning(f"descarga de Yahoo falló para el lote: {e}")
 
     # CEDEARs USD-cotizados: el precio fetcheado es el del subyacente US (USD) →
-    # a pesos (× CCL ÷ ratio). Sin CCL los dejamos en None (no persistimos el
-    # valor en USD roto; el chequeo de cobertura del snapshot decide qué hacer).
+    # a pesos (× CCL ÷ ratio, `tecnico.a_la_moneda`: LA cuenta del gráfico en
+    # pesos y de /api/prices), con el contado con liqui de la fecha de ese cierre
+    # (`main._ccl_de_las_fechas`, la regla de /api/prices: el de hoy, el de ahora;
+    # el de un día anterior, el de su día). Si no hay ninguno (el cron con el caché
+    # frío y nada guardado), dolarapi directo. Sin CCL los dejamos en None (no
+    # persistimos el valor en USD roto; el chequeo de cobertura del snapshot decide
+    # qué hacer). La base, después de Yahoo y cerrada antes de salir otra vez.
     if cedear_usd:
+        import tecnico as _tec
+        _ccls = {}
+        if _ccls_de and _get_db:
+            try:
+                _c = _get_db()
+                try:
+                    _ccls = _ccls_de(_c, [_fecha_de.get(s) for s in cedear_usd])
+                finally:
+                    _c.close()
+            except Exception as e:
+                # Sin la base, dolarapi directo (abajo): un error acá no deja la
+                # foto de todos sin precios.
+                log.warning(f"contado con liqui de los CEDEAR en dólares para la foto: {e}")
+                _ccls = {}
+        _directo = None
         for _csym, _base in cedear_usd.items():
             if result.get(_csym) is not None:
+                _ccl = _ccls.get(_fecha_de.get(_csym))
+                if not _ccl:
+                    if _directo is None:
+                        _d = _fd("contadoconliqui")  # cron sin caché de dólar → fetch directo
+                        # Con la regla de la Cartera y del gráfico (`dolar_de_la_cache`).
+                        _directo = _tec.dolar_de_la_cache({"ccl": _d}, "ccl") or 0
+                    _ccl = _directo
                 _r = _CED_RATIOS.get(_base) or 1
-                result[_csym] = round(result[_csym] * _ccl / _r, 4) if (_ccl and _ccl > 0) else None
+                result[_csym] = (round(_tec.a_la_moneda(result[_csym], _ccl, "multiplicar", _r), 4)
+                                 if (_ccl and _ccl > 0) else None)
 
     # Bonos/ONs AR: data912 cotiza per-100 y el sistema usa per-1 (÷100). yfinance da
     # el '.BA' per-100 SIN dividir → el snapshot inflaba los bonos ×100 (chart "Hoy"
@@ -716,8 +782,9 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict,
     # Como devuelve UN número, no queda en None y el snapshot nocturno —el que alimenta
     # la curva de evolución y el CAGR— valuaba a ese precio viejo, en silencio, y la
     # curva divergía del total live. Ahora data912 PISA lo de yfinance para .BA (lo
-    # que no cubre queda en yfinance). Se cuenta aparte lo que estaba SÓLO en yfinance
-    # (None) para la señal diaria.
+    # que no cubre queda en yfinance), y también el estimado de BAC: su CEDEAR en
+    # pesos de la Bolsa ('BA.C') es el precio de verdad. Se cuenta aparte lo que
+    # estaba SÓLO en yfinance (None) para la señal diaria.
     _sin_precio_yf = [s for s in symbols if result.get(s) is None]
     _rescatados = 0
     try:

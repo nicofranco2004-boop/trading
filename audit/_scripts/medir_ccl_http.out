@@ -1,0 +1,36 @@
+## La ficha en pesos: el último cierre, el código de antes (MEP) → el de ahora (contado con liqui)
+   contra el cierre de BYMA ese día (data912; BAC: «BA.C», su CEDEAR en pesos)
+  ficha         antes      ahora       BYMA  antes/BYMA  ahora/BYMA   dólar  escala  hace un año: antes/BYMA → ahora/BYMA   tendencia
+  AAPL         27.337     28.885     28.600      -4,4 %       1,0 %     ccl   20,00  -1,1 % → 0,0 %                         alcista → alcista
+  MELI         21.167     21.399     21.340      -0,8 %       0,3 %     ccl  120,03  3,0 % → -0,3 %                         bajista → bajista
+  NVDA         12.020     12.701     12.740      -5,6 %      -0,3 %     ccl   24,00  —                                      bajista → bajista
+  KO           31.814     32.207     32.100      -0,9 %       0,3 %     ccl    4,99  3,5 % → 0,3 %                          alcista → alcista
+  GOOGL         7.739      8.178      8.190      -5,5 %      -0,1 %     ccl   58,00  -0,6 % → 0,6 %                         bajista → bajista
+  MSFT         28.379     29.986     29.780      -4,7 %       0,7 %     ccl   30,00  -1,5 % → -0,4 %                        alcista → alcista
+  DISN         15.518     16.397     16.100      -3,6 %       1,8 %     ccl   12,00  -1,4 % → -0,3 %                        alcista → alcista
+  BRKB         41.327     43.667     43.620      -5,3 %       0,1 %     ccl   22,00  —                                      alcista → alcista
+  SPY          19.407     20.506     20.540      -5,5 %      -0,2 %     ccl   60,00  -67,2 % → -66,8 %                      alcista → alcista
+  BAC          19.762     20.881     20.950      -5,7 %      -0,3 %     ccl    4,00  -2,0 % → -0,8 %                        bajista → bajista
+  NET               — sin gráfico   (sin_escala)
+  SCHD         56.268     56.268          —           —           —     mep       —  —                                      alcista → alcista
+  MELI.BA      21.167     21.399     21.340      -0,8 %       0,3 %     ccl  120,03  3,0 % → -0,3 %                         bajista → bajista
+  KO.BA        31.814     32.207     32.100      -0,9 %       0,3 %     ccl    4,99  3,5 % → 0,3 %                          alcista → alcista
+
+## El día que la noche borra la serie vieja: cuánto salta el último cierre
+  MELI.BA  antes: 21.167 → 20.258 (-4,3 %)   ahora: 21.399 → 21.405 (0,0 %)
+  KO.BA    antes: 31.814 → 30.415 (-4,4 %)   ahora: 32.207 → 32.138 (-0,2 %)
+
+## La vela de hoy y las de 1 hora (en pesos)
+  AAPL  hoy antes [{'d': '2026-11-06', 'c': 27184.1776, 'hoy': True}]  ahora [{'d': '2026-11-06', 'c': 28444.9551, 'hoy': True}]
+        1h  antes {'convertida': 'mep', 'escala': 20.0, 'ultimas': [['2026-11-06', 27327.0991], ['2026-11-06', 27294.9422], ['2026-11-06', 27183.7802]]}  ahora {'convertida': 'ccl', 'escala': 20.0, 'ultimas': [['2026-11-06', 28594.5051], ['2026-11-06', 28560.8568], ['2026-11-06', 28444.5393]]}
+  BAC   hoy antes [{'d': '2026-11-06', 'c': 19619.7393, 'hoy': True}]  ahora [{'d': '2026-11-06', 'c': 20529.685, 'hoy': True}]
+        1h  antes {'convertida': 'mep', 'escala': 4.0, 'ultimas': [['2026-11-06', 19752.7354], ['2026-11-06', 19736.8551], ['2026-11-06', 19615.7699]]}  ahora {'convertida': 'ccl', 'escala': 4.0, 'ultimas': [['2026-11-06', 20668.8494], ['2026-11-06', 20652.2325], ['2026-11-06', 20525.5316]]}
+
+## BAC en la Cartera (el precio y el cierre anterior; el gráfico, arriba)
+  precio                 antes 20529.685  ahora 20529.685
+  cierre_anterior        antes 20670.9253  ahora 20881.1613
+  ccl_ahora              antes 1661.65  ahora 1661.65
+  mini_primero_y_ultimo  antes [['2025-11-03', 22099.945], ['2026-10-26', 20774.7791]]  ahora [['2025-11-03', 19588.24], ['2026-10-26', 20715.3923]]
+
+## En dólares, ¿algo cambió? (no tendría que cambiar nada)
+   nada

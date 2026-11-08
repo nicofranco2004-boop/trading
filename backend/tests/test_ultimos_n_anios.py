@@ -24,6 +24,7 @@ pantallas se piden por HTTP:
   · Comparar → Precio: GET /api/comparar/precio?plazo=1a|3a
   · «Una cartera»:     GET /api/backtest/cartera
   · Una regla:         GET /api/tecnico/{activo}/backtest
+  · «Mi cartera de hoy», con la que abre «Una cartera»: GET /api/backtest/cartera/hoy
 «Hoy» es un día de la semana elegido (un domingo, un lunes, el sábado después de
 un feriado) de hace unas semanas, contado desde el día en que corre la prueba:
 no vence con la fecha. Lo fija `fechas.ahora_art`, de donde sale el día
@@ -313,6 +314,161 @@ class LasTresPantallas(unittest.TestCase):
         hoy = _el_ultimo(SABADO)                              # último precio el viernes: arranca el jueves
         self._el_resumen_dice_lo_de_la_ficha(hoy, hoy - timedelta(days=1))
 
+    # ─── Un hueco de precios justo antes del día de arranque (Nico, 08/11) ─────
+    # Más de 10 días sin precios justo antes: la ficha no daba la ganancia de 12
+    # meses, y Comparar, «Una cartera» y Una regla arrancaban con el cierre de antes
+    # del hueco («1 año» medía un año y tres semanas; auditoría 06/11 del precio de
+    # arranque, H1). Ahora arrancan con el primer precio después, y lo dicen.
+
+    def _sin_precios(self, yahoo, desde, hasta):
+        """Saca de MU los días de `desde` a `hasta`: el S&P 500 y el Nasdaq, enteros."""
+        for d in [d for d in yahoo.series["MU"] if desde <= d <= hasta]:
+            del yahoo.series["MU"][d]
+
+    def _arrancan_despues_del_hueco(self, c, k, b, ficha, yahoo, hasta, arranque):
+        serie = yahoo.series["MU"]
+        antes = max(d for d in serie if d <= arranque)                 # el último antes del hueco
+        despues = min(d for d in serie if d > arranque)                # el primero después
+        siguiente = min(d for d in serie if d > despues)               # la primera rueda de Una regla
+        hueco = {"desde": (antes + timedelta(days=1)).isoformat(), "hasta": (despues - timedelta(days=1)).isoformat()}
+        cierre = serie[hasta] / serie[despues] * 100
+        self.assertEqual((c["base"], c["base_corrida"], c["base_corrida_por"], c["base_corrida_hueco"]),
+                         (despues.isoformat(), True, "MU", hueco), "Comparar")
+        self.assertEqual((k["desde"], k["recortado"], k["recorte_por"], k["recorte_hueco"]),
+                         (despues.isoformat(), True, "MU", hueco), "«Una cartera»")
+        self.assertEqual((b["desde"], b["recortado"], b["recorte_por"], b["recorte_hueco"], b["variacion_desde"]),
+                         (siguiente.isoformat(), True, None, hueco, despues.isoformat()), "Una regla")
+        self.assertAlmostEqual(self._serie(c, "MU")["final"], cierre, places=2)
+        self.assertAlmostEqual(k["cartera"]["final"], cierre, places=2)
+        self.assertAlmostEqual(b["variacion_precio"], cierre - 100, places=6)
+        self.assertIsNone(ficha, "la ficha: sin la ganancia de 12 meses, como antes")
+        sp = next(i for i in k["indices"] if i["clave"] == "sp500")
+        self.assertEqual(self._serie(c, "sp500")["final"], round(sp["final"], 2), "el S&P 500, desde el mismo día")
+
+    def test_con_11_dias_sin_precios_justo_antes_arrancan_despues_y_lo_dicen(self):
+        # El último precio el martes: el día de arranque es el lunes de hace un año.
+        # Sin precios del viernes anterior al domingo siguiente: el último es el jueves,
+        # 11 días antes, y el primero después cae a 7 días, en la semana de margen. El
+        # hueco se dice igual: no es un feriado largo.
+        hoy = _el_ultimo(MIERCOLES)
+        martes = hoy - timedelta(days=1)
+        arranque = martes - timedelta(days=365)
+        self.assertEqual(arranque.weekday(), LUNES)
+        yahoo = self._mercado(hoy, martes)
+        self._sin_precios(yahoo, arranque - timedelta(days=10), arranque + timedelta(days=6))
+        self.assertEqual((arranque - max(d for d in yahoo.series["MU"] if d <= arranque)).days, 11)
+        c, k, b, ficha = self._las_tres(hoy, yahoo, 1, ficha=True)
+        self._arrancan_despues_del_hueco(c, k, b, ficha, yahoo, martes, arranque)
+
+    def test_con_un_hueco_largo_arrancan_despues_y_lo_dicen(self):
+        hoy = _el_ultimo(SABADO)
+        viernes = hoy - timedelta(days=1)
+        arranque = viernes - timedelta(days=365)                       # un jueves
+        yahoo = self._mercado(hoy, viernes)
+        self._sin_precios(yahoo, arranque - timedelta(days=20), arranque + timedelta(days=13))
+        c, k, b, ficha = self._las_tres(hoy, yahoo, 1, ficha=True)
+        self._arrancan_despues_del_hueco(c, k, b, ficha, yahoo, viernes, arranque)
+
+    def test_dos_activos_el_que_corre_el_dia_y_un_hueco_justo_antes_del_dia_nuevo(self):
+        # ARM cotiza desde 30 días después del día de arranque y corre el día para todos;
+        # a MU le faltan los precios justo antes de ese día nuevo. Su 100 era un cierre de
+        # 16 días antes: el día se corre otra vez, al primer precio de MU después, y las
+        # dos pantallas nombran al mismo (auditoría 08/11 del hueco, H1 y H2).
+        hoy = _el_ultimo(SABADO)
+        viernes = hoy - timedelta(days=1)
+        arranque = viernes - timedelta(days=365)
+        yahoo = self._mercado(hoy, viernes)
+        yahoo.series["ARM"] = {d: 50.0 + d.toordinal() % 37 for d in _habiles(arranque + timedelta(days=30), viernes)}
+        self._sin_precios(yahoo, arranque + timedelta(days=15), arranque + timedelta(days=33))
+        serie = yahoo.series["MU"]
+        llega_arm = min(yahoo.series["ARM"])
+        antes = max(d for d in serie if d <= llega_arm)
+        despues = min(d for d in serie if d > llega_arm)
+        self.assertGreater((llega_arm - antes).days, 10, "en el día de ARM, el último de MU es viejo")
+        hueco = {"desde": (antes + timedelta(days=1)).isoformat(), "hasta": (despues - timedelta(days=1)).isoformat()}
+        # ARM también es de la persona, como MU: si no, ninguna pantalla lo baja.
+        r = self.client.post("/api/positions", json={"broker": "Schwab", "asset": "ARM", "quantity": 1,
+                                                     "buy_price": 50, "asset_type": "STOCK"}, headers=self.h)
+        self.assertIn(r.status_code, (200, 201), r.text)
+        with self._un_dia(hoy, yahoo):
+            main._run_velas_diarias_job()
+            c = self._get("/api/comparar/precio?activos=MU,ARM&moneda=usd&plazo=1a")
+            k = self._get("/api/backtest/cartera?activos=MU,ARM&pesos=50,50&anios=1")
+        self.assertEqual((c["base"], c["base_corrida_por"], c["base_corrida_hueco"]), (despues.isoformat(), "MU", hueco))
+        self.assertEqual((k["desde"], k["recorte_por"], k["recorte_hueco"]), (despues.isoformat(), "MU", hueco))
+        self.assertAlmostEqual(self._serie(c, "MU")["final"], serie[viernes] / serie[despues] * 100, places=2)
+        mu = next(a for a in k["activos"] if a["asset"] == "MU")
+        # «Una cartera» lleva cada línea a 100 con 4 decimales (`comparar.base_cien`).
+        self.assertAlmostEqual(mu["resultado"], serie[viernes] / serie[despues] * 100 - 100, places=3)
+
+    def test_con_pocas_ruedas_despues_del_hueco_las_dos_dicen_el_hueco(self):
+        # Sin precios desde 20 días antes del día de arranque hasta 40 días antes del
+        # último: después del hueco quedan menos de 60 ruedas. «Una cartera» y Una regla
+        # no simulan, y mandan el hueco para decir por qué; antes la pantalla lo armaba a
+        # mano (auditoría 08/11 de las pruebas del hueco, M18 y M25).
+        hoy = _el_ultimo(MIERCOLES)
+        martes = hoy - timedelta(days=1)
+        arranque = martes - timedelta(days=365)
+        yahoo = self._mercado(hoy, martes)
+        self._sin_precios(yahoo, arranque - timedelta(days=20), martes - timedelta(days=40))
+        serie = yahoo.series["MU"]
+        antes = max(d for d in serie if d <= arranque)
+        despues = min(d for d in serie if d > arranque)
+        hueco = {"desde": (antes + timedelta(days=1)).isoformat(), "hasta": (despues - timedelta(days=1)).isoformat()}
+        _, k, b = self._las_tres(hoy, yahoo, 1)
+        self.assertEqual((k["disponible"], k["motivo"], k["recorte_por"], k["recorte_hueco"]),
+                         (False, "poca_historia", "MU", hueco), "«Una cartera»")
+        self.assertEqual((b["disponible"], b["motivo"], b["recorte_por"], b["recorte_hueco"]),
+                         (False, "poca_historia", None, hueco), "Una regla")
+
+    def test_si_la_regla_corre_el_principio_mas_que_el_hueco_se_dice_la_regla(self):
+        # MU cotiza desde 120 días antes del día de arranque y le faltan precios justo
+        # antes: la media de 200 días recién existe meses después del hueco. La que corre
+        # el principio es la regla, no el hueco (auditoría 08/11 de las pruebas, M23).
+        hoy = _el_ultimo(MIERCOLES)
+        martes = hoy - timedelta(days=1)
+        arranque = martes - timedelta(days=365)
+        yahoo = self._mercado(hoy, martes)
+        self._sin_precios(yahoo, date.min, arranque - timedelta(days=120))
+        self._sin_precios(yahoo, arranque - timedelta(days=20), arranque + timedelta(days=13))
+        with self._un_dia(hoy, yahoo):
+            main._run_velas_diarias_job()
+            b = self._get("/api/tecnico/MU/backtest?reglas=media200&anios=1")
+        self.assertTrue(b["recortado"], b)
+        self.assertEqual((b["recorte_por"], b["recorte_hueco"]), ("media200", None))
+
+    def test_desde_tu_primera_compra_con_un_hueco_justo_antes_arranca_despues(self):
+        # «Desde tu primera compra», con la misma regla: si le faltan los precios de más
+        # de 10 días justo antes del día de la compra, arranca con el primero después y lo
+        # dice (auditoría 08/11 de las pruebas del hueco).
+        hoy = _el_ultimo(SABADO)
+        viernes = hoy - timedelta(days=1)
+        compra = viernes - timedelta(days=200)
+        yahoo = self._mercado(hoy, viernes)
+        self._sin_precios(yahoo, compra - timedelta(days=20), compra + timedelta(days=9))
+        serie = yahoo.series["MU"]
+        antes = max(d for d in serie if d <= compra)
+        despues = min(d for d in serie if d > compra)
+        hueco = {"desde": (antes + timedelta(days=1)).isoformat(), "hasta": (despues - timedelta(days=1)).isoformat()}
+        with self._un_dia(hoy, yahoo):
+            main._run_velas_diarias_job()
+            c = self._get(f"/api/comparar/precio?activos=MU&moneda=usd&plazo=compra&desde={compra.isoformat()}")
+        self.assertEqual((c["base"], c["base_corrida_por"], c["base_corrida_hueco"]), (despues.isoformat(), "MU", hueco))
+        self.assertAlmostEqual(self._serie(c, "MU")["final"], serie[viernes] / serie[despues] * 100, places=2)
+
+    def test_con_el_ultimo_precio_a_10_dias_justos_arrancan_el_dia_pedido(self):
+        # El borde: a 10 días justos todavía vale ese cierre, en las cuatro pantallas
+        # (la ficha también da su número).
+        hoy = _el_ultimo(MIERCOLES)
+        martes = hoy - timedelta(days=1)
+        arranque = martes - timedelta(days=365)
+        yahoo = self._mercado(hoy, martes)
+        self._sin_precios(yahoo, arranque - timedelta(days=9), arranque + timedelta(days=6))
+        self.assertEqual((arranque - max(d for d in yahoo.series["MU"] if d <= arranque)).days, 10)
+        c, k, b, ficha = self._las_tres(hoy, yahoo, 1, ficha=True)
+        self._arrancan_igual(c, k, b, yahoo, martes, ficha=ficha)
+        self.assertEqual((c["base_corrida"], k["recortado"], b["recorte_hueco"]), (False, False, None))
+
     # ─── H9: los precios viejos se miden contra hoy ─────────────────────────
 
     def _ninguna_compara(self, c, k, b, hasta):
@@ -479,6 +635,233 @@ class LasTresPantallas(unittest.TestCase):
         self.assertIsNotNone(self._serie(c, "sp500"), c["faltan"])
 
 
+class _YahooQueCuenta(Yahoo):
+    """El mismo Yahoo, anotando qué se le pidió."""
+
+    def __init__(self, hoy: date):
+        super().__init__(hoy)
+        self.pedidos = []
+
+    def __call__(self, ticker, *a, **k):
+        self.pedidos.append(ticker)
+        return super().__call__(ticker, *a, **k)
+
+
+class MiCarteraDeHoy(unittest.TestCase):
+    """«Mi cartera de hoy» (GET /api/backtest/cartera/hoy) deja afuera lo que no
+    tiene precios de la última semana, con LA regla (`tecnico.es_vieja`) y LA
+    serie con que después simula «Una cartera», y reparte el resto en su
+    proporción. Antes lo dejaba adentro y la simulación rechazaba la cartera
+    entera: sacarlo dejaba «Faltan 20%», y «Repartir en partes iguales», 50 y 50
+    en vez de 62,5 y 37,5 (auditoría de pantalla 06/11, H3; Nico, 06/11: «Sí,
+    así»). Cada caso pide después la simulación de lo que trajo, como la pantalla."""
+
+    def setUp(self):
+        self.client = TestClient(main.app)
+        with main.db_abierta() as conn:
+            for t in ("velas_diarias", "velas_estado", "cambios_ratio", "watchlist", "positions",
+                      "brokers", "fx_rates_daily", "bond_indices_daily"):
+                conn.execute(f"DELETE FROM {t}")
+            uid = conn.execute(
+                "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'x', 1, 1, 'pro')", (f"hoy-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            conn.commit()
+        self.h = {"Authorization": f"Bearer {main.create_token(uid)}"}
+        self._p = [mock.patch("main._check_rate_limit"),
+                   mock.patch("cambios_ratio._splits_de_yahoo", lambda t: []),
+                   mock.patch("cambios_ratio._historia_byma", lambda c: {}),
+                   mock.patch("main._fetch_data912_equities", lambda: {}),
+                   mock.patch("main._fetch_cer_series", lambda: {}),
+                   mock.patch("main._fetch_uva_series", lambda: {})]
+        for p in self._p:
+            p.start()
+        velas_diarias._a_pedido_hechos.clear()
+        # Sin último precio guardado, cada lote vale lo que costó: 500, 300 y 200 (50, 30 y 20 %).
+        for asset, precio in (("AAPL", 50), ("NVDA", 30), ("MU", 20)):
+            self._lote("Schwab", "USD", asset, "STOCK", 10, precio)
+
+    def tearDown(self):
+        for p in self._p:
+            p.stop()
+        with main.db_abierta() as conn:   # tablas globales (sin user_id)
+            for t in ("fx_rates_daily", "bond_indices_daily", "velas_diarias", "velas_estado"):
+                conn.execute(f"DELETE FROM {t}")
+            conn.commit()
+
+    def _lote(self, broker, moneda, asset, tipo, cantidad, precio):
+        r = self.client.post("/api/brokers", json={"name": broker, "currency": moneda}, headers=self.h)
+        self.assertIn(r.status_code, (200, 400), r.text)
+        r = self.client.post("/api/positions", json={"broker": broker, "asset": asset, "quantity": cantidad,
+                                                     "buy_price": precio, "asset_type": tipo}, headers=self.h)
+        self.assertIn(r.status_code, (200, 201), r.text)
+
+    def _mercado(self, hoy, hasta: dict, indices_hasta=None):
+        """Yahoo con cada ticker de `hasta` ({ticker: último día}) y el S&P 500 y el
+        Nasdaq hasta `indices_hasta` (por defecto, ayer), de lunes a viernes desde hace 5 años."""
+        yahoo = _YahooQueCuenta(hoy)
+        desde = hoy - CINCO_ANIOS
+        for k, (t, ultimo) in enumerate(sorted(hasta.items())):
+            yahoo.series[t] = {d: _precio(d) * (1 + k) for d in _habiles(desde, ultimo)}
+        for t, f in (("^GSPC", lambda d: 4000 + d.toordinal() % 997), ("^IXIC", lambda d: 12000 + d.toordinal() % 613)):
+            yahoo.series[t] = {d: float(f(d)) for d in _habiles(desde, indices_hasta or hoy - timedelta(days=1))}
+        return yahoo
+
+    @contextmanager
+    def _un_dia(self, hoy, yahoo):
+        with mock.patch("fechas.ahora_art", return_value=datetime(hoy.year, hoy.month, hoy.day, 15, 0)), \
+             mock.patch("pricing.yahoo._historia", yahoo):
+            yield
+
+    def _get(self, url):
+        main._freno_reiniciar()
+        r = self.client.get(url, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def _simular(self, hoy_):
+        """Lo que pide la pantalla con «Mi cartera de hoy» recién traída (`consultaDe`)."""
+        activos = ",".join(a["asset"] for a in hoy_["activos"])
+        pesos = ",".join(str(a["peso"]) for a in hoy_["activos"])
+        local = ",".join(a["asset"] for a in hoy_["activos"] if a["local"])
+        return self._get(f"/api/backtest/cartera?activos={activos}&pesos={pesos}&local={local}&anios=1")
+
+    def test_el_que_dejo_de_cotizar_queda_afuera_y_el_resto_va_en_su_proporcion(self):
+        hoy = _el_ultimo(MIERCOLES)
+        ayer, parado = hoy - timedelta(days=1), hoy - timedelta(days=61)
+        with self._un_dia(hoy, self._mercado(hoy, {"AAPL": ayer, "NVDA": ayer, "MU": parado})):
+            main._run_velas_diarias_job()
+            r = self._get("/api/backtest/cartera/hoy")
+            k = self._simular(r)
+            mu = self._get("/api/backtest/cartera?activos=MU&pesos=100&anios=1")
+        self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]], [("AAPL", 62.5), ("NVDA", 37.5)])
+        self.assertEqual(r["afuera"], [{"asset": "MU", "tipo": "STOCK", "motivo": "vieja", "hasta": parado.isoformat()}])
+        self.assertEqual((r["parte"], r["efectivo_o_plazos"]), (80, False))
+        # La pantalla la simula de entrada, con tus pesos entre los dos.
+        self.assertTrue(k["disponible"], k)
+        self.assertEqual([(a["asset"], round(a["peso"], 9)) for a in k["activos"]], [("AAPL", 62.5), ("NVDA", 37.5)])
+        # Y lo que dice de MU es lo que dice la simulación de MU: la misma fecha.
+        self.assertEqual(mu["faltan"], [{"asset": "MU", "motivo": "vieja", "hasta": parado.isoformat()}])
+
+    def test_con_efectivo_dice_que_lo_hay_sin_decir_cuanto(self):
+        # US$ 300 de efectivo, cargados por donde los carga la pantalla: la nota tiene que
+        # nombrarlo, o parecía que todo lo que faltaba era MU (revisión 06/11).
+        hoy = _el_ultimo(MIERCOLES)
+        ayer, parado = hoy - timedelta(days=1), hoy - timedelta(days=61)
+        with self._un_dia(hoy, self._mercado(hoy, {"AAPL": ayer, "NVDA": ayer, "MU": parado})):
+            r = self.client.post("/api/cash/flow", json={"broker_name": "Schwab", "direction": "deposit", "amount": 300},
+                                 headers=self.h)
+            self.assertEqual(r.status_code, 200, r.text)
+            main._run_velas_diarias_job()
+            r = self._get("/api/backtest/cartera/hoy")
+        self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]], [("AAPL", 62.5), ("NVDA", 37.5)])
+        self.assertEqual((r["parte"], r["efectivo_o_plazos"]), (62, True))
+        self.assertEqual([x["asset"] for x in r["afuera"]], ["MU"])
+
+    def test_una_semana_justa_todavia_entra_y_ocho_dias_ya_no(self):
+        # El borde de LA regla, por la ruta: MU de hace 7 días entra; NVDA de hace 8, no.
+        hoy = _el_ultimo(MIERCOLES)
+        siete, ocho = hoy - timedelta(days=7), hoy - timedelta(days=8)
+        with self._un_dia(hoy, self._mercado(hoy, {"AAPL": hoy - timedelta(days=1), "MU": siete, "NVDA": ocho})):
+            main._run_velas_diarias_job()
+            r = self._get("/api/backtest/cartera/hoy")
+            k = self._simular(r)
+        self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]], [("AAPL", 71.4), ("MU", 28.6)])
+        self.assertEqual(r["afuera"], [{"asset": "NVDA", "tipo": "STOCK", "motivo": "vieja", "hasta": ocho.isoformat()}])
+        self.assertTrue(k["disponible"], k)
+
+    def test_una_accion_argentina_sin_mep_reciente_queda_afuera_como_la_rechaza_la_simulacion(self):
+        # LA serie con que se simula tu GGAL de IOL es su precio de BYMA ÷ el MEP de cada
+        # día, y una vela sin MEP de la última semana se saltea (`tecnico._convertir`).
+        # BYMA llega hasta ayer, pero el MEP dejó de llegar hace 16 días: en dólares, GGAL
+        # llega hasta 7 días después del último MEP. Con otra serie, «Mi cartera de hoy»
+        # la dejaba adentro y la simulación la rechazaba igual: la fecha de lo GUARDADO
+        # (ayer), o el ADR de Nueva York, al día porque otra persona lo tiene en Schwab.
+        hoy = _el_ultimo(MIERCOLES)
+        ayer, mep = hoy - timedelta(days=1), hoy - timedelta(days=16)
+        with main.db_abierta() as conn:
+            for d in _habiles(hoy - CINCO_ANIOS, mep):
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
+                             (d.isoformat(), 1500.0, 1300.0))
+            otra = conn.execute(
+                "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'x', 1, 1, 'pro')", (f"adr-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            conn.commit()
+        self._lote("IOL", "ARS", "GGAL", "ACCION", 1000, 50)
+        mia, self.h = self.h, {"Authorization": f"Bearer {main.create_token(otra)}"}
+        self._lote("Schwab", "USD", "GGAL", "STOCK", 10, 30)
+        self.h = mia
+        yahoo = self._mercado(hoy, {"AAPL": ayer, "NVDA": ayer, "MU": ayer, "GGAL.BA": ayer, "GGAL": ayer})
+        with self._un_dia(hoy, yahoo):
+            main._run_velas_diarias_job()
+            r = self._get("/api/backtest/cartera/hoy")
+            k = self._simular(r)
+            ggal = self._get("/api/backtest/cartera?activos=GGAL&pesos=100&local=GGAL&anios=1")
+        hasta = (mep + timedelta(days=7)).isoformat()
+        with main.db_abierta() as conn:
+            self.assertEqual((velas_diarias.ultima_fecha(conn, "GGAL.BA"), velas_diarias.ultima_fecha(conn, "GGAL")),
+                             (ayer.isoformat(), ayer.isoformat()), "lo guardado, y el ADR, están al día")
+        self.assertEqual(ggal["faltan"], [{"asset": "GGAL", "motivo": "vieja", "hasta": hasta}])
+        self.assertEqual([x for x in r["afuera"] if x["asset"] == "GGAL"],
+                         [{"asset": "GGAL", "tipo": "ACCION", "motivo": "vieja", "hasta": hasta}])
+        self.assertEqual([a["asset"] for a in r["activos"]], ["AAPL", "NVDA", "MU"])
+        self.assertTrue(k["disponible"], k)
+
+    def test_con_la_noche_caida_no_saca_ninguno_y_la_simulacion_dice_desde_cuando(self):
+        # Nada tiene precios de la última semana: sacándolos a todos, la tabla quedaba
+        # vacía y decía «Todavía no tenés acciones…». Van todos, como antes, y la
+        # simulación dice desde cuándo no hay (lo que ve la persona con H4, 06/11).
+        hoy = _el_ultimo(MIERCOLES)
+        ultimo = hoy - timedelta(days=9)
+        yahoo = self._mercado(hoy, dict.fromkeys(("AAPL", "NVDA", "MU"), ultimo), indices_hasta=ultimo)
+        with self._un_dia(hoy, yahoo):
+            main._run_velas_diarias_job()
+            r = self._get("/api/backtest/cartera/hoy")
+            k = self._simular(r)
+        self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]], [("AAPL", 50.0), ("NVDA", 30.0), ("MU", 20.0)])
+        self.assertEqual((r["afuera"], r["parte"]), ([], 100))
+        self.assertEqual((k["disponible"], k["motivo"]), (False, "vieja"))
+        self.assertEqual(sorted((f["asset"], f["hasta"]) for f in k["faltan"]),
+                         [(s, ultimo.isoformat()) for s in ("AAPL", "MU", "NVDA")])
+
+    def test_con_la_noche_caida_y_uno_comprado_despues_tampoco_saca_ninguno(self):
+        # AMD se compró con la noche caída: sin velas guardadas, no dice que haya alguno al
+        # día. Quedaba AMD sola al 100 % y AAPL, NVDA y MU afuera, como si hubieran dejado
+        # de cotizar, cuando la falla era nuestra (revisión 06/11).
+        hoy = _el_ultimo(MIERCOLES)
+        ultimo = hoy - timedelta(days=9)
+        yahoo = self._mercado(hoy, {**dict.fromkeys(("AAPL", "NVDA", "MU"), ultimo), "AMD": hoy - timedelta(days=1)},
+                              indices_hasta=ultimo)
+        with self._un_dia(hoy, yahoo):
+            main._run_velas_diarias_job()
+            self._lote("Schwab", "USD", "AMD", "STOCK", 10, 10)
+            r = self._get("/api/backtest/cartera/hoy")
+            k = self._simular(r)
+        self.assertEqual([a["asset"] for a in r["activos"]], ["AAPL", "NVDA", "MU", "AMD"])
+        self.assertEqual(r["afuera"], [])
+        self.assertEqual((k["disponible"], k["motivo"]), (False, "vieja"))
+        self.assertEqual(sorted(f["asset"] for f in k["faltan"]), ["AAPL", "MU", "NVDA"])
+
+    def test_lo_que_todavia_no_tiene_precios_no_queda_afuera_y_lo_baja_la_simulacion(self):
+        # AMD lo compraste después de la corrida de la noche: no tiene velas guardadas.
+        # No es «viejo»: «Mi cartera de hoy» no baja nada (no sale a Yahoo), y la
+        # simulación lo baja, como a un activo que nadie sigue.
+        hoy = _el_ultimo(MIERCOLES)
+        ayer = hoy - timedelta(days=1)
+        yahoo = self._mercado(hoy, {"AAPL": ayer, "NVDA": ayer, "MU": ayer, "AMD": ayer})
+        with self._un_dia(hoy, yahoo):
+            main._run_velas_diarias_job()
+            self._lote("Schwab", "USD", "AMD", "STOCK", 10, 10)
+            yahoo.pedidos.clear()
+            r = self._get("/api/backtest/cartera/hoy")
+            self.assertEqual(yahoo.pedidos, [], "«Mi cartera de hoy» no sale a buscar precios")
+            k = self._simular(r)
+        self.assertIn("AMD", yahoo.pedidos, "la simulación lo bajó")
+        self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]],
+                         [("AAPL", 45.4), ("NVDA", 27.3), ("MU", 18.2), ("AMD", 9.1)])
+        self.assertEqual(r["afuera"], [])
+        self.assertTrue(k["disponible"], k)
+
+
 class LaRegla(unittest.TestCase):
 
     def test_el_primer_dia_de_los_ultimos_n_anios(self):
@@ -506,9 +889,22 @@ class LaRegla(unittest.TestCase):
     def test_el_cierre_de_arranque_es_viejo_a_mas_de_diez_dias(self):
         # El día de arranque de «1 año» del 04/11/2026 es el 04/11/2025. La ficha y su
         # resumen ✦ no cuentan un año desde un cierre de antes de un hueco de precios.
-        self.assertFalse(tecnico.base_vieja("2025-11-04", "2026-11-04", 365))
-        self.assertFalse(tecnico.base_vieja("2025-10-25", "2026-11-04", 365), "10 días: todavía sirve")
-        self.assertTrue(tecnico.base_vieja("2025-10-24", "2026-11-04", 365))
+        self.assertFalse(tecnico.base_vieja("2025-11-04", "2025-11-04"))
+        self.assertFalse(tecnico.base_vieja("2025-10-25", "2025-11-04"), "10 días: todavía sirve")
+        self.assertTrue(tecnico.base_vieja("2025-10-24", "2025-11-04"))
+
+    def test_desde_que_dia_cuenta_una_serie(self):
+        # `arranque_de_la_serie`: con precio hasta 10 días antes, el día pedido; sin
+        # precios antes, su primer día; después de un hueco de más de 10 días, el
+        # primero después, y qué días faltan (Nico, 08/11: «arrancá después y avisalo»).
+        f = ["2025-09-01", "2025-09-22", "2025-10-20", "2025-10-21", "2025-11-04"]
+        a = tecnico.arranque_de_la_serie
+        self.assertIsNone(a([], "2025-10-01"))
+        self.assertEqual(a(f, "2025-08-01"), {"dia": "2025-09-01", "hueco": None}, "cotiza desde después")
+        self.assertEqual(a(f, "2025-10-02"), {"dia": "2025-10-02", "hueco": None}, "el último, a 10 días")
+        self.assertEqual(a(f, "2025-10-03"), {"dia": "2025-10-20", "hueco": {"desde": "2025-09-23", "hasta": "2025-10-19"}})
+        self.assertEqual(a(f, "2025-10-20"), {"dia": "2025-10-20", "hueco": None}, "con precio ese día")
+        self.assertEqual(a(f, "2025-11-20"), {"dia": "2025-11-20", "hueco": None}, "sin precios después: el pedido")
 
     def test_la_ficha_cuenta_el_anio_desde_un_cierre_a_diez_dias_y_no_a_once(self):
         # El mismo borde, por la ficha: sin rueda en los `hueco` días que terminan en el

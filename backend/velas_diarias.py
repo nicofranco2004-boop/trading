@@ -186,7 +186,6 @@ def _yahoo_de(asset: str, asset_type: str, en_pesos: bool, es_cripto,
     esto sólo se guardaba su precio en pesos y no la acción de afuera."""
     from cripto import CRIPTO_ESTABLES
     from snapshots_job import _FIXED_INCOME_TYPES, _FUND_TYPES, simbolo_byma
-    from main import CEDEAR_USD_RATIOS
     a = (asset or '').strip().upper()
     tipo = (asset_type or '').strip().upper()
     if not a or a in ('USD', 'ARS') or a in CRIPTO_ESTABLES or a.startswith('FCI:'):
@@ -208,12 +207,10 @@ def _yahoo_de(asset: str, asset_type: str, en_pesos: bool, es_cripto,
     from accion_local import es_cedear as _en_la_lista
     es_cedear = tipo == 'CEDEAR' or (en_pesos and (pesos[:-3] in cedears_byma or _en_la_lista(a)))
     if es_cedear:
-        if a in CEDEAR_USD_RATIOS:
-            # Su '.BA' en Yahoo cotiza en dólares y roto (BAC ≈ 9): la serie en
-            # pesos se arma de la acción de afuera, como el gráfico de la ficha.
-            return [ticker_de_afuera(a)]
         # La acción de afuera (dólares) y el CEDEAR en pesos. Es la ÚNICA rama
-        # que devuelve dos: `_seguimiento` reconoce el par por esta forma.
+        # que devuelve dos: `_seguimiento` reconoce el par por esta forma. El de
+        # BAC también: su '.BA' de Yahoo es otro papel (en dólares, ≈ 9), pero no
+        # se le pide a Yahoo: su historia es la de la Bolsa, 'BA.C' (`_bajar`).
         return [ticker_de_afuera(a), pesos]
     return [pesos] if en_pesos else [ticker_de_afuera(a)]
 
@@ -508,7 +505,7 @@ def _orden(estado: dict, t: str, hoy: str) -> tuple:
     con la fila siempre en el mismo orden, si Yahoo cortaba se perdían todas las
     noches los últimos (medido el 24/10: siempre de la S a la Z)."""
     e = estado.get(t)
-    return (_turno(estado, t, hoy), str((e or {}).get('ultima_corrida') or '')[:10])
+    return (_turno(estado, t, hoy), str(dia_de_la_marca((e or {}).get('ultima_corrida')) or ''))
 
 
 def _por_turnos(conn, de_cada_una: dict, hoy: str) -> list:
@@ -625,9 +622,13 @@ def _historia_de_byma(papel: str, timeout: float = TOPE_BYMA_SEG) -> dict:
     data912 tiene una dirección para acciones y otra para CEDEARs, y se prueba
     primero la que le toca), sube: quien llama no corrige y la noche siguiente se
     vuelve a intentar. Es LA historia de BYMA: la lista de cambios de ratio la lee
-    de acá (`cambios_ratio._historia_byma`)."""
+    de acá (`cambios_ratio._historia_byma`), y es la serie entera de un '.BA' que
+    Yahoo no tiene (`_de_la_bolsa`). `papel` es el código de la app ('BAC'); a
+    data912 se le pide por el de la Bolsa (`snapshots_job.codigo_en_byma`: 'BA.C')."""
     from ai.trade_tickers import AR_STOCK_TICKERS
     from pricing import data912
+    from snapshots_job import codigo_en_byma
+    codigo = codigo_en_byma(papel)
     hasta = time.monotonic() + timeout
     tipos = ("stocks", "cedears") if papel in AR_STOCK_TICKERS else ("cedears", "stocks")
     for tipo in tipos:
@@ -635,7 +636,7 @@ def _historia_de_byma(papel: str, timeout: float = TOPE_BYMA_SEG) -> dict:
         if restante <= 0:
             raise TimeoutError(f"data912 {papel}: se acabó el tiempo")
         out = {}
-        for f in data912.filas(tipo, papel, restante):
+        for f in data912.filas(tipo, codigo, restante):
             v = _limpia(*(f.get(k) for k in ('o', 'h', 'l', 'c', 'v')))
             if v and f.get('date'):
                 out[str(f['date'])[:10]] = v
@@ -819,8 +820,39 @@ def _sin_pisar(velas: dict, guardado: dict, byma: dict = None) -> dict:
 
 
 def _bajar(ticker: str, periodo: str):
+    """La tabla diaria de `ticker` del `periodo` de Yahoo ('5y', '1mo'). La de un
+    '.BA' que Yahoo no tiene, de la Bolsa (`_de_la_bolsa`)."""
     from pricing import yahoo as _yahoo
+    from snapshots_job import solo_en_byma
+    if solo_en_byma(ticker):
+        return _de_la_bolsa(ticker, periodo, TOPE_BYMA_SEG)
     return _yahoo._historia(ticker, periodo, '1d', False, 10.0)
+
+
+def _de_la_bolsa(ticker: str, periodo: str, timeout: float):
+    """La tabla diaria, con la forma de la de Yahoo, de un '.BA' que sólo tiene la
+    Bolsa (`snapshots_job.solo_en_byma`: 'BAC.BA' es 'BA.C' en data912; el
+    'BAC.BA' de Yahoo es otro papel, en dólares), del `periodo` de Yahoo: '5y' y
+    '1mo' por días corridos, '5d' las últimas 5 ruedas. Sale de LA historia de
+    BYMA (`_historia_de_byma`, la que corrige los '.BA' que Yahoo trae clavados).
+    Una falla de data912 sube, como la de Yahoo: quien baja decide."""
+    import pandas as pd
+    from fechas import hoy_art
+    historia = _historia_de_byma(ticker[:-3], timeout)
+    fechas = sorted(historia)
+    n = int(''.join(c for c in periodo if c.isdigit()) or 1)
+    if periodo.endswith('d'):
+        fechas = fechas[-n:]
+    else:
+        dias = n * (366 if periodo.endswith('y') else 31)
+        desde = (date.fromisoformat(hoy_art()) - timedelta(days=dias)).isoformat()
+        fechas = [f for f in fechas if f >= desde]
+    if not fechas:
+        return pd.DataFrame()
+    nan = float('nan')
+    columnas = zip(*(tuple(nan if x is None else x for x in historia[f]) for f in fechas))
+    return pd.DataFrame(dict(zip(('Open', 'High', 'Low', 'Close', 'Volume'), columnas)),
+                        index=pd.DatetimeIndex([pd.Timestamp(f) for f in fechas]))
 
 
 def _dormir(seg: float) -> None:
@@ -851,10 +883,11 @@ def _toca_semanal(ticker: str, ultima: str, hoy: str) -> bool:
     """Lo que se pide una vez por semana: ¿toca hoy? Toca el día del ticker
     (`dia_de_la_semana`) si no se pidió ya hoy, o si pasó más de una semana
     (una noche que no corrió no lo deja dos semanas sin pedir)."""
-    if not ultima:
+    dia = dia_de_la_marca(ultima)
+    if dia is None:
         return True
     d = date.fromisoformat(hoy)
-    dias = (d - date.fromisoformat(str(ultima)[:10])).days
+    dias = (d - dia).days
     return dias > 7 or (dias >= 1 and d.weekday() == dia_de_la_semana(ticker))
 
 
@@ -934,6 +967,8 @@ def _anotar(conn, ticker: str, *, completa: bool, ok: bool, filas: int = 0, erro
     # Postgres exige un booleano. La hora sale de `_ahora_utc` (UTC, el mismo
     # formato que datetime('now')): es el reloj con que se leen después
     # (`_necesita`, la poda, el cupo de completas) y las pruebas lo pueden fijar.
+    # El DÍA de una marca se lee con `dia_de_la_marca` (el día de acá), nunca
+    # cortándola con `[:10]` (el día UTC: de 21 a 24 h ya es mañana).
     ahora = _ahora_utc().strftime('%Y-%m-%d %H:%M:%S')
     conn.execute(
         """INSERT INTO velas_estado (symbol, ultima_corrida, ultima_completa, ok, filas, error,
@@ -963,11 +998,11 @@ def _toca_completa(est: dict, hoy: str, ticker: str = None) -> bool:
     cupo, no lo deja dos meses sin la red de seguridad). Así, aunque todos
     tengan la misma `ultima_completa` (la primera noche, o al forzar los 5
     años), cada uno vuelve a bajarse entero en su día y no todos juntos."""
-    ultima = (est or {}).get('ultima_completa')
-    if not ultima:
+    dia = dia_de_la_marca((est or {}).get('ultima_completa'))
+    if dia is None:
         return True
     d = date.fromisoformat(hoy)
-    dias = (d - date.fromisoformat(str(ultima)[:10])).days
+    dias = (d - dia).days
     if dias > DIAS_ENTRE_COMPLETAS * 3 // 2:
         return True
     return (ticker is not None and dias >= DIAS_ENTRE_COMPLETAS // 2
@@ -1044,6 +1079,7 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
     ordenar por `_orden`."""
     from fechas import hoy_art
     from pricing import yahoo as _yahoo
+    from snapshots_job import solo_en_byma
     bajar = bajar or _bajar
     tope_seg = TOPE_CORRIDA_SEG if tope_seg is None else tope_seg
     tope_tanda = TOPE_TANDA_SEG if tope_tanda is None else tope_tanda
@@ -1191,12 +1227,15 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                                                tope=tope_tanda, que="velas diarias")
         demorados = set(sin_respuesta)
         velas_de = {t: _velas_de(bajadas.get(t), hoy) for t in tanda}
-        vacios = [t for t in tanda if t not in demorados and not velas_de[t]]
-        con_datos = [t for t in tanda if velas_de[t]]
+        # Lo que sale de la Bolsa (`solo_en_byma`: BAC.BA) no dice nada de Yahoo:
+        # no es canario ni salva una tanda que Yahoo devolvió vacía.
+        de_yahoo = [t for t in tanda if not solo_en_byma(t)]
+        vacios = [t for t in de_yahoo if t not in demorados and not velas_de[t]]
+        con_datos = [t for t in de_yahoo if velas_de[t]]
         if con_datos:
             vivo[:] = [con_datos[-1]]
-        andaban = [t for t in tanda if (estado.get(t) or {}).get('ok')]
-        if not any(velas_de.values()) and (
+        andaban = [t for t in de_yahoo if (estado.get(t) or {}).get('ok')]
+        if de_yahoo and not any(velas_de[t] for t in de_yahoo) and (
                 len(andaban) >= CORTE_MIN_ANDABAN or (vacios and not yahoo_contesta(tanda, velas_de))):
             # Yahoo cortó. Se espera y se pide la MISMA tanda (no se avanza).
             if res["pausas"] < PAUSAS_MAX and fin - time.monotonic() > PAUSA_CORTE_SEG:
@@ -1254,7 +1293,9 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                     # mañana sin anotarse (y adelante, por no haberse pedido).
                     res["demorados"].append(t)
                     continue
-                _anotar(conn, t, completa=False, ok=False, error="Yahoo no devolvió velas")
+                _anotar(conn, t, completa=False, ok=False,
+                        error="La Bolsa (data912) no devolvió velas" if solo_en_byma(t)
+                        else "Yahoo no devolvió velas")
                 res["sin_datos"].append(t)
                 continue
             if not completa and _historia_reescrita(conn, t, velas):
@@ -1530,8 +1571,9 @@ def tickers_a_pedido(asset: str, local: bool = False, cedears=None) -> list:
     en pesos se corrige con la lista de cambios de ratio (`cambios_ratio`), que
     se arma de noche y sólo para lo que alguien sigue; sin ella, el gráfico en
     pesos mostraría caídas que no existieron (XLE.BA −50 % el 05/12/2025). En
-    pesos, la ficha estima el CEDEAR con la de afuera × el MEP de cada día ÷ su
-    ratio (`tecnico.serie`; sin ratio conocido, no hay gráfico en pesos).
+    pesos, la ficha estima el CEDEAR con la de afuera × el contado con liqui de
+    cada día ÷ su ratio (`tecnico.serie`; sin ratio conocido, no hay gráfico en
+    pesos).
 
     `local`: la ficha dice que es una acción argentina (su serie es la de BYMA).
     Un '.BA' necesita la lista de CEDEARs de BYMA para saber qué es: si data912
@@ -1558,6 +1600,28 @@ def _ahora_utc() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def instante_de_la_marca(marca):
+    """El instante UTC (sin zona) de una marca de `velas_estado`
+    (`ultima_corrida`, `ultima_completa`, como las escribe `_anotar`), o None si
+    no hay o no se entiende."""
+    try:
+        return datetime.fromisoformat(str(marca)[:19]) if marca else None
+    except ValueError:
+        return None
+
+
+def dia_de_la_marca(marca):
+    """El día ARGENTINO de una marca de `velas_estado`, o None: lo que se compara
+    con `hoy`, que es el día de acá. Cortar la marca con `[:10]` da el día UTC, y
+    lo anotado de 21:00 a medianoche de acá caía en «mañana»: la noche siguiente
+    creía que ya se había pedido hoy (`_toca_semanal`: lo que falla esperaba una
+    semana más) y contaba un día menos desde la última bajada entera
+    (`_toca_completa`: la del mes podía saltar a su día del mes siguiente)."""
+    from fechas import dia_art   # el día argentino de un instante UTC (regla única)
+    cuando = instante_de_la_marca(marca)
+    return dia_art(cuando) if cuando else None
+
+
 def _necesita(conn, ticker: str, hoy: str, ahora: datetime) -> bool:
     """¿Hay que bajarlo? No, si:
       · su última vela es de ayer (la de hoy no entra hasta mañana: `_velas_de`);
@@ -1573,12 +1637,10 @@ def _necesita(conn, ticker: str, hoy: str, ahora: datetime) -> bool:
         return False
     e = conn.execute("SELECT ultima_corrida FROM velas_estado WHERE symbol=?", (ticker,)).fetchone()
     if e and e["ultima_corrida"]:
-        try:
-            cuando = datetime.fromisoformat(str(e["ultima_corrida"])[:19])
-        except ValueError:
+        cuando = instante_de_la_marca(e["ultima_corrida"])
+        if cuando is None:
             return True
-        from fechas import dia_art   # el día argentino de un instante UTC (regla única)
-        if (dia_art(cuando) >= date.fromisoformat(hoy)
+        if (dia_de_la_marca(e["ultima_corrida"]) >= date.fromisoformat(hoy)
                 or ahora - cuando < timedelta(hours=A_PEDIDO_REINTENTO_HORAS)):
             return False
     return True
@@ -1903,10 +1965,15 @@ def _de_las_horas(df, hoy: str):
 def _bajar_en_curso(ticker: str):
     from pricing import yahoo as _yahoo
     from home.market import session_today
+    from snapshots_job import solo_en_byma
     hoy = session_today(ticker)
 
     def bajar(intervalo):
         try:
+            if solo_en_byma(ticker):
+                # La Bolsa: su historia diaria, con la rueda de hoy si data912 ya
+                # la tiene. Velas de 1 hora no tiene ninguna fuente.
+                return _de_la_bolsa(ticker, '5d', 8.0) if intervalo == '1d' else None
             return _yahoo.con_tope(_yahoo._historia, ticker, '5d', intervalo, False, 8.0,
                                    que=f"vela en curso {ticker} {intervalo}")
         except Exception as ex:
@@ -1928,7 +1995,8 @@ def _bajar_en_curso(ticker: str):
 
 def ruedas_recientes(ticker: str):
     """Las ruedas de los últimos días de `ticker` (el de Yahoo, como en la
-    tabla), con la de HOY mientras se mueve: {hoy, ruedas: [{date, open, high,
+    tabla; el de un '.BA' que Yahoo no tiene, de la Bolsa: `_bajar_en_curso`),
+    con la de HOY mientras se mueve: {hoy, ruedas: [{date, open, high,
     low, close, volume}], actualizada} o None (Yahoo sin dato). `hoy` es el día
     de SU mercado (`home.market.session_today`: el UTC para una cripto). Quien
     las dibuja decide cuáles ya están guardadas. Nunca se guardan en

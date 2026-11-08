@@ -108,12 +108,13 @@ describe('Compartir el gráfico técnico', () => {
     // redes diría «pasado a pesos con el MEP» sobre un precio estimado, y ninguna
     // prueba lo veía (auditoría 06/11, pruebas: hallazgo 4).
     respuestas = { '/tecnico/AAPL?moneda=usd': USD,
-      '/tecnico/AAPL?moneda=ars': { ...USD, moneda: 'ars', ticker: 'AAPL', convertida: 'mep', escala: 20 } }
+      '/tecnico/AAPL?moneda=ars': { ...USD, moneda: 'ars', ticker: 'AAPL', convertida: 'ccl', escala: 20 } }
     await dibujar({ asset: 'AAPL', symbolMiniChart: 'AAPL' })
     await elegirEnLaVista(montado.contenedor, 'Pesos')
     for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL' }))
     const spec = await compartir()
     expect(spec.pie.join(' ')).toContain('Precio estimado del CEDEAR')
+    expect(spec.pie.join(' ')).toContain('con el dólar contado con liqui (CCL) de cada día')
     expect(spec.pie.join(' ')).not.toContain('está pasado a pesos con el MEP de ese día')
   })
 

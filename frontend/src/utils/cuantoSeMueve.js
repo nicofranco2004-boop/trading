@@ -24,6 +24,14 @@ export function fechaCorta(iso) {
   return `${d}/${m}/${y.slice(2)}`
 }
 
+/** «faltan los precios de MU del 23/09/25 al 19/10/25»: un hueco de precios justo
+ *  antes del día de arranque (`hueco` = {desde, hasta}, los días sin precios; lo
+ *  manda el servidor, `tecnico.arranque_de_la_serie`). Con él, Comparar, «Una
+ *  cartera» y Una regla arrancan con el primer precio después (Nico, 08/11); las
+ *  tres lo dicen con esta frase. */
+export const faltanLosPrecios = (asset, hueco) =>
+  `faltan los precios de ${asset} del ${fechaCorta(hueco.desde)} al ${fechaCorta(hueco.hasta)}`
+
 /** Plata redonda: «US$ 85» · «$ 120.000». */
 export function plata(x, moneda) {
   const n = Math.round(Math.abs(x)).toLocaleString('es-AR')

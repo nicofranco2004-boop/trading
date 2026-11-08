@@ -170,15 +170,17 @@ describe('LecturaTecnica', () => {
   })
 
   it('un CEDEAR estimado en pesos dice abajo del gráfico que es un estimado (Nico, 06/11)', async () => {
-    // Sin su serie en pesos, el servidor manda la acción de Nueva York × el MEP
-    // ÷ `escala` (backend/tecnico.py). Antes no dividía: Apple ×20, sin aviso.
-    const estimado = { ...ARS, ticker: 'AAPL', convertida: 'mep', escala: 20 }
+    // Sin su serie en pesos, el servidor manda la acción de Nueva York × el
+    // contado con liqui de cada día ÷ `escala` (backend/tecnico.py). Antes no
+    // dividía: Apple ×20, sin aviso.
+    const estimado = { ...ARS, ticker: 'AAPL', convertida: 'ccl', escala: 20 }
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': estimado }
     await dibujar({})
     await elegirEnLaVista(montado.contenedor, 'Pesos')
     for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA' }))
     const t = texto(montado.contenedor)
-    expect(t).toContain('Precio estimado del CEDEAR: la acción de Nueva York pasada a pesos con el MEP de cada día')
+    expect(t).toContain('Precio estimado del CEDEAR: la acción de Nueva York pasada a pesos con el dólar contado con liqui (CCL) de cada día')
+    expect(t).toContain('alrededor de 1 % arriba o abajo de su precio en la Bolsa')
     expect(t).not.toContain('El precio en dólares de cada día está pasado a pesos')
     // Pegada al gráfico (en su pie, el de «Pellizcá para acercar…») y una sola
     // vez: al final de la sección quedaba después de todas las tarjetas, lejos del
@@ -610,6 +612,32 @@ describe('LecturaTecnica — la vela de hoy', () => {
     expect(tramoHoy()).toBe(0)
     const series = api.get.mock.calls.filter(([r]) => r.startsWith('/tecnico/AAPL?moneda=usd')).length
     expect(series).toBe(2)
+  })
+
+  it('si la vela de hoy viene en otra cuenta que la serie, no se pega y la serie se vuelve a pedir sola', async () => {
+    // La ficha abierta en pesos mientras se publicaba el cambio del dólar: la serie
+    // que tiene la pantalla es la de antes (con el MEP) y el servidor ya arma la
+    // vela de hoy con el contado con liqui. Pegada, «subía» 4 % un día en que el
+    // papel bajó (auditoría del 06/11, H3 de la pantalla).
+    const { api } = await import('../../utils/api')
+    const rutaPesos = '/tecnico/AAPL/hoy?moneda=ars'
+    const estimado = { ...ARS, ticker: 'AAPL', convertida: 'mep', escala: 20 }
+    const pesosDe = (c, cuenta) => ({ ...HOY, velas: [{ ...VELA, o: c, h: c, l: c, c }], ...cuenta })
+    for (const [c, cuenta, pega] of [[99_999, { convertida: 'ccl', escala: 20 }, false],
+      [12_345, { convertida: 'mep', escala: 20 }, true], [23_456, {}, true]]) {
+      api.get.mockClear()
+      respuestas = { [RUTA]: HOY, [rutaPesos]: pesosDe(c, cuenta), '/tecnico/AAPL?moneda=usd': USD,
+        '/tecnico/AAPL?moneda=ars': estimado }
+      await dibujar({ pnlPctUsd: 0.1 })
+      await elegirEnLaVista(montado.contenedor, 'Pesos')
+      espia.dibujadas.length = 0
+      for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, props))
+      expect(espia.dibujadas.includes(c)).toBe(pega)
+      const series = api.get.mock.calls.filter(([r]) => r.startsWith('/tecnico/AAPL?moneda=ars')).length
+      expect(series).toBe(pega ? 1 : 2)
+      await montado.desmontar()
+      montado = null
+    }
   })
 
   it('sin vela todavía (antes de la apertura) no dibuja nada, pero con la rueda abierta sigue pidiendo', async () => {

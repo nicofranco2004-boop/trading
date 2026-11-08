@@ -24,6 +24,7 @@ Los casos que importan:
 
 Corre con: cd backend && python3 -m pytest tests/test_velas_diarias.py
 """
+import contextlib
 import os
 import sqlite3
 import sys
@@ -48,9 +49,16 @@ from fastapi.testclient import TestClient
 
 import main
 import velas_diarias
-from fechas import hoy_art_date
+from fechas import ART_OFFSET_HORAS, dia_art, hoy_art_date
 
 NAN = float("nan")
+
+
+def _dia_argentino(marca: str) -> date:
+    """El día de acá de una marca de `velas_estado` (UTC, como datetime('now')),
+    con la regla de `fechas` y no con la de velas_diarias: si la app la leyera
+    mal, esto no la copia."""
+    return dia_art(datetime.fromisoformat(str(marca)[:19]))
 
 
 def _ruedas(hasta: date, n: int) -> list:
@@ -166,6 +174,8 @@ class VelasDiariasTest(unittest.TestCase):
                    mock.patch("main._fetch_data912_equities", lambda: self.byma)]
         for p in self._p:
             p.start()
+        # Los cupos de la ficha a pedido viven en memoria: cada prueba arranca vacía.
+        velas_diarias._a_pedido_hechos.clear()
 
     def tearDown(self):
         for p in self._p:
@@ -228,9 +238,23 @@ class VelasDiariasTest(unittest.TestCase):
         self._posicion("Binance", "USDC", "CRYPTO")
         with main.db_abierta() as conn:
             seguidos = set(velas_diarias.simbolos_a_seguir(conn))
-        self.assertEqual(seguidos, {"SPY", "SPY.BA", "GGAL.BA", "BAC", *velas_diarias.INDICES},
-                         "GGAL es acción local (sin serie de afuera); BAC sólo en dólares "
-                         "(su '.BA' de Yahoo viene roto); USDC no tiene nada que medir")
+        self.assertEqual(seguidos, {"SPY", "SPY.BA", "GGAL.BA", "BAC", "BAC.BA", *velas_diarias.INDICES},
+                         "GGAL es acción local (sin serie de afuera); BAC, el par como "
+                         "cualquier CEDEAR; USDC no tiene nada que medir")
+        # BAC.BA: su '.BA' de Yahoo es OTRO papel (en dólares). Se baja de la
+        # Bolsa, con el código de su CEDEAR en pesos ('BA.C'); a Yahoo, nunca.
+        self.yahoo.precios["BAC"] = lambda d: 50.0
+        self.yahoo.precios["BAC.BA"] = lambda d: 7.29
+        dias = _ruedas(self.hoy, 30)
+        self.historia_byma["BA.C"] = [{"date": d.isoformat(), "o": 20000.0, "h": 20100.0, "l": 19900.0,
+                                       "c": 20000.0 + i, "v": 4000.0} for i, d in enumerate(dias)]
+        with main.db_abierta() as conn:
+            velas_diarias.actualizar(conn, ["BAC", "BAC.BA"])
+        self.assertEqual([p for p in self.yahoo.pedidos if p[0] == "BAC.BA"], [])
+        self.assertIn("BA.C", self.pedidos_byma)
+        guardada = self._velas("BAC.BA")
+        self.assertEqual([(v["date"], v["close"]) for v in guardada],
+                         [(d.isoformat(), 20000.0 + i) for i, d in enumerate(dias)])
 
     def test_sin_la_lista_de_byma_se_sigue_lo_etiquetado(self):
         self.byma = {}          # data912 no contestó
@@ -357,11 +381,28 @@ class VelasDiariasTest(unittest.TestCase):
         return f"{prefijo}{i}"
 
     def _completa_hace(self, dias, *tickers):
+        # 03:00 UTC = 00:00 de acá: el día UTC y el argentino coinciden, así que
+        # esto no ve lo anotado de 21 a 24 h (para eso, `_a_las`).
         hace = (self.hoy - timedelta(days=dias)).isoformat() + " 03:00:00"
         with main.db_abierta() as conn:
             for t in tickers:
                 conn.execute("UPDATE velas_estado SET ultima_completa=? WHERE symbol=?", (hace, t))
             conn.commit()
+
+    @contextlib.contextmanager
+    def _a_las(self, dia: date, hora: int, minuto: int = 0):
+        """La app a esa hora ARGENTINA de `dia`: los dos relojes que lee la
+        corrida, el de las marcas (`_ahora_utc`, UTC) y el día de acá
+        (`fechas.ahora_art`), y Yahoo contestando como ese día."""
+        art = datetime(dia.year, dia.month, dia.day, hora, minuto)
+        utc = art + timedelta(hours=ART_OFFSET_HORAS)
+        antes, self.yahoo.hoy = self.yahoo.hoy, dia
+        try:
+            with mock.patch("velas_diarias._ahora_utc", lambda: utc), \
+                    mock.patch("fechas.ahora_art", lambda: art):
+                yield
+        finally:
+            self.yahoo.hoy = antes
 
     def test_cada_30_dias_se_baja_la_historia_entera(self):
         # Una vez por mes, cada uno en SU día (`dia_de_la_completa`): con la
@@ -420,13 +461,35 @@ class VelasDiariasTest(unittest.TestCase):
         self.assertGreater(self.completa, tres + 2 * 250)
         self.assertEqual(velas[0]["date"], _ruedas_del_periodo(self.hoy, "5y")[0].isoformat(),
                          "arranca el mismo día de hace 5 años: la poda no lo tocó")
-        self.assertEqual(self._estado("MSFT")["ultima_completa"][:10], hoy_art_date().isoformat())
+        # La marca es UTC: su día es el de acá, no sus primeros 10 caracteres
+        # (de 21 a 24 h dicen mañana).
+        self.assertEqual(_dia_argentino(self._estado("MSFT")["ultima_completa"]), hoy_art_date())
 
         # Y la noche siguiente sigue con lo de todas las noches, sin perder nada.
         self.yahoo.pedidos.clear()
         main._run_velas_diarias_job()
         self.assertEqual([p[1] for p in self.yahoo.pedidos], ["1mo"])
         self.assertEqual(len(self._velas("MSFT")), self.completa)
+
+    def test_la_bajada_entera_de_21_a_24_cuenta_desde_el_dia_de_aca(self):
+        # La marca se guarda en UTC: bajado entero a las 22 de acá, ya dice
+        # «mañana». Cortada con [:10], a los 15 días la cuenta daba 14 y, si ese
+        # era su día del mes, la bajada entera saltaba al siguiente: 30 días tarde.
+        hoy = self.hoy
+        t = self._con_dia_de_completa(True)
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", t, "STOCK")
+        self.yahoo.precios[t] = lambda d: 400.0
+        # Hace 15 días, a las 22: lo pidió su ficha por primera vez (entero).
+        with self._a_las(hoy - timedelta(days=15), 22), main.db_abierta() as conn:
+            velas_diarias.asegurar(conn, [t], self.uid)
+        self.assertEqual(self.yahoo.pedidos, [(t, velas_diarias.PERIODO_COMPLETO, False)])
+        self.assertEqual(_dia_argentino(self._estado(t)["ultima_completa"]), hoy - timedelta(days=15))
+        # Esta noche pasaron 15 días (acá) y es su día del mes: entero otra vez.
+        self.yahoo.pedidos.clear()
+        with self._a_las(hoy, 0, 30):
+            main._run_velas_diarias_job()
+        self.assertEqual(self.yahoo.pedidos, [(t, velas_diarias.PERIODO_COMPLETO, False)])
 
     def test_filas_rotas_de_yahoo_no_entran(self):
         self._broker("IOL", "ARS")
@@ -556,6 +619,29 @@ class VelasDiariasTest(unittest.TestCase):
             velas_diarias.actualizar(conn, [no_toca], podar=False)
         self.assertEqual([p[0] for p in self.yahoo.pedidos], [no_toca])
 
+    def test_lo_pedido_de_21_a_24_cuenta_para_el_dia_de_aca_en_lo_semanal(self):
+        # La marca se guarda en UTC: a las 22 de acá ya dice «mañana». Cortada
+        # con [:10], la noche siguiente creía que ya se había pedido HOY y lo que
+        # falla, en su día de la semana, esperaba una semana más.
+        hoy = self.hoy
+        [t] = self._con_dia(hoy.weekday())
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", t, "STOCK")               # Yahoo no trae nada: falla
+        for atras in (4, 3, 2):                             # tres noches seguidas sin datos
+            with self._a_las(hoy - timedelta(days=atras), 0, 30):
+                main._run_velas_diarias_job()
+        self.assertEqual(self._estado(t)["fallas_seguidas"], 3)
+        # Ayer a las 22 alguien abrió su ficha: se le pidió (y falló otra vez).
+        self.yahoo.pedidos.clear()
+        with self._a_las(hoy - timedelta(days=1), 22), main.db_abierta() as conn:
+            velas_diarias.asegurar(conn, [t], self.uid)
+        self.assertEqual([p[0] for p in self.yahoo.pedidos], [t])
+        # Esta noche es su día y hoy (acá) todavía no se le pidió: se pide.
+        self.yahoo.pedidos.clear()
+        with self._a_las(hoy, 0, 30):
+            main._run_velas_diarias_job()
+        self.assertEqual([p[0] for p in self.yahoo.pedidos], [t])
+
     def _cartera_de(self, n):
         self._broker("Schwab", "USD")
         tickers = [f"T{i:02d}" for i in range(n)]
@@ -616,6 +702,24 @@ class VelasDiariasTest(unittest.TestCase):
         renglon = next(m for m in log.output if "Velas diarias: {" in m)
         self.assertIn(f"'cortados_por_yahoo': {12 + len(velas_diarias.INDICES)}", renglon)
         self.assertIn("'no_son_tickers': 0", renglon)
+
+    def test_lo_que_sale_de_la_bolsa_no_tapa_un_corte_de_yahoo(self):
+        # BAC.BA se baja de la Bolsa (data912), no de Yahoo. Si Yahoo corta y la
+        # Bolsa contesta, la tanda con BAC.BA no dice «Yahoo contestó»: si no, los
+        # demás de la tanda quedaban anotados como que no existen.
+        tickers = self._cartera_de(3)
+        self.historia_byma["BA.C"] = [{"date": d.isoformat(), "o": 20000.0, "h": 20100.0, "l": 19900.0,
+                                       "c": 20000.0, "v": 4000.0} for d in _ruedas(self.hoy, 30)]
+        with main.db_abierta() as conn:
+            velas_diarias.actualizar(conn, tickers + ["BAC.BA"])       # todos andan
+        pausas = []
+        with mock.patch("velas_diarias.TANDA", 4), \
+                mock.patch("pricing.yahoo._historia", lambda *a: pd.DataFrame()), \
+                mock.patch("velas_diarias._dormir", pausas.append), main.db_abierta() as conn:
+            res = velas_diarias.actualizar(conn, tickers + ["BAC.BA"])
+        self.assertEqual(len(pausas), velas_diarias.PAUSAS_MAX, "Yahoo cortó: se espera")
+        self.assertEqual((res["sin_datos"], res["cortados_por_yahoo"]), ([], 4))
+        self.assertTrue(all(self._estado(t)["fallas_seguidas"] == 0 for t in tickers))
 
     def test_uno_o_dos_que_dejaron_de_cotizar_no_son_un_corte(self):
         self._cartera_de(2)
@@ -794,8 +898,9 @@ class VelasDiariasTest(unittest.TestCase):
         with mock.patch("pricing.yahoo._historia", cortada):
             main._run_velas_diarias_job()
         self.assertEqual(len(self._velas("MSFT")), self.completa, "no quedan sólo las últimas 10")
-        self.assertEqual(self._estado("MSFT")["ultima_completa"][:10],
-                         (self.hoy - timedelta(days=46)).isoformat(), "no cuenta como bajada entera")
+        self.assertEqual(self._estado("MSFT")["ultima_completa"],
+                         (self.hoy - timedelta(days=46)).isoformat() + " 03:00:00",
+                         "no cuenta como bajada entera: la marca quedó como estaba")
         self.assertEqual(self._ultima_noche()["completas_cortadas"], 1)
         # Con un split sí se reemplaza aunque venga corta: mezclar escalas es peor.
         partida = lambda ticker, period, interval, auto_adjust, timeout: _tabla(

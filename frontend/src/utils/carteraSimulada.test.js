@@ -18,7 +18,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import {
-  COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_ANIO_POR_ANIO, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, TOLERANCIA,
+  COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_ANIO_POR_ANIO, NOTA_ANIO_POR_ANIO_CON_HUECO, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, TOLERANCIA,
   aLaDireccion, aclaracionDeLaCartera, carteraDe, consultaDe, errorDeHoy, estadoDeLaCartera, filasDeHoy,
   lecturaAnioPorAnio, lecturaCartera,
   limpiar, loQueFalta, motivoCartera, notaDeHoy, notaDeLosQueSobran, notaDelResumen, notaHoy, notaOjito, notaSinActivos,
@@ -29,6 +29,8 @@ import { modoDe, porcentaje } from './backtesting'
 
 const AQUI = dirname(fileURLToPath(import.meta.url))
 const CASOS = JSON.parse(readFileSync(resolve(AQUI, '../../../backend/tests/fixtures/cartera_simulada.json'), 'utf8'))
+// «Mi cartera de hoy» como la contesta el servidor (cartera_simulada.de_hoy).
+const DE_HOY = JSON.parse(readFileSync(resolve(AQUI, '../../../backend/tests/fixtures/cartera_de_hoy.json'), 'utf8'))
 const PY = readFileSync(resolve(AQUI, '../../../backend/cartera_simulada.py'), 'utf8')
 const fila = (asset, txt, local = false) => ({ asset, local, txt })
 
@@ -166,6 +168,48 @@ describe('mi cartera de hoy', () => {
     expect(notaDeHoy({ activos: [], afuera: [{ asset: 'AL30', motivo: 'sin_serie' }] }))
       .toBe('Quedó afuera AL30: no tenemos sus precios de cada día. El resto se repartió sobre 100%.')
     expect(notaDeHoy({ activos: [], afuera: [] })).toBeNull()
+  })
+
+  it('lo que no tiene precios de la última semana queda afuera con su fecha, y el resto en su proporción', () => {
+    // MU parado: antes quedaba adentro y frenaba la cartera entera (pantalla 06/11, H3).
+    // La respuesta de verdad del servidor, la que se le mostró a Nico el 06/11.
+    expect(filasDeHoy(DE_HOY.vieja)).toEqual([fila('AAPL', '62,5'), fila('NVDA', '37,5')])
+    expect(notaDeHoy(DE_HOY.vieja)).toBe('Lo que se simula es el 80% de tu plata. Quedó afuera MU: sus precios llegan '
+      + 'hasta el 14/08/26. El resto se repartió sobre 100%.')
+    expect(notaDeHoy(DE_HOY.vieja, 'Ana')).toMatch(/^Lo que se simula es el 80% de su plata\. Quedó afuera MU/)
+    const parado = (asset, hasta) => ({ asset, tipo: 'STOCK', motivo: 'vieja', hasta })
+    // Varios: el mismo día, una vez; días distintos, cada uno con el suyo, del más viejo al más nuevo.
+    expect(notaDeHoy({ afuera: [parado('AMD', '2026-08-14'), parado('MU', '2026-08-14')] }))
+      .toBe('Quedaron afuera AMD y MU: sus precios llegan hasta el 14/08/26. El resto se repartió sobre 100%.')
+    expect(notaDeHoy({ afuera: [parado('AMD', '2026-09-02'), parado('KO', '2026-08-14'), parado('MU', '2026-08-14')] }))
+      .toBe('Quedaron afuera AMD, KO y MU: los precios de KO y MU llegan hasta el 14/08/26 y los de AMD hasta el '
+        + '02/09/26. El resto se repartió sobre 100%.')
+    // Tres días: comas y una sola «y» (la propuso la revisión del 06/11).
+    expect(notaDeHoy({ afuera: [parado('AMD', '2026-09-02'), parado('INTC', '2026-10-01'), parado('KO', '2026-08-14')] }))
+      .toBe('Quedaron afuera AMD, INTC y KO: los precios de KO llegan hasta el 14/08/26, los de AMD hasta el 02/09/26 '
+        + 'y los de INTC hasta el 01/10/26. El resto se repartió sobre 100%.')
+  })
+
+  it('«lo demás (efectivo, plazos fijos, bonos o fondos)» si algo de eso quedó afuera', () => {
+    // Con sólo MU (o el tope) afuera, lo demás es ese activo y la nota lo nombra. Con
+    // efectivo o plazos fijos (el sí o no del servidor) o un bono, vuelve: sin él, con
+    // efectivo parecía que todo lo que faltaba era MU (revisión 06/11; Nico, 06/11:
+    // «Sí, que lo nombre»). Con la respuesta de verdad del servidor, con y sin efectivo.
+    const LO_DEMAS = ': lo demás (efectivo, plazos fijos, bonos o fondos) no lo podemos simular.'
+    expect(notaDeHoy(DE_HOY.vieja_con_efectivo)).toBe(`Lo que se simula es el 62% de tu plata${LO_DEMAS} Quedó afuera MU: `
+      + 'sus precios llegan hasta el 14/08/26. El resto se repartió sobre 100%.')
+    expect(notaDeHoy(DE_HOY.vieja)).toMatch(/^Lo que se simula es el 80% de tu plata\. Quedó afuera MU/)
+    const bono = { asset: 'AL30', tipo: 'BOND', motivo: 'sin_serie' }
+    const t11 = { asset: 'T11', tipo: 'STOCK', motivo: 'tope' }
+    expect(notaDeHoy({ afuera: [bono], parte: 70 })).toBe(`Lo que se simula es el 70% de tu plata${LO_DEMAS} Quedó `
+      + 'afuera AL30: no tenemos sus precios de cada día. El resto se repartió sobre 100%.')
+    expect(notaDeHoy({ afuera: [bono, ...DE_HOY.vieja.afuera, t11], parte: 60 })).toBe(`Lo que se simula es el 60% de `
+      + `tu plata${LO_DEMAS} Quedó afuera AL30: no tenemos sus precios de cada día. Quedó afuera MU: sus precios llegan `
+      + 'hasta el 14/08/26. Entran hasta 10 activos: quedó afuera T11, el que menos pesa. El resto se repartió sobre 100%.')
+    expect(notaDeHoy({ afuera: [t11], parte: 95, efectivo_o_plazos: false }))
+      .toMatch(/^Lo que se simula es el 95% de tu plata\. Entran hasta 10 activos/)
+    expect(notaDeHoy({ afuera: [t11], parte: 85, efectivo_o_plazos: true }))
+      .toMatch(/^Lo que se simula es el 85% de tu plata: lo demás \(efectivo, plazos fijos, bonos o fondos\)/)
   })
 
   it('dice qué parte de tu plata se simula (un porcentaje, nunca plata)', () => {
@@ -481,3 +525,36 @@ describe('nunca promete', () => {
 function dolares(x) {
   return `US$ ${Math.abs(x).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`
 }
+
+describe('un hueco de precios justo antes del día de arranque (Nico, 08/11)', () => {
+  // ACME sin precios del 01/10 al 15/11/2024: el día de arranque de «2 años» (30/10)
+  // cae adentro. La cartera arranca con el primer precio después y dice qué días faltan.
+  const r = CASOS.hueco
+  it('arranca con el primer precio después y lo dice', () => {
+    expect([r.desde, r.recorte_por, r.recorte_hueco])
+      .toEqual(['2024-11-18', 'ACME', { desde: '2024-10-01', hasta: '2024-11-17' }])
+    expect(lecturaCartera(r).avisos)
+      .toContain('Faltan los precios de ACME del 01/10/24 al 17/11/24: la simulación arranca el 18/11/24.')
+    expect(lecturaCartera(r).avisos.join(' ')).not.toMatch(/Tenemos precios de ACME desde/)
+    expect(notaDelResumen(r)).toMatch(/^Del 18\/11\/24 al 30\/10\/26/)
+  })
+
+  // Auditoría 08/11 del hueco, H3: con el hueco en el corte de «1 año», ese año usa el
+  // último precio de antes y «1 año» arranca después: no dan lo mismo y la nota lo decía.
+  it('con el hueco en un corte, «Año por año» no dice que da lo mismo que «1 año»', () => {
+    const conHueco = lecturaAnioPorAnio(CASOS.hueco_en_un_corte)
+    expect(conHueco.nota.startsWith(NOTA_ANIO_POR_ANIO_CON_HUECO)).toBe(true)
+    expect(conHueco.nota).not.toMatch(/dan lo mismo/)
+    expect(lecturaAnioPorAnio(CASOS.tres_anios).nota.startsWith(NOTA_ANIO_POR_ANIO)).toBe(true)
+    expect(NOTA_ANIO_POR_ANIO).toMatch(/dan lo mismo que ahí/)
+  })
+
+  it('si después del hueco quedan muy pocos días, lo dice así', () => {
+    // La respuesta del servidor, no una armada a mano (auditoría 08/11 de las pruebas, M18).
+    const corta = CASOS.hueco_pocos_dias
+    expect([corta.disponible, corta.motivo]).toEqual([false, 'poca_historia'])
+    expect(motivoCartera(corta, 3)).toBe('Faltan los precios de ACME del 01/10/24 al 20/09/26: después quedan muy '
+      + 'pocos días para simular. Sacalo para probar el resto.')
+    expect(motivoCartera(corta, 1)).toMatch(/: después quedan muy pocos días para simular\. Cambialo por otro\.$/)
+  })
+})

@@ -243,7 +243,7 @@ class ResumenTest(unittest.TestCase):
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
             for t in ("velas_diarias", "velas_estado", "cambios_ratio", "watchlist", "positions",
-                      "brokers", "fx_rates_daily", "resumenes_tecnicos", "ai_usage_daily"):
+                      "brokers", "fx_rates_daily", "resumenes_tecnicos", "ai_usage_daily", "bond_indices_daily"):
                 conn.execute(f"DELETE FROM {t}")
             ids = []
             for quien in ("a", "b", "adm"):
@@ -308,37 +308,66 @@ class ResumenTest(unittest.TestCase):
 
     # ── El recorrido entero ──────────────────────────────────────────────────
 
-    def test_un_cedear_estimado_en_pesos_no_muestra_el_resumen_de_antes_y_dice_que_es_estimado(self):
-        # Apple a pedido, en pesos: el gráfico es el CEDEAR estimado (× el MEP ÷ 20).
-        # Antes era la acción entera, y un resumen escrito ese día con aquella
-        # cuenta («cerró en 546.700 pesos») se seguía mostrando al lado del gráfico
-        # nuevo hasta la vela siguiente: la clave era la misma (auditoría 06/11, H2
-        # de la pantalla). Y el texto nuevo dice que es un estimado sin depender del
-        # modelo (H3).
+    def _dolares(self, mep, ccl=None):
+        """El MEP de cada día y, si viene, el contado con liqui guardado como lo
+        guarda la app (`main._actualizar_ccl`, con la fuente reemplazada)."""
+        dias = _ruedas(self.hoy, 760)
         with main.db_abierta() as conn:
-            for d in _ruedas(self.hoy, 760):
-                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?, 1100.0, 1000.0) "
-                             "ON CONFLICT(date) DO NOTHING", (d.isoformat(),))
+            for d in dias:
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?, ?, ?) "
+                             "ON CONFLICT(date) DO NOTHING", (d.isoformat(), mep * 1.1, mep))
             conn.commit()
+        if ccl:
+            with mock.patch("main._bajar_ccl", lambda: [(d.isoformat(), ccl - 1, ccl + 1) for d in dias]):
+                main._actualizar_ccl()
+
+    def test_un_cedear_estimado_en_pesos_no_muestra_el_resumen_de_antes_y_dice_que_es_estimado(self):
+        # Apple a pedido, en pesos: el gráfico es el CEDEAR estimado (× el contado
+        # con liqui de cada día ÷ 20). Antes era la acción entera, y desde el 06/11
+        # × el MEP (~6 % más abajo): un resumen escrito ese día con cualquiera de
+        # las dos cuentas («cerró en 546.700 pesos») se seguía mostrando al lado
+        # del gráfico nuevo hasta la vela siguiente si la clave era la misma
+        # (auditoría 06/11, H2 de la pantalla). Y el texto nuevo dice que es un
+        # estimado sin depender del modelo (H3).
+        self._dolares(mep=1000.0, ccl=1060.0)
         self.yahoo.precios["AAPL"] = self._serie
         f = self._ficha("AAPL", moneda="ars")
-        self.assertEqual((f["ticker"], f["escala"]), ("AAPL", 20))
+        self.assertEqual((f["ticker"], f["escala"], f["convertida"]), ("AAPL", 20, "ccl"))
         fecha = f["lectura"]["fecha"]
-        with main.db_abierta() as conn:          # lo que dejó el código de antes ese día
-            conn.execute("INSERT INTO resumenes_tecnicos (ticker, moneda, fecha_vela, estado, texto, dia) "
-                         "VALUES ('AAPL', 'ars', ?, 'listo', 'El 5 de noviembre cerró en 546.700 pesos.', ?)",
-                         (fecha, self.hoy.isoformat()))
+        with main.db_abierta() as conn:          # lo que dejaron las dos cuentas de antes ese día
+            for serie, texto in (("AAPL", "El 5 de noviembre cerró en 546.700 pesos."),
+                                 ("AAPL÷20", "El 5 de noviembre cerró en 25.765 pesos.")):
+                conn.execute("INSERT INTO resumenes_tecnicos (ticker, moneda, fecha_vela, estado, texto, dia) "
+                             "VALUES (?, 'ars', ?, 'listo', ?, ?)", (serie, fecha, texto, self.hoy.isoformat()))
             conn.commit()
         self.assertEqual(self._ficha("AAPL", moneda="ars")["resumen"]["estado"], "no_hay")
         r = self.client.post("/api/tecnico/AAPL/resumen?moneda=ars", headers=self.h)
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["estado"], "listo")
         self.assertEqual(r.json()["texto"], f"{BUENO} {tecnico.NOTA_ESTIMADO}")
-        self.assertIn("los_precios_en_pesos_son", self.claude.pedidos[0]["messages"][0]["content"])
-        self.assertEqual(self._fila("AAPL÷20")["estado"], "listo")
+        pedido = self.claude.pedidos[0]["messages"][0]["content"]
+        self.assertIn("los_precios_en_pesos_son", pedido)
+        self.assertIn("contado con liqui", pedido)
+        self.assertEqual(self._fila("AAPL÷20·ccl")["estado"], "listo")
         self.assertEqual(self._ficha("AAPL", moneda="ars")["resumen"]["texto"], f"{BUENO} {tecnico.NOTA_ESTIMADO}")
         # En dólares, la clave de siempre y el texto del modelo, sin la frase.
         self.assertEqual(resumen_tecnico.clave_de(self._ficha("AAPL"))[0], "AAPL")
+
+    def test_sin_el_contado_con_liqui_el_resumen_dice_que_es_con_el_mep(self):
+        # Una base que todavía no bajó el contado con liqui: el estimado sigue con
+        # el MEP (`tecnico.serie`), y el resumen nombra ESE dólar.
+        self._dolares(mep=1000.0)
+        self.yahoo.precios["AAPL"] = self._serie
+        f = self._ficha("AAPL", moneda="ars")
+        self.assertEqual((f["escala"], f["convertida"]), (20, "mep"))
+        r = self.client.post("/api/tecnico/AAPL/resumen?moneda=ars", headers=self.h)
+        self.assertEqual(r.json()["texto"], f"{BUENO} {tecnico.nota_de(tecnico.NOTA_ESTIMADO, 'mep')}")
+        # Lo esperado no sale sólo de `tecnico.nota_de` (la función que se prueba):
+        # el texto que se publica nombra el MEP y no el contado con liqui.
+        self.assertIn("con el MEP de cada día", r.json()["texto"])
+        self.assertNotIn("contado con liqui", r.json()["texto"])
+        self.assertNotIn("contado con liqui", self.claude.pedidos[0]["messages"][0]["content"])
+        self.assertEqual(self._fila("AAPL÷20")["estado"], "listo")
 
     def test_sin_resumen_boton_el_primero_genera_y_el_segundo_lo_ve_gratis(self):
         f = self._ficha()

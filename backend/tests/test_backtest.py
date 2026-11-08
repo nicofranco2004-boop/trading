@@ -46,6 +46,20 @@ PRUEBAS_DE_LA_PANTALLA = [["media200"], ["media50"], ["rsi"], ["adx_squeeze"],
                           ["rsi", "media200"], ["media50", "adx_squeeze"]]
 
 
+def _con_hueco(velas):
+    """GGAL sin precios del 01/10 al 08/11/2024: dos años antes del último precio
+    (27/10/2026) cae adentro, y el último antes del hueco es del 30/09, 27 días antes.
+    El caso «hueco» de lo que lee la pantalla (Nico, 08/11: «arrancá después del hueco
+    y avisalo»)."""
+    return [v for v in velas if not "2024-10-01" <= v["date"] <= "2024-11-08"]
+
+
+def _con_hueco_largo(velas):
+    """GGAL sin precios del 01/10/2024 al 15/09/2026: después del hueco quedan menos
+    de `MIN_RUEDAS` ruedas. El caso «hueco_pocos_dias» de lo que lee la pantalla."""
+    return [v for v in velas if not "2024-10-01" <= v["date"] <= "2026-09-15"]
+
+
 def _ggal():
     with open(FIXTURE) as f:
         return [{"date": r["date"], "open": float(r["open"]), "high": float(r["high"]),
@@ -154,12 +168,23 @@ class ContraElEstudio(unittest.TestCase):
         de ESTE código (sin la curva, que es larga), no una armada a mano."""
         with open(os.path.join(FIXTURES, "backtest_ggal.json")) as f:
             guardado = json.load(f)
-        self.assertEqual(sorted(guardado), sorted(",".join(p) for p in PRUEBAS_DE_LA_PANTALLA))
-        for reglas in PRUEBAS_DE_LA_PANTALLA:
-            with self.subTest(reglas=reglas):
-                r = backtest.probar(self.velas, reglas, 2, hoy=_al_dia(self.velas))
-                r.pop("curva")
-                self.assertEqual(json.loads(json.dumps({"asset": "GGAL", **r})), guardado[",".join(reglas)])
+        casos = {",".join(p): (self.velas, p) for p in PRUEBAS_DE_LA_PANTALLA}
+        casos["hueco"] = (_con_hueco(self.velas), ["rsi"])
+        casos["hueco_pocos_dias"] = (_con_hueco_largo(self.velas), ["rsi"])
+        self.assertEqual(sorted(guardado), sorted(casos))
+        for clave, (velas, reglas) in casos.items():
+            with self.subTest(caso=clave):
+                r = backtest.probar(velas, reglas, 2, hoy=_al_dia(velas))
+                r.pop("curva", None)                    # sin probar (pocos días), no hay curva
+                self.assertEqual(json.loads(json.dumps({"asset": "GGAL", **r})), guardado[clave])
+        # El caso del hueco: la prueba arranca la rueda después del primer precio
+        # después del hueco, y el precio se mide desde ese cierre.
+        p = guardado["hueco_pocos_dias"]
+        self.assertEqual((p["disponible"], p["motivo"], p["recorte_por"], p["recorte_hueco"]),
+                         (False, "poca_historia", None, {"desde": "2024-10-01", "hasta": "2026-09-15"}))
+        h = guardado["hueco"]
+        self.assertEqual((h["recortado"], h["recorte_por"], h["recorte_hueco"], h["variacion_desde"], h["desde"]),
+                         (True, None, {"desde": "2024-10-01", "hasta": "2024-11-10"}, "2024-11-11", "2024-11-12"))
 
     def test_el_resultado_es_el_de_sus_operaciones(self):
         """Todo adentro o todo afuera: el resultado es el producto de las

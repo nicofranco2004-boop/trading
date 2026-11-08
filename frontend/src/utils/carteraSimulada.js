@@ -6,8 +6,9 @@
 // Nasdaq lo calcula el servidor (backend/cartera_simulada.py, GET
 // /api/backtest/cartera), y «Mi cartera de hoy» también la arma él (GET
 // /api/backtest/cartera/hoy), con LA regla de qué activos tienen precio de todos
-// los días. Acá: lo que se puede escribir en cada porcentaje, cuánto falta para
-// 100, la barra del 100 %, la dirección y las palabras de lo que volvió.
+// los días y de la última semana. Acá: lo que se puede escribir en cada
+// porcentaje, cuánto falta para 100, la barra del 100 %, la dirección y las
+// palabras de lo que volvió.
 //
 // NUNCA PROMETE, como el Backtesting de una regla (utils/backtesting.js): todo en
 // pasado, siempre al lado del S&P 500 y del Nasdaq, sin «la mejor cartera». Lo que
@@ -21,7 +22,7 @@
 //
 // `cliente`: el asesor adentro de la cuenta de un cliente (`nombreDelCliente`).
 // Ahí no es «tu cartera»: es la de él (M11).
-import { fechaCorta } from './cuantoSeMueve'
+import { fechaCorta, faltanLosPrecios } from './cuantoSeMueve'
 import { comoSeVe, porcentaje } from './backtesting'
 
 // Los del servidor (backend/cartera_simulada.py): cuántos activos entran y con
@@ -64,6 +65,15 @@ export const errorDeHoy = (cliente = null) => `No pudimos traer ${deQuien(client
 const capital = (t) => t.charAt(0).toUpperCase() + t.slice(1)
 /** «AAPL» · «AAPL y GGAL» · «AAPL, GGAL y BTC». */
 const enLista = (xs) => (xs.length < 2 ? String(xs[0] ?? '') : `${xs.slice(0, -1).join(', ')} y ${xs.at(-1)}`)
+/** Los activos de `xs` ({asset, hasta}) por el día hasta el que llegan sus precios,
+ *  del más viejo al más nuevo: [[hasta, [activos]]]. Cada uno con SU fecha: con la
+ *  noche caída y uno que ya estaba parado, la más vieja para todos decía mal la del
+ *  otro (auditoría 06/11, H5). */
+function porFecha(xs) {
+  const grupos = new Map()
+  for (const x of xs) grupos.set(x.hasta || '', [...(grupos.get(x.hasta || '') || []), x.asset])
+  return [...grupos].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+}
 
 /** Lo escrito en un porcentaje como número: «33,3» · «33.3» → 33.3; vacío o
  *  algo que no es un número, 0. */
@@ -212,25 +222,49 @@ export const filasDeHoy = (r) => (r?.activos || []).map(a => ({ asset: a.asset, 
 /** Qué parte de tu plata se simula y qué quedó afuera de «Mi cartera de hoy», en
  *  palabras (null si nada). La parte: el servidor la cuenta sobre TODA tu plata
  *  (`parte`); sin decirla, mitad fondo y mitad CEDEARs se veía como «tu cartera»
- *  toda en CEDEARs (producto 05/11, A4; método, C6). */
+ *  toda en CEDEARs (producto 05/11, A4; método, C6). Lo que no tiene precios de la
+ *  última semana también queda afuera y el resto se reparte en su proporción: un
+ *  activo que dejó de cotizar frenaba la cartera entera (pantalla 06/11, H3; Nico,
+ *  06/11: «Sí, así»). */
 export function notaDeHoy(r, cliente = null) {
   const afuera = r?.afuera || []
   const sin = afuera.filter(x => x.motivo === 'sin_serie').map(x => x.asset.replace(/^FCI:/, ''))
+  const viejas = afuera.filter(x => x.motivo === 'vieja')
   const tope = afuera.filter(x => x.motivo === 'tope').map(x => x.asset)
   const out = []
   if (r?.parte != null && r.parte < 100) {
-    out.push(`Lo que se simula es el ${r.parte}% de ${cliente ? 'su' : 'tu'} plata: lo demás (efectivo, plazos fijos, `
-      + 'bonos o fondos) no lo podemos simular.')
+    // «Lo demás (efectivo, plazos fijos, bonos o fondos)», si algo de eso quedó afuera (un
+    // bono o un fondo en `sin`; efectivo o plazos fijos, el sí o no del servidor). Con sólo
+    // un activo afuera por sus precios o por el tope era falso: lo demás era ese activo, y
+    // la nota lo nombra. Con efectivo, sin el paréntesis parecía que todo lo que faltaba
+    // era ese activo (revisión 06/11; Nico, 06/11: «Sí, que lo nombre»).
+    const loDemas = sin.length || r.efectivo_o_plazos || !(viejas.length || tope.length)
+    out.push(`Lo que se simula es el ${r.parte}% de ${cliente ? 'su' : 'tu'} plata`
+      + (loDemas ? ': lo demás (efectivo, plazos fijos, bonos o fondos) no lo podemos simular.' : '.'))
   }
   if (sin.length) {
     out.push(`${sin.length === 1 ? 'Quedó' : 'Quedaron'} afuera ${enLista(sin)}: no tenemos sus precios de cada día.`)
+  }
+  if (viejas.length) {
+    out.push(`${viejas.length === 1 ? 'Quedó' : 'Quedaron'} afuera ${enLista(viejas.map(x => x.asset))}: `
+      + `${hastaCuando(viejas)}.`)
   }
   if (tope.length) {
     out.push(`Entran hasta ${MAX_ACTIVOS} activos: ${tope.length === 1 ? 'quedó' : 'quedaron'} afuera ${enLista(tope)}, `
       + `${tope.length === 1 ? 'el que menos pesa' : 'los que menos pesan'}.`)
   }
   if (!out.length) return null
-  return `${out.join(' ')}${sin.length || tope.length ? ' El resto se repartió sobre 100%.' : ''}`
+  return `${out.join(' ')}${sin.length || viejas.length || tope.length ? ' El resto se repartió sobre 100%.' : ''}`
+}
+
+/** «sus precios llegan hasta el 14/08/26», la frase de Comparar; con días
+ *  distintos, cada uno con el suyo (`porFecha`): «los precios de MU llegan hasta
+ *  el 14/08/26 y los de AMD hasta el 02/09/26». */
+function hastaCuando(viejas) {
+  const grupos = porFecha(viejas)
+  if (grupos.length === 1) return `sus precios llegan hasta el ${fechaCorta(grupos[0][0])}`
+  return enLista(grupos.map(([h, xs], k) => (k ? `los de ${enLista(xs)} hasta el ${fechaCorta(h)}`
+    : `los precios de ${enLista(xs)} llegan hasta el ${fechaCorta(h)}`)))
 }
 
 const NOMBRE_INDICE = { sp500: 'S&P 500', nasdaq: 'Nasdaq' }
@@ -318,7 +352,11 @@ export function lecturaCartera(res, { origen = 'cero', cliente = null } = {}) {
     }
   }
   const avisos = []
-  if (res.recortado && res.recorte_por) {
+  if (res.recortado && res.recorte_por && res.recorte_hueco) {
+    // Un hueco de precios justo antes del día de arranque: arranca después (Nico, 08/11).
+    avisos.push(`${capital(faltanLosPrecios(res.recorte_por, res.recorte_hueco))}: la simulación arranca el `
+      + `${fechaCorta(res.desde)}.`)
+  } else if (res.recortado && res.recorte_por) {
     const primera = xs.find(a => a.asset === res.recorte_por)?.primera_vela || res.desde
     avisos.push(`Tenemos precios de ${res.recorte_por} desde el ${fechaCorta(primera)}: la simulación arranca ese día.`)
   }
@@ -340,10 +378,13 @@ export const notaDelResumen = (res) => `Del ${fechaCorta(res.desde)} al ${fechaC
 
 // «1 año» con un espacio que no se corta: partido en dos renglones no se lee (auditoría
 // de pantalla 06/11, O4).
-export const NOTA_ANIO_POR_ANIO = 'Cada año son 365 días, contados para atrás desde el último precio, con las fechas de '
-  + '«1 año»: los índices dan lo mismo que ahí, la cartera no siempre. Acá es la misma cartera sin tocar, y cada '
-  + 'año arranca con los pesos que le dejó el anterior; «1 año» la arma de nuevo con sus porcentajes. «Por año, '
-  + 'en promedio»: lo que habría que ganar (o perder) todos los años, igual, para llegar al mismo total.'
+// Sin la comparación con «1 año» cuando un activo no tiene precios en un corte: ahí vale
+// su último precio de antes y «1 año» arranca después del hueco (auditoría 08/11 del hueco, H3).
+const NOTA_ANIO_365 = 'Cada año son 365 días, contados para atrás desde el último precio'
+const NOTA_ANIO_IGUAL = ', con las fechas de «1 año»: los índices dan lo mismo que ahí, la cartera no siempre'
+const NOTA_ANIO_RESTO = '. Acá es la misma cartera sin tocar, y cada año arranca con los pesos que le dejó el anterior; «1 año» la arma de nuevo con sus porcentajes. «Por año, en promedio»: lo que habría que ganar (o perder) todos los años, igual, para llegar al mismo total.'
+export const NOTA_ANIO_POR_ANIO = NOTA_ANIO_365 + NOTA_ANIO_IGUAL + NOTA_ANIO_RESTO
+export const NOTA_ANIO_POR_ANIO_CON_HUECO = NOTA_ANIO_365 + NOTA_ANIO_RESTO
 
 /** Cuántos meses dura el tramo corto del principio, para su renglón: «7 meses». Hasta
  *  11: uno de 351 días no es un año entero y «12 meses» decía que sí (auditoría 06/11, B6). */
@@ -450,7 +491,7 @@ export function lecturaAnioPorAnio(res, { origen = 'cero', cliente = null } = {}
     promedio: apa.por_anio,
     aviso: origen === 'hoy' ? `Es ${deQuien(cliente)} puesta en el pasado: año por año, también da de más.` : null,
     veredicto: veredicto(filas, res),
-    nota: NOTA_ANIO_POR_ANIO
+    nota: (apa.hueco_en_un_corte ? NOTA_ANIO_POR_ANIO_CON_HUECO : NOTA_ANIO_POR_ANIO)
       + (corto ? ' Lo de antes del primer año entero va aparte, con sus meses.' : '')
       + (largo ? ` El año 1 tiene ${largo} días: suma los de antes del primer año entero.` : ''),
   }
@@ -467,11 +508,8 @@ export function motivoCartera(res, cuantos = 2) {
       return `No tenemos los precios de cada día de ${enLista(nombres)}: `
         + `${uno ? 'sacalo o cambialo por otro' : 'sacalos o cambialos por otros'}.`
     case 'vieja': {
-      // Cada uno con su fecha: con la noche caída y uno que ya estaba parado, la más
-      // vieja para todos decía mal la del otro (auditoría 06/11, H5).
-      const porFecha = new Map()
-      for (const f of faltan) porFecha.set(f.hasta || '', [...(porFecha.get(f.hasta || '') || []), f.asset])
-      const frase = 'No tenemos precios de ' + [...porFecha].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      // Cada uno con su fecha (`porFecha`).
+      const frase = 'No tenemos precios de ' + porFecha(faltan)
         .map(([h, xs]) => (h ? `${enLista(xs)} desde el ${fechaCorta(h)}` : enLista(xs))).join(' ni de ')
       // Viejo se mide contra hoy (auditoría 05/11, H9): puede ser el único activo, o
       // todos (la noche no trajo nada). Ahí no hay «resto» que simular, y cambiarlo no
@@ -484,6 +522,10 @@ export function motivoCartera(res, cuantos = 2) {
         return cuantos === 1
           ? 'Tenemos muy pocos días de precios de este activo: no alcanzan para simular. Cambialo por otro con más historia.'
           : 'Con estos activos tenemos muy pocos días de precios: no alcanzan para simular.'
+      }
+      if (res.recorte_hueco) {
+        return `${capital(faltanLosPrecios(res.recorte_por, res.recorte_hueco))}: después quedan muy pocos días para `
+          + `simular. ${cuantos === 1 ? 'Cambialo por otro.' : 'Sacalo para probar el resto.'}`
       }
       return `Tenemos muy pocos días de precios de ${res.recorte_por}: no alcanzan para simular. `
         + (cuantos === 1 ? 'Cambialo por otro con más historia.' : 'Sacalo para probar el resto.')

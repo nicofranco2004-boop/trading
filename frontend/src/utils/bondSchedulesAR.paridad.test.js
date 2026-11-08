@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vitest'
 import { CANJE_2020_BY_TICKER } from './bondSchedulesAR.js'
 import { BOND_META } from './bondMeta.js'
 import { generateSchedule } from './bondSchedule.js'
+import { hoyISO } from './fecha.js'
 
 const AQUI = dirname(fileURLToPath(import.meta.url))
 const PY = readFileSync(resolve(AQUI, '../../../backend/pricing/bond_amortization.py'), 'utf8')
@@ -76,7 +77,7 @@ describe('bonos que ya amortizan en la pantalla y el servidor no barre', () => {
     AL35: 'Empieza a amortizar el 09/01/2031. Mismo caso que GD46.',
     GD35: 'Ídem AL35.',
   }
-  const HOY = new Date().toISOString().slice(0, 10)
+  const HOY = hoyISO()
   const servidor = tablasDelServidor()
 
   it('todo bono con una cuota de capital ya pagada está en el servidor o en la lista, con su motivo', () => {

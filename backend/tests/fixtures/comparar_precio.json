@@ -1,0 +1,253 @@
+{
+ "normal": {
+  "moneda": "usd",
+  "desde": "2025-11-04",
+  "base": "2025-11-04",
+  "base_corrida": false,
+  "base_corrida_por": null,
+  "base_corrida_hueco": null,
+  "hasta": "2026-11-04",
+  "series": [
+   {
+    "clave": "MU",
+    "tipo": "activo",
+    "nombre": "MU",
+    "local": false,
+    "ticker": null,
+    "convertida": null,
+    "puntos": [
+     {
+      "d": "2025-11-04",
+      "v": 100.0
+     },
+     {
+      "d": "2026-11-04",
+      "v": 120.31
+     }
+    ],
+    "final": 120.31,
+    "fecha_final": "2026-11-04"
+   },
+   {
+    "clave": "sp500",
+    "tipo": "vara",
+    "nombre": "S&P 500",
+    "ticker": "^GSPC",
+    "convertida": null,
+    "puntos": [
+     {
+      "d": "2025-11-04",
+      "v": 100.0
+     },
+     {
+      "d": "2026-11-04",
+      "v": 104.94
+     }
+    ],
+    "final": 104.94,
+    "fecha_final": "2026-11-04"
+   },
+   {
+    "clave": "mep",
+    "tipo": "vara",
+    "nombre": "Guardar dólares",
+    "ticker": null,
+    "convertida": null,
+    "puntos": [
+     {
+      "d": "2025-11-04",
+      "v": 100.0
+     },
+     {
+      "d": "2026-11-04",
+      "v": 100.0
+     }
+    ],
+    "final": 100.0,
+    "fecha_final": "2026-11-04"
+   }
+  ],
+  "faltan": [
+   {
+    "clave": "cer",
+    "motivo": "solo_en_pesos"
+   }
+  ],
+  "plazo": "1a"
+ },
+ "hueco": {
+  "moneda": "usd",
+  "desde": "2025-11-04",
+  "base": "2025-11-18",
+  "base_corrida": true,
+  "base_corrida_por": "MU",
+  "base_corrida_hueco": {
+   "desde": "2025-10-15",
+   "hasta": "2025-11-17"
+  },
+  "hasta": "2026-11-04",
+  "series": [
+   {
+    "clave": "MU",
+    "tipo": "activo",
+    "nombre": "MU",
+    "local": false,
+    "ticker": null,
+    "convertida": null,
+    "puntos": [
+     {
+      "d": "2025-11-18",
+      "v": 100.0
+     },
+     {
+      "d": "2026-11-04",
+      "v": 119.38
+     }
+    ],
+    "final": 119.38,
+    "fecha_final": "2026-11-04"
+   },
+   {
+    "clave": "sp500",
+    "tipo": "vara",
+    "nombre": "S&P 500",
+    "ticker": "^GSPC",
+    "convertida": null,
+    "puntos": [
+     {
+      "d": "2025-11-18",
+      "v": 100.0
+     },
+     {
+      "d": "2026-11-04",
+      "v": 104.74
+     }
+    ],
+    "final": 104.74,
+    "fecha_final": "2026-11-04"
+   },
+   {
+    "clave": "mep",
+    "tipo": "vara",
+    "nombre": "Guardar dólares",
+    "ticker": null,
+    "convertida": null,
+    "puntos": [
+     {
+      "d": "2025-11-18",
+      "v": 100.0
+     },
+     {
+      "d": "2026-11-04",
+      "v": 100.0
+     }
+    ],
+    "final": 100.0,
+    "fecha_final": "2026-11-04"
+   }
+  ],
+  "faltan": [
+   {
+    "clave": "cer",
+    "motivo": "solo_en_pesos"
+   }
+  ],
+  "plazo": "1a"
+ },
+ "corrida_por": {
+  "moneda": "usd",
+  "desde": "2025-11-04",
+  "base": "2026-01-05",
+  "base_corrida": true,
+  "base_corrida_por": "NUEV",
+  "base_corrida_hueco": null,
+  "hasta": "2026-11-04",
+  "series": [
+   {
+    "clave": "MU",
+    "tipo": "activo",
+    "nombre": "MU",
+    "local": false,
+    "ticker": null,
+    "convertida": null,
+    "puntos": [
+     {
+      "d": "2026-01-05",
+      "v": 100.0
+     },
+     {
+      "d": "2026-11-04",
+      "v": 116.33
+     }
+    ],
+    "final": 116.33,
+    "fecha_final": "2026-11-04"
+   },
+   {
+    "clave": "NUEV",
+    "tipo": "activo",
+    "nombre": "NUEV",
+    "local": false,
+    "ticker": null,
+    "convertida": null,
+    "puntos": [
+     {
+      "d": "2026-01-05",
+      "v": 100.0
+     },
+     {
+      "d": "2026-11-04",
+      "v": 154.25
+     }
+    ],
+    "final": 154.25,
+    "fecha_final": "2026-11-04"
+   },
+   {
+    "clave": "sp500",
+    "tipo": "vara",
+    "nombre": "S&P 500",
+    "ticker": "^GSPC",
+    "convertida": null,
+    "puntos": [
+     {
+      "d": "2026-01-05",
+      "v": 100.0
+     },
+     {
+      "d": "2026-11-04",
+      "v": 104.07
+     }
+    ],
+    "final": 104.07,
+    "fecha_final": "2026-11-04"
+   },
+   {
+    "clave": "mep",
+    "tipo": "vara",
+    "nombre": "Guardar dólares",
+    "ticker": null,
+    "convertida": null,
+    "puntos": [
+     {
+      "d": "2026-01-05",
+      "v": 100.0
+     },
+     {
+      "d": "2026-11-04",
+      "v": 100.0
+     }
+    ],
+    "final": 100.0,
+    "fecha_final": "2026-11-04"
+   }
+  ],
+  "faltan": [
+   {
+    "clave": "cer",
+    "motivo": "solo_en_pesos"
+   }
+  ],
+  "plazo": "1a"
+ }
+}

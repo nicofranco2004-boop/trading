@@ -24,7 +24,7 @@
 // (`queSePrueba`), y con una regla que perdió contra mantener se dice también
 // lo que consiguió a cambio: caer menos (`fraseDeLaCaida`).
 import { decimalesFinos, pctColor, pctVarFino, redondearPct } from './format'
-import { fechaCorta } from './cuantoSeMueve'
+import { fechaCorta, faltanLosPrecios } from './cuantoSeMueve'
 
 // Las reglas, en el orden de backend/backtest.py (REGLAS): las cuatro que ya
 // muestra la ficha (Nico, 04/11). `corto`: su nombre al compararlas.
@@ -198,6 +198,9 @@ export function motivoEnPalabras(res, activo) {
     case 'demo':
       return 'En el modo demo no hay precios de todos los días para probar reglas.'
     case 'poca_historia': {
+      if (res.recorte_hueco) {
+        return `${capital(faltanLosPrecios(a, res.recorte_hueco))}: después quedan muy pocos días para probar una regla.`
+      }
       if (!res.recorte_por) return `${a} tiene muy pocos días de precios para probar una regla.`
       const r = reglaDe(res.recorte_por)
       const varias = (res.reglas || []).length > 1
@@ -211,9 +214,15 @@ export function motivoEnPalabras(res, activo) {
 
 /** Si la prueba arrancó después de lo pedido, por qué. null si no. Al
  *  comparar, la que corrió el principio es la que más historia necesita
- *  (`recorte_por`): todas arrancan ese día. */
+ *  (`recorte_por`): todas arrancan ese día. O un hueco de precios justo antes del
+ *  día de arranque (`recorte_hueco`): arranca después, como Comparar y «Una
+ *  cartera» (Nico, 08/11). */
 export function textoDelRecorte(res) {
-  if (!res?.disponible || !res.recortado || !res.recorte_por) return null
+  if (!res?.disponible || !res.recortado) return null
+  if (res.recorte_hueco) {
+    return `${capital(faltanLosPrecios(res.asset, res.recorte_hueco))}: la prueba arranca el ${fechaCorta(res.desde)}.`
+  }
+  if (!res.recorte_por) return null
   return `Hay precios de ${res.asset} desde el ${fechaCorta(res.primera_vela)} y ${reglaDe(res.recorte_por).necesita}: `
     + `la prueba arranca el ${fechaCorta(res.desde)}.`
 }

@@ -30,8 +30,11 @@ precio, con la compra al cierre de `anios` × 365 días atrás
 «como la ficha». Con el cierre del primer día, un día movido daba otro número que
 la ficha). Un activo o un índice sin precios de la última semana, contada desde
 hoy (`tecnico.es_vieja`), no entra y se dice. Si un activo cotiza desde después,
-arranca el día de ese activo y lo dice (`recorte_por`); hasta una semana después
-no es un recorte (`comparar.DIAS_MARGEN`: el borde de lo guardado, un feriado).
+arranca el día de ese activo y lo dice (`recorte_por`); si le faltan los precios de
+más de 10 días justo antes (un hueco: `tecnico.arranque_de_la_serie`), arranca el
+primero después del hueco y dice qué días faltan (`recorte_hueco`; Nico, 08/11).
+Hasta una semana después no es un recorte (`comparar.DIAS_MARGEN`: el borde de lo
+guardado, un feriado).
 Los índices, con la misma semana y LA regla de Comparar (`comparar.dia_del_cien`):
 con 5 años, lo que se pide es justo lo guardado, y si ese día cae un sábado el
 S&P 500 empieza el lunes. Se arranca el lunes, en vez de dejarlo afuera.
@@ -166,17 +169,24 @@ def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
     hasta = max(p[-1][0] for p in puntos.values())
     pedido = tecnico.dia_de_arranque(hasta, anios * tecnico.DIAS_ANIO)
     primeras = {s: p[0][0] for s, p in puntos.items()}
-    ultimo_en_llegar = max(primeras, key=lambda s: (primeras[s], s))
+    # Desde cuándo cuentan todos y quién llegó último: su primer precio, o el primero
+    # después de un hueco (`comparar.arranque_de_los_activos`, la de Comparar).
+    llegada = comparar.arranque_de_los_activos(pedido, list(puntos.values()))
+    ultimo_en_llegar = list(puntos)[llegada["quien"]] if llegada["quien"] is not None else None
     # El primer día, con LA regla de Comparar (`comparar.dia_del_cien`): el primero
     # que tienen todos los activos, y si un índice empieza unos días después (con 5
     # años, el lunes después de un sábado), ése. Un índice sin su historia no corre
     # nada: queda afuera, en `faltan`.
     de_los_indices = {clave: _puntos(indices.get(clave) or []) for clave, _, _ in INDICES}
     base, de_los_activos = comparar.dia_del_cien(pedido, list(puntos.values()), list(de_los_indices.values()), hoy)
-    recortado = comparar._dias(pedido, de_los_activos) > comparar.DIAS_MARGEN
+    # Un hueco se dice siempre, aunque el primer precio después caiga en la semana
+    # de margen: ya tiene más de 10 días, no es un feriado largo.
+    hueco = llegada["hueco"]
+    recortado = comparar._dias(pedido, de_los_activos) > comparar.DIAS_MARGEN or bool(hueco)
     fechas = sorted({base} | {d for p in puntos.values() for d, _ in p if base < d <= hasta})
     out.update({"pedido_desde": pedido, "recortado": recortado,
-                "recorte_por": ultimo_en_llegar if recortado else None})
+                "recorte_por": ultimo_en_llegar if recortado else None,
+                "recorte_hueco": hueco if recortado else None})
     if len(fechas) < MIN_DIAS:
         # `recorte_por` sólo si hubo recorte: con pocas ruedas sin recorte (una
         # acción poco negociada) no es que «cotiza hace muy poco» (auditoría 05/11, H10).
@@ -227,6 +237,16 @@ def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
             "aporte": pesos[s] * (v - 100) / 100,
             "peso_final": pesos[s] * v / final,
         })
+    anios_uno_a_uno = _anio_por_anio(base, hasta, {"cartera": valor, **{c: v.al for c, v in varas.items()}},
+                                     recortado)
+    if anios_uno_a_uno:
+        # Un activo sin precios en un corte (un hueco de más de 10 días justo antes):
+        # ahí vale su último precio de antes, y «1 año» arranca después del hueco, así
+        # que esos años no dan lo mismo que elegirlo y la pantalla no lo dice
+        # (auditoría 08/11 del hueco, H3).
+        anios_uno_a_uno["hueco_en_un_corte"] = any(
+            comparar.arranque(p, t["desde"])["hueco"] is not None
+            for t in anios_uno_a_uno["tramos"][1:] for p in puntos.values())
     return {
         **out,
         "disponible": True,
@@ -237,8 +257,7 @@ def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
         "cartera": backtest._resumen([v / 100 for v in cartera]),
         "indices": resumen_indices,
         "faltan": faltan,
-        "anio_por_anio": _anio_por_anio(base, hasta, {"cartera": valor, **{c: v.al for c, v in varas.items()}},
-                                        recortado),
+        "anio_por_anio": anios_uno_a_uno,
         "curva": [{"d": d, "cartera": round(cartera[k], 2), **{c: round(curvas[c][k], 2) for c in curvas}}
                   for k, d in enumerate(fechas)],
     }
@@ -263,14 +282,31 @@ def _sobre_cien(valores: list, decimales: int = 1) -> list:
     return [e / paso for e in enteros]
 
 
-def de_hoy(car: dict) -> dict:
+def de_hoy(car: dict, hasta, hoy: date) -> dict:
     """«Mi cartera de hoy»: los activos de `car` (`senales_semana.cartera`, LA
     valuación de «tu plata») que se pueden simular, con su peso sobre 100 entre
     ellos (los porcentajes, nunca la plata). Quedan afuera, y se dice cuáles:
       · los que no tienen precio de todos los días (bonos, letras, fondos,
         efectivo, monedas estables): LA regla de la noche (`velas_diarias._yahoo_de`
         devuelve vacío), no una lista copiada;
+      · los que no tienen precios de la última semana, contada desde `hoy`:
+        LA regla con que después los rechaza la simulación (`tecnico.es_vieja`),
+        con la fecha de LA serie con que se simula (`hasta`). Un activo que dejó
+        de cotizar frenaba la cartera entera, y al sacarlo quedaba «Faltan 20%»:
+        la única forma de volver a tus pesos era hacer la cuenta a mano
+        (auditoría de pantalla 06/11, H3; Nico, 06/11: «Sí, así»). Si ninguno
+        tiene precios de la última semana (la noche sin correr más de una
+        semana), no se saca ninguno: sin ellos la tabla quedaba vacía y decía
+        «Todavía no tenés acciones…»; con ellos, la simulación dice desde cuándo
+        no hay precios. Uno sin precios guardados no cuenta como al día: con la
+        noche caída y uno comprado después, quedaba ése solo, al 100 %, y los
+        demás afuera como si hubieran dejado de cotizar (revisión 06/11);
       · si son más de `MAX_ACTIVOS`, los que menos pesan.
+    `hasta(asset, local)`: el día del último precio con que se simularía
+    (`ultimo_precio`), o None si todavía no hay ninguno (lo baja la simulación,
+    como a un activo que nadie sigue): ése no queda afuera. Se pregunta de mayor
+    a menor peso, sólo hasta llenar los `MAX_ACTIVOS`: cada pregunta lee la
+    serie entera, la misma que lee la simulación.
     El mismo papel en BYMA y en Nueva York (GGAL de IOL y el ADR de Schwab) va
     junto: la cartera no repite activos. Su marca `local` es LA de la ficha
     (`esAccionLocal` de utils/accionLocal.js): acción argentina sólo si TODOS sus
@@ -279,7 +315,12 @@ def de_hoy(car: dict) -> dict:
     `parte`: qué porcentaje de toda tu plata (`car['total']`: también el
     efectivo, los bonos, los fondos y los plazos fijos) es lo que se simula. Sin
     él, una cartera mitad fondo y mitad CEDEARs se veía como «tu cartera», toda en
-    CEDEARs (auditoría de producto 05/11, A4). Un porcentaje, nunca la plata."""
+    CEDEARs (auditoría de producto 05/11, A4). Un porcentaje, nunca la plata.
+    `efectivo_o_plazos`: si en lo que no se simula hay efectivo o plazos fijos
+    (`car['sin_medir']`), un sí o un no, nunca cuánto. Con MU afuera por sus
+    precios, la nota decía «el 62% de tu plata» sin nombrar el 23 % en efectivo, y
+    parecía que lo que faltaba era todo MU (revisión 06/11; Nico, 06/11: «Sí, que
+    lo nombre»)."""
     from cripto import yahoo_de_cripto
     juntos, afuera = {}, []
     for (asset, local), valor in car["tenencias"].items():
@@ -295,25 +336,52 @@ def de_hoy(car: dict) -> dict:
         if valor > j["mayor"]:
             j.update(mayor=valor, tipo=tipo)
     orden = sorted(juntos.values(), key=lambda j: (-j["valor"], j["asset"]))
-    quedan, sobran = orden[:MAX_ACTIVOS], orden[MAX_ACTIVOS:]
-    afuera += [{"asset": j["asset"], "tipo": j["tipo"], "motivo": "tope"} for j in sobran]
+    quedan, viejas, k, al_dia = [], [], 0, False
+    while k < len(orden) and len(quedan) < MAX_ACTIVOS:
+        j, k = orden[k], k + 1
+        h = hasta(j["asset"], j["local"])
+        if h and tecnico.es_vieja(h, hoy):
+            viejas.append({"asset": j["asset"], "tipo": j["tipo"], "motivo": "vieja", "hasta": h})
+        else:
+            quedan.append(j)
+            al_dia = al_dia or bool(h)
+    sobran = orden[k:]
+    if not al_dia:
+        quedan, sobran, viejas = orden[:MAX_ACTIVOS], orden[MAX_ACTIVOS:], []
+    afuera += viejas + [{"asset": j["asset"], "tipo": j["tipo"], "motivo": "tope"} for j in sobran]
     pesos = _sobre_cien([j["valor"] for j in quedan]) if quedan else []
     total = car.get("total") or sum(v for v in car["tenencias"].values() if v > 0)
     simulado = sum(j["valor"] for j in quedan)
     return {"activos": [{"asset": j["asset"], "local": j["local"], "peso": p, "tipo": j["tipo"]}
                         for j, p in zip(quedan, pesos)],
             "afuera": sorted(afuera, key=lambda x: (x["motivo"], x["asset"])),
-            "parte": round(simulado / total * 100) if total > 0 and quedan else None}
+            "parte": round(simulado / total * 100) if total > 0 and quedan else None,
+            "efectivo_o_plazos": (car.get("sin_medir") or 0) > 0}
+
+
+def _serie(conn, asset: str, local: bool) -> dict:
+    """LA serie con que se simula un activo: la de la ficha, en dólares (`tecnico.serie`)."""
+    return tecnico.serie(conn, asset, "usd", local)
+
+
+def ultimo_precio(conn, asset: str, local: bool):
+    """El día del último precio con que se simularía `asset` (`_serie`, con las
+    velas que sirven: `_puntos`), o None si todavía no hay ninguno. Lo pregunta
+    «Mi cartera de hoy» (`de_hoy`). Con otra serie diría «al día» lo que la
+    simulación rechaza: una acción argentina guardada hasta ayer, sin MEP de las
+    últimas semanas, se simula sólo hasta el último día con dólar."""
+    p = _puntos(_serie(conn, asset, local)["velas"])
+    return p[-1][0] if p else None
 
 
 @pesado
 def para_la_pantalla(conn, activos: list, anios: int, hoy: date) -> dict:
-    """La simulación con LAS series de la ficha (`tecnico.serie`) y los índices que
-    se guardan todas las noches (`tecnico.indice`). `activos`: [(asset, local, peso)].
+    """La simulación con LAS series de la ficha (`_serie`) y los índices que se
+    guardan todas las noches (`tecnico.indice`). `activos`: [(asset, local, peso)].
     `hoy`: el día argentino."""
     lista = []
     for asset, local, peso in activos:
-        s = tecnico.serie(conn, asset, "usd", local)
+        s = _serie(conn, asset, local)
         lista.append({"asset": asset, "local": bool(local), "peso": peso, "velas": s["velas"],
                       "ticker": s.get("ticker"), "convertida": s.get("convertida")})
     return simular(lista, {clave: tecnico.indice(conn, simbolo) for clave, _, simbolo in INDICES}, anios, hoy)

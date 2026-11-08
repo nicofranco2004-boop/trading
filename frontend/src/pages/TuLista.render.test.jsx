@@ -12,10 +12,11 @@ import { ListaTecnica } from './TuLista'
 import { filasDeLaLista } from '../utils/listaTecnica'
 import { indexarLecturas } from '../utils/radiografia'
 import { setBrokersRegistry } from '../utils/valuation'
+import { hoyISO } from '../utils/fecha'
 
 beforeEach(() => setBrokersRegistry([{ id: 1, name: 'IOL', currency: 'ARS' }, { id: 2, name: 'Schwab', currency: 'USD' }]))
 
-const hoy = new Date().toISOString().slice(0, 10)
+const hoy = hoyISO()
 const lec = (asset, local, l = {}, extra = {}) => ({
   asset, local, disponible: true,
   lectura: { ruedas: 760, fecha: hoy, media200: 90, dist_media200: 11, tendencia: 'alcista', pendiente_media200: 2, media50: 95,
@@ -90,7 +91,8 @@ describe('Tu lista: la tabla', () => {
 // Una lectura con su línea de 3 meses: de 100 a 120 (+20 %) o de 120 a 100.
 const conLinea = (asset, sube, l = {}, extra = {}) => lec(asset, false, { precio: sube ? 120 : 100, ...l },
   { linea: [{ d: '2026-08-01', c: sube ? 100 : 120 }, { d: '2026-09-15', c: 110 }, { d: hoy, c: sube ? 120 : 100 }], ...extra })
-const haceDias = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10)
+// Contados desde `hoy` (el día de acá), con el mismo reloj.
+const haceDias = (n) => new Date(Date.parse(hoy + 'T00:00:00Z') - n * 86400000).toISOString().slice(0, 10)
 const cambio = (fecha) => ({ ultimo_cambio: { tipo: 'maximo', fecha, tono: 'max', corta: 'marcó su máximo del año', texto: 'marcó su máximo del año.' } })
 const filasTarjetas = filasDeLaLista({
   tenencias: [...TENENCIAS, { asset: 'NVDA', local: false, peso: 0, tipo: 'STOCK' }],

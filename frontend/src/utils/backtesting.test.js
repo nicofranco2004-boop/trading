@@ -220,7 +220,7 @@ describe('una regla: lo que dicen los números', () => {
   })
 
   it('A3: ninguna regla general en presente («estar afuera ayuda»)', () => {
-    for (const r of Object.values(GGAL)) {
+    for (const r of Object.values(GGAL).filter(x => x.disponible)) {
       expect(lectura(r).frases.join(' '), r.reglas.join(',')).not.toMatch(/ayuda|cuando el precio/i)
     }
   })
@@ -424,10 +424,31 @@ describe('nunca promete', () => {
     const motivos = ['sin_serie', 'sin_datos', 'tope', 'bajando', 'demo', 'poca_historia']
       .map(motivo => motivoEnPalabras({ motivo, recorte_por: 'media200', reglas: ['rsi', 'media200'] }, 'GGAL'))
     const textos = [
-      ...Object.values(GGAL).flatMap(r => { const l = lectura(r); return [l.titulo, ...l.frases, textoDelRecorte(r) || ''] }),
+      ...Object.values(GGAL).filter(r => r.disponible)
+        .flatMap(r => { const l = lectura(r); return [l.titulo, ...l.frases, textoDelRecorte(r) || ''] }),
+      // Las que no se pudieron probar (pocos días después de un hueco), con su motivo.
+      ...Object.values(GGAL).filter(r => !r.disponible).map(r => motivoEnPalabras(r)),
       ...REGLAS.flatMap(r => [r.nombre, r.corto, r.explica, r.necesita]),
       ...motivos, comoSeSimula(RSI), comoSeSimula(GGAL['rsi,adx_squeeze']), queSePrueba(false), queSePrueba(true),
     ].join(' ')
     expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|rebota|frena|antesala|arranque|esperad|potencial|oportunidad|anticipa\b|conviene|deber[íi]as|mejor regla|la mejor\b|te recomend|ayuda|muchas veces/i)
+  })
+})
+
+describe('un hueco de precios justo antes del día de arranque (Nico, 08/11)', () => {
+  // GGAL sin precios del 01/10 al 08/11/2024 (backend/tests/test_backtest.py, `_con_hueco`):
+  // el precio de arranque es el primero después del hueco (11/11) y la prueba, la rueda siguiente.
+  const H = GGAL.hueco
+  it('dice qué días faltan y desde cuándo se prueba', () => {
+    expect(textoDelRecorte(H)).toBe('Faltan los precios de GGAL del 01/10/24 al 10/11/24: la prueba arranca el 12/11/24.')
+    expect(lectura(H).frases[0]).toMatch(/^GGAL bajó 35% desde el cierre del 11\/11\/24 y la regla /)
+  })
+
+  it('si después del hueco quedan muy pocos días, lo dice así', () => {
+    // La respuesta del servidor, no una armada a mano (auditoría 08/11 de las pruebas, M25).
+    const corta = GGAL.hueco_pocos_dias
+    expect([corta.disponible, corta.motivo]).toEqual([false, 'poca_historia'])
+    expect(motivoEnPalabras(corta))
+      .toBe('Faltan los precios de GGAL del 01/10/24 al 15/09/26: después quedan muy pocos días para probar una regla.')
   })
 })

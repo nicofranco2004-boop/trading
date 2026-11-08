@@ -9,7 +9,7 @@
 import { isBymaHolding } from './valuation'
 import { esAccionLocal } from './accionLocal'
 import { mismoPapel, miradaSinTenencia } from './buscadorRapido'
-import { primeraCompra, fechaCorta } from './cuantoSeMueve'
+import { primeraCompra, fechaCorta, faltanLosPrecios } from './cuantoSeMueve'
 
 export const MAX_ACTIVOS = 4
 export const PLAZOS = [['compra', 'Desde tu primera compra'], ['1a', '1 año'], ['3a', '3 años']]
@@ -100,6 +100,21 @@ function lista(nombres) {
 }
 
 /**
+ * Por qué todos arrancan en 100 ese día, para después de «Todos arrancan en 100 el
+ * …»: entre paréntesis, o '' si es el día pedido. Un hueco de precios justo antes
+ * (`base_corrida_hueco`: arrancan con el primer precio después, como «Una cartera» y
+ * Una regla; Nico, 08/11), un activo que cotiza hace menos (`base_corrida_por`) o el
+ * borde de lo guardado (`base_corrida` solo).
+ */
+export function porQueArrancaAhi(res) {
+  if (res?.base_corrida_hueco && res.base_corrida_por) {
+    return ` (${faltanLosPrecios(res.base_corrida_por, res.base_corrida_hueco)})`
+  }
+  if (res?.base_corrida_por) return ` (de ${res.base_corrida_por} tenemos precios desde ese día)`
+  return res?.base_corrida ? ' (los precios guardados empiezan ese día)' : ''
+}
+
+/**
  * El panel vacío cuando ningún activo se pudo dibujar porque TODOS los pedidos
  * están sin precios de la última semana (contada desde hoy: comparar.py), o null
  * si falta por otra cosa (un bono, un fondo). Sin esto decía «Probá con otro
@@ -179,4 +194,28 @@ export function fraseComparacion(res) {
     }
   }
   return partes.join(' ')
+}
+
+/**
+ * Con qué dólar se pasó cada línea a la moneda elegida, en una frase. Lo dice el
+ * servidor en `convertida` de cada serie (backend/comparar.py): en pesos, los
+ * CEDEARs van con el contado con liqui de cada día y el S&P 500 con el mismo (en
+ * la Bolsa se compra con el CEDEAR de SPY); lo que cotiza afuera y no es un
+ * CEDEAR, con el MEP; sin la historia del contado con liqui, todo con el MEP. Antes
+ * la nota decía «con el MEP» para todo y los CEDEARs ya iban con el contado con
+ * liqui (auditoría del contado con liqui, 06/11, H1 de la pantalla).
+ */
+export function notaDelDolar(res) {
+  if (res?.moneda !== 'ars') return 'Las acciones argentinas se pasan a dólares con el MEP de cada día.'
+  const series = res.series || []
+  const sp = series.find(s => s.clave === 'sp500')
+  const conCcl = [
+    series.some(s => s.tipo === 'activo' && s.convertida === 'ccl') && 'los CEDEARs',
+    sp?.convertida === 'ccl' && 'el S&P 500',
+  ].filter(Boolean)
+  const conMep = series.some(s => s.tipo === 'activo' && s.convertida === 'mep') || sp?.convertida === 'mep'
+  if (!conCcl.length) return conMep ? 'Lo que cotiza afuera se pasa a pesos con el MEP de cada día.' : ''
+  const quien = lista(conCcl)
+  const frase = `${quien[0].toUpperCase()}${quien.slice(1)} ${quien === 'el S&P 500' ? 'se pasa' : 'se pasan'} a pesos con el dólar contado con liqui (CCL) de cada día`
+  return conMep ? `${frase}; lo demás que cotiza afuera, con el MEP.` : `${frase}.`
 }

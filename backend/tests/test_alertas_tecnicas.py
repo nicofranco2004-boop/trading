@@ -97,7 +97,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         with main.db_abierta() as conn:
             for t in ("velas_diarias", "velas_estado", "watchlist",
                       "positions", "brokers", "alerts", "alert_events", "alert_symbol_state",
-                      "dibujos_grafico"):
+                      "dibujos_grafico", "bond_indices_daily"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
                 "INSERT INTO users (email, name, password_hash, approved, email_verified, tier) "
@@ -111,11 +111,16 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.ayer, self.anteayer = r[-1], r[-2]     # las dos últimas ruedas cerradas
         self.yahoo = YahooFalso(self.anteayer)
         self.byma = {}          # la lista de CEDEARs de BYMA (data912)
+        # La historia de cada rueda de data912: {código de la Bolsa: cierre(fecha)},
+        # publicada hasta el mismo día que Yahoo. Vacía salvo en la prueba que la usa
+        # (la noche le pide la de BAC, 'BA.C': sin esto salía a la red).
+        self.historia_byma = {}
         self.mails, self.pushes = [], []
         self._p = [
             mock.patch("main._check_rate_limit"),
             mock.patch("pricing.yahoo._historia", self.yahoo),
             mock.patch("main._fetch_data912_equities", lambda: self.byma),
+            mock.patch("pricing.data912.filas", self._data912),
             # El alta prueba el precio de ahora (¿existe el ticker?): es red.
             mock.patch("alerts_engine._prices_for", lambda syms: {s: 100.0 for s in syms}),
             mock.patch("billing.emails._send",
@@ -150,6 +155,15 @@ class AlertasTecnicasTest(unittest.TestCase):
         """Pasa una noche: Yahoo publica hasta `hasta` y corre el trabajo de velas."""
         self.yahoo.hasta = hasta
         main._run_velas_diarias_job()
+
+    def _data912(self, tipo, papel, timeout=10):
+        """`pricing.data912.filas`: las ruedas que Yahoo ya publicó (`yahoo.hasta`)."""
+        f = self.historia_byma.get(papel)
+        if f is None:
+            return []
+        dias = _ruedas(self.yahoo.hasta, 759) + [self.yahoo.hasta]
+        return [{"date": d.isoformat(), "o": f(d), "h": f(d) * 1.01, "l": f(d) * 0.99, "c": f(d), "v": 4000.0}
+                for d in dias]
 
     def _crear(self, creada_el=None, **kw):
         """Crea la alerta por HTTP. `creada_el`: el día (Argentina) en que se
@@ -331,30 +345,67 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertEqual(len(self._eventos()), 1, "el mismo cruce no se avisa dos veces")
         self.assertEqual(len(self.mails), 1)
 
-    def test_en_pesos_el_mail_dice_que_el_precio_del_cedear_es_estimado(self):
-        # BAC en pesos es SIEMPRE un estimado (su '.BA' viene roto y no se baja: la
-        # acción de afuera × el MEP ÷ 4). El mail decía «cerró en $ X» con el número
-        # estimado, sin decirlo (auditoría 06/11, H8 de la pantalla).
-        import tecnico
+    def _bac_cruza_en_pesos(self, mep, ccl=None):
+        """BAC en pesos cruza su promedio de 200 días: la noche de verdad (que guarda
+        también el contado con liqui de cada día, `ccl`, si la fuente lo da) y el
+        cron de verdad. Sin la historia de su CEDEAR en la Bolsa ('BA.C',
+        `historia_byma`) es el estimado: su '.BA' de Yahoo es otro papel."""
+        dias = _ruedas(self.ayer, 800) + [self.ayer]
         with main.db_abierta() as conn:
-            for d in _ruedas(self.ayer, 800) + [self.ayer]:
-                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?, 1100.0, 1000.0) "
-                             "ON CONFLICT(date) DO NOTHING", (d.isoformat(),))
+            conn.execute("DELETE FROM fx_rates_daily")       # el MEP de esta prueba, no el de la anterior
+            for d in dias:
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?, ?, ?)",
+                             (d.isoformat(), mep * 1.1, mep))
             conn.commit()
+        fuente = [(d.isoformat(), ccl - 1, ccl + 1) for d in dias] if ccl else []
         self.yahoo.precios["BAC"] = self._sube_ayer
         self.byma = {"BAC": {"mercado": "arg_cedears"}}
         self.client.post("/api/watchlist", json={"symbol": "BAC"}, headers=self.h)
-        self._noche(self.anteayer)
-        self._crear(symbol="BAC", currency="ARS", creada_el=self._siguiente(self.anteayer))
-        self._cron()
-        self._noche(self.ayer)                       # el cruce: 90 → 120 dólares
-        self._cron()
+        with mock.patch("main._bajar_ccl", lambda: fuente):
+            self._noche(self.anteayer)
+            self._crear(symbol="BAC", currency="ARS", creada_el=self._siguiente(self.anteayer))
+            self._cron()
+            self._noche(self.ayer)                   # el cruce: 90 → 120 dólares
+            self._cron()
         ev = self._eventos()
         self.assertEqual(len(ev), 1, "el cruce de ayer avisa")
         self.assertEqual(ev[0]["message"],
                          "BAC en pesos superó su promedio de 200 días: la tendencia de largo plazo pasó a ser alcista")
-        self.assertIn("BAC cerró en $30.000", self.mails[0]["texto"], "120 × 1000 ÷ 4")
-        self.assertIn(tecnico.NOTA_ESTIMADO, self.mails[0]["texto"])
+        return self.mails[0]["texto"]
+
+    def test_en_pesos_el_mail_dice_que_el_precio_del_cedear_es_estimado(self):
+        # El mail decía «cerró en $ X» con el número estimado, sin decirlo
+        # (auditoría 06/11, H8 de la pantalla). Y el estimado es con el contado con
+        # liqui de cada día, el dólar de los CEDEARs, no con el MEP (Nico, 06/11).
+        import tecnico
+        texto = self._bac_cruza_en_pesos(mep=950.0, ccl=1000.0)
+        self.assertIn("BAC cerró en $30.000", texto, "120 × 1000 (el contado con liqui) ÷ 4")
+        self.assertIn(tecnico.NOTA_ESTIMADO, texto)
+        self.assertIn("contado con liqui", tecnico.NOTA_ESTIMADO)
+
+    def test_con_su_cedear_de_la_bolsa_el_mail_dice_el_precio_real(self):
+        # La noche guarda BA.C, el CEDEAR de BAC en pesos de la Bolsa (Nico,
+        # 06/11/2026): el aviso mira ESA serie y el mail dice su cierre, sin la
+        # nota del estimado. Acá BA.C está 2 % arriba del estimado: 120 dólares ×
+        # 1.020 ÷ 4 = $ 30.600, contra los $ 30.000 que daría Nueva York × el
+        # contado con liqui (1.000) ÷ 4.
+        import tecnico
+        self.historia_byma["BA.C"] = lambda d: self._sube_ayer(d) * 1020.0 / 4
+        texto = self._bac_cruza_en_pesos(mep=950.0, ccl=1000.0)
+        self.assertIn("BAC cerró en $30.600", texto)
+        self.assertNotIn(tecnico.NOTA_ESTIMADO, texto)
+        self.assertNotIn("estimado", texto)
+        self.assertEqual([p for p in self.yahoo.pedidos if p[0] == "BAC.BA"], [],
+                         "a Yahoo nunca: su 'BAC.BA' es otro papel")
+
+    def test_sin_el_contado_con_liqui_el_mail_dice_que_es_con_el_mep(self):
+        # Una base que todavía no bajó el contado con liqui: el estimado sigue con
+        # el MEP, y la nota del mail nombra ESE dólar (no el que no usó).
+        import tecnico
+        texto = self._bac_cruza_en_pesos(mep=1000.0)
+        self.assertIn("BAC cerró en $30.000", texto, "120 × 1000 (el MEP) ÷ 4")
+        self.assertIn(tecnico.nota_de(tecnico.NOTA_ESTIMADO, "mep"), texto)
+        self.assertNotIn("contado con liqui", texto)
 
     def test_de_un_cliente_el_push_y_el_mail_llevan_a_mis_clientes(self):
         """Auditoría B, hallazgo B2 (29/10): el push de la alerta técnica de
@@ -1314,6 +1365,32 @@ class AlertasTecnicasTest(unittest.TestCase):
         with main.db_abierta() as conn:
             self.assertEqual(ae._visto_hasta(conn, ev[0]["alert_id"], "MSFT"), self.ayer.isoformat())
 
+    def test_tu_linea_de_bac_en_pesos_tocada_en_la_rueda_nombra_el_dolar_del_estimado(self):
+        # BAC en pesos es SIEMPRE un estimado. En una base sin el contado con liqui
+        # guardado, el estimado va con el MEP: el mail del toque EN LA RUEDA nombra
+        # ESE dólar, como el de la noche (`_toque_en_la_rueda` recibe `dolar`).
+        # (Auditoría de las pruebas, 06/11.)
+        dias = _ruedas(self.ayer, 800) + [self.ayer]
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM fx_rates_daily")
+            for d in dias:
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?, 1100.0, 1000.0)",
+                             (d.isoformat(),))
+            conn.commit()
+        self.yahoo.precios["BAC"] = self._salta_ayer        # ayer: de 108,90 a 111,10 dólares
+        self.byma = {"BAC": {"mercado": "arg_cedears"}}
+        self.client.post("/api/watchlist", json={"symbol": "BAC"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(self._horizontal(27_375.0), asset="BAC", moneda="ars")     # 109,50 × 1000 ÷ 4
+        self._crear_linea(symbol="BAC", currency="ARS", creada_el=self.anteayer, repeat="always")
+        self._cron()
+        self.assertEqual(self._eventos(), [])
+        r = self._pasada(self.ayer)
+        self.assertEqual(r["tecnicas"]["en_rueda"], {"series": 1, "avisos": 1})
+        texto = self.mails[0]["texto"]
+        self.assertIn(tecnico.nota_de(tecnico.NOTA_ESTIMADO, "mep"), texto)
+        self.assertNotIn("contado con liqui", texto)
+
     def test_si_la_rueda_no_lo_vio_avisa_la_noche_como_siempre(self):
         # Yahoo no contestó la vela de hoy (o no le tocó turno): la noche es la fuente.
         self.yahoo.precios["MSFT"] = self._salta_ayer
@@ -1533,6 +1610,39 @@ class AlertasTecnicasTest(unittest.TestCase):
             self._noche(self.ayer)                  # la noche guardó una vela: se lee de nuevo
             self._pasada(self.hoy)
             self.assertEqual(prep.call_count, 2)
+
+    def test_la_serie_leida_antes_del_contado_con_liqui_se_lee_de_nuevo_cuando_llega(self):
+        # Al arrancar, el contado con liqui lo baja `main._actualizar_ccl` unos
+        # segundos después: una pasada que corrió antes dejaba el CEDEAR estimado
+        # con el MEP (~6 % más abajo que la ficha) el resto del día (auditoría del
+        # contado con liqui, S2). BAC en pesos: 110 dólares × 1000 ÷ 4 con el MEP,
+        # × 1100 ÷ 4 con el contado con liqui; la línea está en $31.000.
+        dias = _ruedas(self.ayer, 800) + [self.ayer]
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM fx_rates_daily")
+            for d in dias:
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?, 1100, 1000)",
+                             (d.isoformat(),))
+            conn.commit()
+        self.yahoo.precios["BAC"] = self._salta_ayer
+        self.byma = {"BAC": {"mercado": "arg_cedears"}}
+        self.client.post("/api/watchlist", json={"symbol": "BAC"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(self._horizontal(31000), asset="BAC", moneda="ars")
+        self._crear_linea(symbol="BAC", currency="ARS", creada_el=self.anteayer, repeat="always")
+        self._cron()
+        ae._preparadas.clear()
+        self._pasada(self.ayer)                     # todavía sin el contado con liqui
+        self.assertEqual(ae._preparadas[("BAC", "ARS", False)][1]["convertida"], "mep")
+        fuente = [(d.isoformat(), 1099.0, 1101.0) for d in dias]
+        with mock.patch("main._bajar_ccl", lambda: fuente):
+            main._actualizar_ccl()
+        # Sube a 113 dólares: $31.075 con el contado con liqui, $28.250 con el MEP.
+        self.yahoo.vivas["BAC"] = (self.ayer, 110.0, 113.0, 108.9, 112.5)
+        self._pasada(self.ayer)
+        self.assertEqual(ae._preparadas[("BAC", "ARS", False)][1]["convertida"], "ccl")
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["BAC en pesos subió hasta tu línea horizontal, en $31.000 (precio estimado del CEDEAR)"])
 
     def test_una_pasada_lenta_deja_el_resto_para_la_siguiente(self):
         self.yahoo.precios["MSFT"] = self._salta_ayer
