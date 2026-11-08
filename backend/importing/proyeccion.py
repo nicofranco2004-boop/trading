@@ -67,7 +67,8 @@ def _norm(s) -> str:
 
 
 def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
-              session_id: str = None, hoy: str = None) -> Tuple[Dict[str, float], List[dict]]:
+              session_id: str = None, hoy: str = None,
+              tickers_foto=None) -> Tuple[Dict[str, float], List[dict]]:
     """`({activo: cantidad}, [no_reconciliable])` a la fecha `fecha`.
 
     `pair` son los brokers del par padre↔'· USD' (ver `persister.broker_pair`):
@@ -132,7 +133,7 @@ def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
     # sin avisar. Hasta el 2026-11-07 sólo se miraban las operaciones: una compra
     # a mano posterior salía como «ausente en la foto», con pedido de cerrarla.
     for m in _a_mano_posterior(conn, uid, pair, D):
-        if _norm(m["activo"]):
+        if _norm(m["activo"]) and _cambia_cantidad(m):
             dudosos[_norm(m["activo"])] = MOTIVO_MANUAL
 
     # Splits ajustados dentro de la ventana: la cantidad de hoy está multiplicada
@@ -145,6 +146,15 @@ def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
             dudosos.setdefault(_norm(r["a"]), MOTIVO_SPLIT)
 
     # ── 5. Correctores FECHADOS ──────────────────────────────────────────────
+    # Una letra que la FOTO lista y que venció entre D y hoy: el sweep ya la
+    # borró de `positions`, así que no está en `qty` y el bucle de abajo no la
+    # veía. Sin esto la foto la "completaba" (compra + aporte sintético) y el
+    # sweep la volvía a borrar: quedaba un aporte que nunca existió (revisión
+    # del 2026-11-08: $100.000 sobre una cuenta de $102.000).
+    for t in (tickers_foto or ()):
+        v = letra_maturity(_norm(t))
+        if v and D < v[:10] <= HOY:
+            dudosos.setdefault(_norm(t), MOTIVO_VENCIMIENTO)
     for a in list(qty):
         # Letra que venció ENTRE D y hoy: el sweep borró la posición, así que
         # `positions` ya no tiene el nominal que la persona sí tenía en D.
@@ -176,13 +186,13 @@ def _a_mano_posterior(conn, uid: int, pair: List[str], D: str) -> List[dict]:
     ph = ",".join("?" * len(pair))
     out: List[dict] = []
     for r in conn.execute(
-            f"""SELECT o.date d, o.broker b, o.asset a FROM operations o
+            f"""SELECT o.date d, o.broker b, o.asset a, o.op_type t FROM operations o
                  WHERE o.user_id=? AND o.date > ? AND o.broker IN ({ph})
                    AND NOT EXISTS (SELECT 1 FROM import_op_links l
                                     WHERE l.operation_id = o.id)""",
             (uid, D, *pair)):
         out.append({"origen": "operacion_a_mano", "fecha": str(r["d"])[:10],
-                    "broker": r["b"], "activo": r["a"]})
+                    "broker": r["b"], "activo": r["a"], "tipo": r["t"]})
     vinculadas = {r["position_id"] for r in conn.execute(
         """SELECT DISTINCT l.position_id FROM import_op_links l
              JOIN import_batches b ON b.id = l.batch_id
@@ -193,8 +203,19 @@ def _a_mano_posterior(conn, uid: int, pair: List[str], D: str) -> List[dict]:
                    AND entry_date IS NOT NULL""", (uid, *pair)):
         if r["id"] not in vinculadas and str(r["d"])[:10] > D:
             out.append({"origen": "compra_a_mano", "fecha": str(r["d"])[:10],
-                        "broker": r["b"], "activo": r["a"]})
+                        "broker": r["b"], "activo": r["a"], "tipo": "compra"})
     return out
+
+
+# Lo cargado a mano que CAMBIA LA CANTIDAD de un activo: una venta (desde
+# «Vender» o registrada como operación) y una compra (alta de posición). Un
+# dividendo, un cupón, un interés, una conversión o el cierre de un futuro dejan
+# su renglón en `operations` pero no tocan la tenencia: para la PLATA cuentan,
+# para la CANTIDAD no (revisión del 2026-11-08: un dividendo a mano de KO, que
+# Rendi no tenía, hacía que la foto dejara de completar KO).
+def _cambia_cantidad(m: dict) -> bool:
+    return (m.get("origen") == "compra_a_mano"
+            or str(m.get("tipo") or "").strip().lower() in ("venta", "sell"))
 
 
 def plata_posterior(conn, uid: int, *, pair: List[str], fecha: str) -> List[dict]:

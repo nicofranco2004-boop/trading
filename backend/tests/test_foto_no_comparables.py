@@ -214,7 +214,11 @@ def test_el_mensaje_no_dice_que_no_se_comparo_lo_que_si_se_comparo():
     cu = _Cuenta(filas)
     j = cu.subir_foto(_foto("20/10/2026", 500, [("AVGO", 23, 12650)], total_cedears=999999),
                       confirmar=False)
-    assert "cambió después de la fecha" not in (j.get("message") or "")
+    msg = j.get("message") or ""
+    assert "No comparamos GS" not in msg               # GS se comparó: no está en la foto
+    if j.get("nothing_to_do"):
+        assert j["todo_coincide"] is False
+        assert "GS" in msg and "incompleta" in msg      # diferencia + foto leída a medias
 
 
 def test_el_mensaje_no_dice_coinciden_si_hay_una_diferencia_que_no_se_ajusto():
@@ -227,3 +231,37 @@ def test_el_mensaje_no_dice_coinciden_si_hay_una_diferencia_que_no_se_ajusto():
     assert r.status_code == 200, r.text
     j = cu.subir_foto(_foto("01/10/2026", 500, [("AVGO", 23, 12650)]), confirmar=False)
     assert "coincide" not in (j.get("message") or "")
+
+
+def test_un_dividendo_a_mano_de_un_activo_que_rendi_no_tiene_no_frena_completarlo():
+    """Un dividendo no cambia la cantidad: KO se compara (0 contra 10) y se completa."""
+    cu = _Cuenta()
+    _operacion_a_mano(cu, "2026-10-25", "KO", "Dividendo")
+    cu.subir_foto(_foto("20/10/2026", 1000500, [("AVGO", 23, 12650), ("KO", 10, 20000)]))
+    assert cu.qty("KO") == 10
+
+
+def test_una_letra_que_vencio_despues_de_la_foto_no_se_recompra():
+    """El barrido de vencimientos ya la borró de la cartera: la foto no la ve en
+    Rendi, y sin esto la «completaba» con un aporte sintético que nunca existió."""
+    from importing.maturity import letra_maturity
+    assert (letra_maturity("S30S6") or "")[:10] == "2026-09-30"
+    filas = [
+        [datetime(2026, 9, 1), datetime(2026, 9, 1), "RECIBO DE COBRO", 1, 0, None, 0,
+         100500, 100500, None],
+        [datetime(2026, 9, 3), datetime(2026, 9, 3), "COMPRA NORMAL", 2, 1000, "S30S6",
+         100, -100000, 500, None],
+        [datetime(2026, 9, 30), datetime(2026, 9, 30), "RENTA Y AMORTIZACION", 3, 0, "S30S6",
+         0, 102000, 102500, None]]
+    cu = _Cuenta(filas)
+    assert cu.qty("S30S6") == 0                      # el barrido ya la sacó
+    aporte0 = cu.aportes_sinteticos()
+    texto = ("Tenencia valorizada\nTenencias al 20/09/2026 ARS 100.500,00\n"
+             "Cuenta Corriente ARS 500,00\nPesos 1 1,00 500,00\n"
+             "Letras ARS 100.000,00\n"
+             "Ticker Nombre de la Especie Cantidad Precio Importe Total\n"
+             "S30S6 LECAP 30/09/26 1.000,00 10.000,00 100.000,00\n")
+    j = cu.subir_foto(texto)
+    assert not j.get("to_seed")
+    assert cu.aportes_sinteticos() == aporte0        # antes: + $100.000
+    assert "S30S6" in {d["ticker"] for d in (j.get("no_reconciliable") or [])}

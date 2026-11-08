@@ -227,7 +227,7 @@ export default function TenenciaUpload({
             )}
             {noComparados.length > 0 && (
               <p className="text-xs text-rendi-warn mb-2">
-                No comparamos {noComparados.join(', ')}: cambió después de la fecha de {docLabel} por algo que no podemos deshacer (una carga a mano, un split o un vencimiento).
+                No comparamos {noComparados.join(', ')}: tiene algo posterior a la fecha de {docLabel} que no podemos deshacer (una carga a mano —lo cargado sin fecha cuenta como de hoy—, un split o un vencimiento).
               </p>
             )}
             <p className="text-xs text-ink-3 mb-3">

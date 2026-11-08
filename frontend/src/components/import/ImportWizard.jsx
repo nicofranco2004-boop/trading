@@ -3163,7 +3163,8 @@ function DoneStep({ result }) {
           result.tenencia.error ? (
             <p className="text-xs text-rendi-warn px-4">Los Movimientos se importaron bien, pero no pudimos aplicar la foto de tenencia ({result.tenencia.error}). Volvé a importar incluyéndola — no duplicamos lo que ya está.</p>
           ) : result.tenencia.nothing_to_do ? (
-            <p className="text-xs text-ink-3">{(result.tenencia.todo_coincide === false && result.tenencia.message)
+            <p className="text-xs text-ink-3">{((result.tenencia.todo_coincide === false || result.tenencia.motivo)
+                && result.tenencia.message)
               ? result.tenencia.message
               : 'Tu tenencia ya coincidía con lo importado.'}</p>
           ) : (result.tenencia.to_seed?.length > 0) ? (

@@ -46276,7 +46276,8 @@ def import_tenencia_preview(
                     d[r["asset"]] = (r["q"] or 0)
                 return d
             q_, nr_ = _import_proyeccion.proyectar(
-                conn, uid, pair=list(brokers), fecha=seed_date)
+                conn, uid, pair=list(brokers), fecha=seed_date,
+                tickers_foto=[h.ticker for h in snap.holdings])
             _proy_no_rec.extend(nr_)
             return q_
 
@@ -46807,6 +46808,7 @@ def import_tenencia_preview(
                 "session_id": None, "nothing_to_do": True,
                 "no_reconciliable": rec.no_reconciliable,
                 "motivo": motivo_corte,
+                "todo_coincide": False,   # no se comparó nada: nunca es «coincide»
                 "fecha_origen": fecha_origen, "fecha_usada": seed_date,
                 "tickers_normalizados": tickers_normalizados,
                 "foto_completa": _foto_completa, "warnings": _warnings,
@@ -46836,7 +46838,13 @@ def import_tenencia_preview(
                         if d.get("ticker") and d.get("motivo") not in _proy_mot})
             _difs = sorted(t for t in _difs if t and t not in _sin_comparar)
             _cap = bool((override_info or {}).get("capped"))
-            todo_coincide = not (_sin_comparar or _difs or _cap or caja_sin_ajustar)
+            # Lo que tampoco deja decir «coincide»: la foto leída a medias (no se
+            # sacó nada por ausencia ni se tocó el efectivo) y una comparación que
+            # el registro diario no pudo verificar (llega sin ticker).
+            _parcial = not _complete
+            _sin_verificar = any(not d.get("ticker") for d in rec.no_reconciliable)
+            todo_coincide = not (_sin_comparar or _difs or _cap or caja_sin_ajustar
+                                 or _parcial or _sin_verificar)
             if todo_coincide:
                 _msg = "Tu cartera ya coincide con la foto — no hay nada que completar."
             else:
@@ -46848,9 +46856,16 @@ def import_tenencia_preview(
                     _msg += (" El ajuste tocaría más de la mitad de tu cartera y lo frenamos "
                              "por seguridad.")
                 if _sin_comparar:
-                    _msg += (f" No comparamos {', '.join(_sin_comparar)}: cambió después de "
-                             f"la fecha de la foto por algo que no podemos deshacer (una "
-                             f"carga a mano, un split o un vencimiento).")
+                    _msg += (f" No comparamos {', '.join(_sin_comparar)}: tiene algo posterior "
+                             f"a la fecha de la foto que no podemos deshacer (una carga a mano "
+                             f"—lo cargado sin fecha cuenta como de hoy—, un split o un "
+                             f"vencimiento).")
+                if _parcial:
+                    _msg += (" La foto se leyó incompleta: no sacamos nada por ausencia ni "
+                             "tocamos el efectivo.")
+                if _sin_verificar:
+                    _msg += (" No pudimos verificar la comparación contra el registro diario "
+                             "de tu cartera.")
                 if caja_sin_ajustar:
                     _f = caja_sin_ajustar["fecha_foto"]
                     _msg += (f" El efectivo no lo comparamos: la foto es del "
