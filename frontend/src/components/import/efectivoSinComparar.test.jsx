@@ -16,8 +16,8 @@ describe('efectivo sin comparar en la revisión de la foto', () => {
         motivo: 'movimientos_posteriores', fecha_foto: '2026-09-05', movimientos: 1,
         hasta: '2026-10-20' } }} decisiones={new Map()} onDecidir={() => {}} />)
     expect(html).toContain('Efectivo sin comparar')
-    expect(html).toContain('05/09/2026')
-    expect(html).toContain('20/10/2026')
+    expect(html).toContain('05/09/26')
+    expect(html).toContain('20/10/26')
     expect(html).toContain('no se ajusta')
   })
 

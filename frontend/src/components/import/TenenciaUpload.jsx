@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../utils/api'
+import { fechaCorta } from '../../utils/cuantoSeMueve'
 
 // Completar la cartera con la "Tenencia valorizada" (PDF) de Bull Market — la
 // foto de posiciones. Reconcilia contra lo ya importado de la Cuenta Corriente:
@@ -196,6 +197,30 @@ export default function TenenciaUpload({
                 ⚠ Tenés {preview.not_in_snapshot.length} activo(s) en Rendi que no están en {docLabel} (¿vendidos?). {(preview.override?.removed?.length > 0) ? 'Los que correspondía los sacamos (ver arriba).' : 'No los tocamos.'}
               </p>
             )}
+            {/* El efectivo: lo que la foto le va a hacer, o por qué no lo toca.
+                Antes esta pantalla no mostraba ni una cosa ni la otra: el ajuste
+                entraba al confirmar sin que nadie lo hubiera visto (revisión del
+                07/11: «Completar 0 posiciones» depositaba $900.000). */}
+            {(preview.cash_ajustes || []).filter(c => Math.abs(Number(c.diff) || 0) > 0.009).length > 0 && (
+              <div className="rounded border border-line-2 bg-rendi-bg p-2.5 mb-2 text-xs text-ink-2">
+                <p className="mb-1">La foto también lleva tu efectivo a lo que dice {docLabel}, con un depósito o retiro de ajuste:</p>
+                <ul className="list-disc pl-4 space-y-0.5">
+                  {preview.cash_ajustes.filter(c => Math.abs(Number(c.diff) || 0) > 0.009).map(c => (
+                    <li key={`c-${c.broker}-${c.moneda}`} className="tabular">{c.broker} · {c.moneda}: {fmt(c.rendi)} → {fmt(c.foto)}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {preview.caja_sin_ajustar && (
+              <p className="text-xs text-rendi-warn mb-2">
+                El efectivo no lo tocamos: {docLabel} es del {fechaCorta(preview.caja_sin_ajustar.fecha_foto)} y después hubo movimientos de plata (hasta el {fechaCorta(preview.caja_sin_ajustar.hasta)}), así que no sabemos cuánto había ese día.
+              </p>
+            )}
+            {(preview.no_reconciliable?.length > 0) && (
+              <p className="text-xs text-rendi-warn mb-2">
+                No comparamos {preview.no_reconciliable.map(d => d.ticker).join(', ')}: cambió después de la fecha de {docLabel} por algo que no podemos deshacer (una carga a mano, un split o un vencimiento).
+              </p>
+            )}
             <p className="text-xs text-ink-3 mb-3">
               Las posiciones que completamos arrancan al costo de {docLabel} (PPP si lo trae).
             </p>
@@ -204,7 +229,7 @@ export default function TenenciaUpload({
               <button onClick={() => setPreview(null)} className="px-4 py-2 text-sm text-ink-2 hover:text-ink-1">Volver</button>
               <button onClick={doConfirm} disabled={busy}
                       className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 disabled:opacity-50 text-white rounded-md font-semibold">
-                {busy ? 'Completando…' : `Completar ${seeded.length} posiciones`}
+                {busy ? 'Completando…' : (seeded.length > 0 ? `Completar ${seeded.length} posiciones` : `Aplicar ${docLabel}`)}
               </button>
             </div>
           </>

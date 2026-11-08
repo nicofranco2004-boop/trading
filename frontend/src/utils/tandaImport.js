@@ -284,9 +284,10 @@ export async function correrTanda(filas, { api, onUpdate = () => {}, signal, dor
             // con el motivo que devuelve el servidor, sin inventar otro.
             r.estado = ESTADO.REVISAR
             r.detalle = [r.detalle, `La foto no se aplicó: ${tp.message || tp.motivo}`].filter(Boolean).join(' ')
-          } else if (tp?.nothing_to_do && tp?.caja_sin_ajustar) {
-            // Las tenencias coinciden, pero el efectivo NO se comparó (hubo plata
-            // movida después de la fecha de la foto): no es «todo coincide».
+          } else if (tp?.nothing_to_do && (tp?.caja_sin_ajustar || tp?.no_reconciliable?.length > 0)) {
+            // Lo que se comparó coincide, pero algo NO se comparó (el efectivo con
+            // plata movida después de la foto, o activos cambiados a mano después):
+            // no es «todo coincide». El servidor dice qué y por qué.
             r.notas = [...(r.notas || []), `foto: ${tp.message}`]
           } else {
             r.notas = [...(r.notas || []), 'foto: todo coincide con el resumen del broker']

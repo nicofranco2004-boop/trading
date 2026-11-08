@@ -21679,22 +21679,10 @@ def _primer_dia_en_las_fotos(fecha_mov, confirmado: Optional[str]) -> Optional[s
 def _dia_art_de_confirmacion(raw) -> Optional[str]:
     """`import_batches.confirmed_at` → el día ARGENTINO. Lo escribe `datetime('now')`
     en UTC: de 21 a 24 hs los dos relojes son días distintos (un import de las 22:30
-    del 4 queda guardado el 5). Acepta texto o `datetime`, con o sin zona."""
-    from datetime import datetime as _dt, timezone as _tz
-    from fechas import dia_art
-    if raw is None or raw == "":
-        return None
-    if isinstance(raw, _dt):
-        t = raw
-    else:
-        txt = str(raw).strip().replace("Z", "+00:00")
-        try:
-            t = _dt.fromisoformat(txt)
-        except ValueError:
-            return None
-    if t.tzinfo is not None:
-        t = t.astimezone(_tz.utc).replace(tzinfo=None)
-    return dia_art(t).isoformat()
+    del 4 queda guardado el 5). Acepta texto o `datetime`, con o sin zona. La regla
+    vive en `fechas.dia_art_de_texto` (la usa también la foto, `proyeccion`)."""
+    from fechas import dia_art_de_texto
+    return dia_art_de_texto(raw)
 
 
 def _entrada_de_importado(conn, batch_id, fila=None) -> Optional[dict]:
@@ -46820,20 +46808,31 @@ def import_tenencia_preview(
                             "indique su fecha."),
             }
         if not seed_txs and not _fund_overrides:
-            # Sin caja comparada, "tu cartera ya coincide" afirmaría algo que no se
-            # miró: se dice qué coincide y qué no se pudo comparar.
+            # "Tu cartera ya coincide" sólo si se comparó TODO. Lo que no se pudo
+            # comparar (activos cambiados después de la foto por algo que no se
+            # deshace —una carga a mano, un split, un vencimiento— o el efectivo con
+            # plata movida después) se dice, en vez de darlo por coincidente.
             _msg = "Tu cartera ya coincide con la foto — no hay nada que completar."
-            if caja_sin_ajustar:
-                _f = caja_sin_ajustar["fecha_foto"]
-                _msg = (f"Tus tenencias coinciden con la foto. El efectivo no lo comparamos: "
-                        f"la foto es del {_f[8:10]}/{_f[5:7]}/{_f[:4]} y después hubo "
-                        f"movimientos de plata, así que no sabemos cuánto tenías ese día.")
+            if rec.no_reconciliable or caja_sin_ajustar:
+                _sin = sorted({d.get("ticker") for d in rec.no_reconciliable if d.get("ticker")})
+                _msg = ("Lo que pudimos comparar coincide con la foto." if _sin
+                        else "Tus tenencias coinciden con la foto.")
+                if _sin:
+                    _msg += (f" No comparamos {', '.join(_sin)}: cambió después de la fecha "
+                             f"de la foto por algo que no podemos deshacer (una carga a mano, "
+                             f"un split o un vencimiento).")
+                if caja_sin_ajustar:
+                    _f = caja_sin_ajustar["fecha_foto"]
+                    _msg += (f" El efectivo no lo comparamos: la foto es del "
+                             f"{_f[8:10]}/{_f[5:7]}/{_f[:4]} y después hubo movimientos de "
+                             f"plata, así que no sabemos cuánto tenías ese día.")
             return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
                     "foto_completa": _foto_completa, "warnings": _warnings,
                     "tickers_normalizados": tickers_normalizados,
                     "fecha_origen": fecha_origen, "fecha_usada": seed_date,
                     "avisos_escala": _avisos_escala,
                     "caja_sin_ajustar": caja_sin_ajustar,
+                    "no_reconciliable": rec.no_reconciliable,
                     "message": _msg}
         with conn:
             sid = _import_pipeline.store_preview_txs(

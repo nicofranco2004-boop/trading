@@ -144,3 +144,85 @@ def test_un_deposito_a_mano_posterior_tambien_frena_el_ajuste():
     assert j["caja_sin_ajustar"]["motivo"] == "movimientos_posteriores"
     assert j["caja_sin_ajustar"]["hasta"] == "2026-11-05"
     assert cu.caja() == 1020500.0
+
+
+# ── Lo cargado desde la pantalla después de la foto (revisión del 07/11) ──────
+
+def test_una_compra_a_mano_posterior_frena_el_ajuste_y_no_parece_vendida():
+    """«Nueva posición» después de la foto: sin esto el ajuste depositaba lo que la
+    compra gastó ($900.000 inventados) y la acción salía «ausente en la foto»."""
+    cu = _Cuenta()
+    r = cu.c.post("/api/positions", headers=cu.h, json={
+        "broker": "Bull Market", "asset": "GGAL", "quantity": 100, "buy_price": 9000,
+        "entry_date": "2026-10-21", "asset_type": "STOCK", "currency": "ARS"})
+    assert r.status_code == 200, r.text
+    assert cu.caja() == 100500.0
+    # Foto del 20/10, el día del último movimiento del Excel: lo ÚNICO posterior es
+    # la compra a mano (si no, el cobro del 20/10 frenaría el ajuste por su cuenta
+    # y la prueba no vería si la compra lo frena).
+    j = cu.subir_foto(_foto("20/10/2026", 1000500))
+    assert j["caja_sin_ajustar"]["motivo"] == "movimientos_posteriores"
+    assert j["caja_sin_ajustar"]["hasta"] == "2026-10-21"
+    assert cu.caja() == 100500.0
+    dudosos = {d["ticker"]: d["motivo"] for d in (j.get("no_reconciliable") or [])}
+    assert dudosos.get("GGAL") == "datos_manuales"
+    # No se comparó GGAL ni el efectivo: el mensaje no puede decir «ya coincide».
+    assert "ya coincide" not in j["message"]
+    assert "GGAL" in j["message"] and "efectivo no lo comparamos" in j["message"]
+    assert "GGAL" not in {x["ticker"] for x in (j.get("not_in_snapshot") or [])}
+
+
+def test_un_plazo_fijo_posterior_armado_con_plata_del_broker_frena_el_ajuste():
+    """La tabla de plazos fijos no guarda de qué broker salió la plata: cualquier
+    plazo fijo posterior a la foto frena el ajuste."""
+    cu = _Cuenta()
+    r = cu.c.post("/api/plazos-fijos", headers=cu.h, json={
+        "banco": "Banco X", "capital": 900000, "moneda": "ARS", "tasa": 0.3,
+        "fecha_inicio": "2026-10-21", "plazo_dias": 30, "source_broker": "Bull Market"})
+    assert r.status_code == 200, r.text
+    assert cu.caja() == 100500.0
+    j = cu.subir_foto(_foto("20/10/2026", 1000500))   # lo único posterior: el plazo fijo
+    assert j["caja_sin_ajustar"]["motivo"] == "movimientos_posteriores"
+    assert j["caja_sin_ajustar"]["hasta"] == "2026-10-21"
+    assert cu.caja() == 100500.0
+
+
+def test_una_compra_IMPORTADA_posterior_no_se_toma_como_cargada_a_mano():
+    """El vínculo con el import sobrevive al rearmado de la cartera: si no, toda
+    compra importada después de la foto saldría «no se puede comparar»."""
+    cu = _Cuenta()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Cuenta Corriente PESOS 07-11-26"
+    ws.append(["Liquida", "Operado", "Comprobante", "Numero", "Cantidad",
+               "Especie", "Precio", "Importe", "Saldo", "Referencia"])
+    ws.append([datetime(2026, 10, 22), datetime(2026, 10, 22), "COMPRA NORMAL", 4, 6, "GS",
+               111950, -671700, 328800, None])
+    buf = io.BytesIO()
+    wb.save(buf)
+    r = cu.c.post("/api/imports/preview", headers=cu.h,
+                  files=[("files", ("cc2.xlsx", buf.getvalue(), XLSX))], data={"format": "bullmarket"})
+    assert r.status_code == 200, r.text
+    assert cu.c.post("/api/imports/confirm", headers=cu.h,
+                     json={"session_id": r.json()["session_id"]}).status_code == 200
+    j = cu.subir_foto(_foto("05/09/2026", 500))
+    assert "GS" not in {d["ticker"] for d in (j.get("no_reconciliable") or [])}
+    assert j["caja_sin_ajustar"]["motivo"] == "movimientos_posteriores"
+
+
+def test_una_carga_sin_dia_cuenta_por_el_dia_ARGENTINO_en_que_se_hizo():
+    """`cargado_at` es UTC: una conciliación del 06/11 a las 22:30 (argentina)
+    queda guardada el 07/11 01:30. Contra una foto del 06/11 no es posterior."""
+    from importing.proyeccion import plata_posterior
+    cu = _Cuenta()
+    conn = main.get_db()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO flujos_a_mano (user_id, broker, year, month, direction, monto_usd, "
+                "fecha, cargado_at, origen) VALUES (?, 'Bull Market', 2026, 11, 'deposit', 1, "
+                "NULL, '2026-11-07 01:30:00', 'conciliacion')", (cu.uid,))
+        assert plata_posterior(conn, cu.uid, pair=["Bull Market"], fecha="2026-11-06") == []
+        assert len(plata_posterior(conn, cu.uid, pair=["Bull Market"], fecha="2026-11-05")) == 1
+    finally:
+        conn.close()

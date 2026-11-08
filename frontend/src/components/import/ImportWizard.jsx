@@ -4,6 +4,7 @@ import InfoTooltip from '../InfoTooltip'
 import BrokerInstructions from './BrokerInstructions'
 import WallbitConnect from './WallbitConnect'
 import { api, pedirAlServidor } from '../../utils/api'
+import { fechaCorta } from '../../utils/cuantoSeMueve'
 import { whatsappUrl } from '../../utils/support'
 import { WhatsAppIcon } from '../SupportWhatsAppFab'
 import { track } from '../../utils/track'
@@ -2262,12 +2263,6 @@ export function ReconcileStep({ data, decisiones, onDecidir, sujeto = 'vos' }) {
   )
 }
 
-/** 'AAAA-MM-DD' → 'DD/MM/AAAA' (las fechas que manda el servidor). */
-function fechaCorta(iso) {
-  const s = String(iso || '')
-  return s.length >= 10 ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}` : s
-}
-
 function RecSection({ titulo, sub, chip, tono, children }) {
   const borde = tono === 'ok' ? 'border-data-blue/30'
     : tono === 'decide' ? 'border-rendi-warn/40' : 'border-line-2'
@@ -3168,7 +3163,8 @@ function DoneStep({ result }) {
           result.tenencia.error ? (
             <p className="text-xs text-rendi-warn px-4">Los Movimientos se importaron bien, pero no pudimos aplicar la foto de tenencia ({result.tenencia.error}). Volvé a importar incluyéndola — no duplicamos lo que ya está.</p>
           ) : result.tenencia.nothing_to_do ? (
-            <p className="text-xs text-ink-3">{result.tenencia.caja_sin_ajustar
+            <p className="text-xs text-ink-3">{(result.tenencia.caja_sin_ajustar
+                || result.tenencia.no_reconciliable?.length > 0)
               ? result.tenencia.message
               : 'Tu tenencia ya coincidía con lo importado.'}</p>
           ) : (result.tenencia.to_seed?.length > 0) ? (

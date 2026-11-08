@@ -66,6 +66,27 @@ def dia_art(instante_utc: datetime) -> date:
     return en_art(instante_utc).date()
 
 
+def dia_art_de_texto(raw) -> "str | None":
+    """Una marca UTC guardada como texto ('AAAA-MM-DD HH:MM:SS', con o sin zona,
+    o un `datetime`) → el día ARGENTINO 'AAAA-MM-DD'. Las escribe `datetime('now')`
+    o `_ahora_utc` en UTC: de 21 a 24 hs los dos relojes son días distintos (una
+    carga de las 22:30 del 4 queda guardada el 5). None si no se puede leer."""
+    from datetime import timezone as _tz
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, datetime):
+        t = raw
+    else:
+        txt = str(raw).strip().replace("Z", "+00:00")
+        try:
+            t = datetime.fromisoformat(txt)
+        except ValueError:
+            return None
+    if t.tzinfo is not None:
+        t = t.astimezone(_tz.utc).replace(tzinfo=None)
+    return dia_art(t).isoformat()
+
+
 MESES_ES = ("enero", "febrero", "marzo", "abril", "mayo", "junio",
             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre")
 

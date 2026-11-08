@@ -127,16 +127,13 @@ def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
             qty[a] = qty.get(a, 0.0) + (v if r["op"] == "BUY" else -v)
 
     # ── 4. Los que NO se pueden rodar hacia atrás ────────────────────────────
-    # Operaciones manuales posteriores a D: no hay fila en el ledger que restar,
-    # así que el paso 2 no las deshizo y el número queda mal sin avisar.
-    for r in conn.execute(
-            f"""SELECT DISTINCT o.asset a FROM operations o
-                 WHERE o.user_id=? AND o.date > ? AND o.broker IN ({ph})
-                   AND NOT EXISTS (SELECT 1 FROM import_op_links l
-                                    WHERE l.operation_id = o.id)""",
-            (uid, D, *pair)):
-        if _norm(r["a"]):
-            dudosos[_norm(r["a"])] = MOTIVO_MANUAL
+    # Lo cargado a mano después de D (operaciones Y compras): no hay fila en el
+    # ledger que restar, así que el paso 2 no lo deshizo y el número queda mal
+    # sin avisar. Hasta el 2026-11-07 sólo se miraban las operaciones: una compra
+    # a mano posterior salía como «ausente en la foto», con pedido de cerrarla.
+    for m in _a_mano_posterior(conn, uid, pair, D):
+        if _norm(m["activo"]):
+            dudosos[_norm(m["activo"])] = MOTIVO_MANUAL
 
     # Splits ajustados dentro de la ventana: la cantidad de hoy está multiplicada
     # por un factor que no dejó movimiento.
@@ -169,6 +166,37 @@ def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
     return limpio, no_rec
 
 
+def _a_mano_posterior(conn, uid: int, pair: List[str], D: str) -> List[dict]:
+    """Lo cargado DESDE LA PANTALLA en el par con fecha posterior a D: las
+    operaciones (ventas, conversiones, cierres de futuros, cobros) y las compras
+    (`positions` sin vínculo a un import, el mismo criterio que
+    `rebuild._is_safe_to_rebuild`). Es UNA definición para las dos preguntas:
+    qué activos no se pueden comparar (`proyectar`) y si la caja se puede
+    comparar (`plata_posterior`). Con dos listas, una vio la compra y la otra no."""
+    ph = ",".join("?" * len(pair))
+    out: List[dict] = []
+    for r in conn.execute(
+            f"""SELECT o.date d, o.broker b, o.asset a FROM operations o
+                 WHERE o.user_id=? AND o.date > ? AND o.broker IN ({ph})
+                   AND NOT EXISTS (SELECT 1 FROM import_op_links l
+                                    WHERE l.operation_id = o.id)""",
+            (uid, D, *pair)):
+        out.append({"origen": "operacion_a_mano", "fecha": str(r["d"])[:10],
+                    "broker": r["b"], "activo": r["a"]})
+    vinculadas = {r["position_id"] for r in conn.execute(
+        """SELECT DISTINCT l.position_id FROM import_op_links l
+             JOIN import_batches b ON b.id = l.batch_id
+            WHERE b.user_id=? AND l.position_id IS NOT NULL""", (uid,))}
+    for r in conn.execute(
+            f"""SELECT id, entry_date d, broker b, asset a FROM positions
+                 WHERE user_id=? AND COALESCE(is_cash,0)=0 AND broker IN ({ph})
+                   AND entry_date IS NOT NULL""", (uid, *pair)):
+        if r["id"] not in vinculadas and str(r["d"])[:10] > D:
+            out.append({"origen": "compra_a_mano", "fecha": str(r["d"])[:10],
+                        "broker": r["b"], "activo": r["a"]})
+    return out
+
+
 def plata_posterior(conn, uid: int, *, pair: List[str], fecha: str) -> List[dict]:
     """Movimientos de PLATA del par posteriores a la fecha de la foto.
 
@@ -182,12 +210,21 @@ def plata_posterior(conn, uid: int, *, pair: List[str], fecha: str) -> List[dict
     devuelve algo, el ajuste de efectivo no corre.
 
     «Posterior» es lo mismo que en `proyectar`: fecha estrictamente mayor que la
-    de la foto. Cuenta TODO lo que mueve plata del par:
+    de la foto. Se buscó en los 37 lugares de `main.py` que llaman a
+    `_adjust_broker_cash` (más el persister) cuáles dejan un renglón con fecha:
       · lo importado (cualquier tipo: una compra también saca plata);
-      · los depósitos y retiros a mano (`flujos_a_mano`); los que no tienen día
-        (conciliación, edición de /mensual) cuentan por el día en que se cargaron;
-      · las operaciones a mano (alta/venta desde la pantalla).
+      · los depósitos, retiros, autodepósitos y conciliaciones a mano
+        (`flujos_a_mano`); los que no tienen día cuentan por el día ARGENTINO en
+        que se cargaron (`cargado_at` es UTC);
+      · lo cargado desde la pantalla: operaciones (ventas, conversiones, cierres
+        de futuros, cobros de bonos) y compras (`_a_mano_posterior`);
+      · los plazos fijos armados o cobrados después: la tabla NO guarda de qué
+        broker salió o a cuál entró la plata, así que cuentan todos (la duda
+        frena el ajuste: lo que se pierde es una corrección, no plata).
+    Los borrados y los «deshacer» no hace falta mirarlos: sacan el renglón y su
+    plata juntos, la caja queda coherente con lo que queda.
     """
+    from fechas import dia_art_de_texto
     D = str(fecha)[:10]
     ph = ",".join("?" * len(pair))
     out: List[dict] = []
@@ -199,19 +236,23 @@ def plata_posterior(conn, uid: int, *, pair: List[str], fecha: str) -> List[dict
                     "tipo": r["op"]})
     for r in conn.execute(
             f"""SELECT fecha, cargado_at, broker, direction FROM flujos_a_mano
-                 WHERE user_id=? AND broker IN ({ph}) AND anulado_at IS NULL
-                   AND COALESCE(fecha, SUBSTR(cargado_at, 1, 10)) > ?""",
-            (uid, *pair, D)):
-        out.append({"origen": "a_mano", "fecha": str(r["fecha"] or r["cargado_at"])[:10],
-                    "broker": r["broker"], "tipo": r["direction"]})
+                 WHERE user_id=? AND broker IN ({ph}) AND anulado_at IS NULL""",
+            (uid, *pair)):
+        dia = str(r["fecha"])[:10] if r["fecha"] else dia_art_de_texto(r["cargado_at"])
+        if dia and dia > D:
+            out.append({"origen": "a_mano", "fecha": dia, "broker": r["broker"],
+                        "tipo": r["direction"]})
+    for m in _a_mano_posterior(conn, uid, pair, D):
+        out.append({"origen": m["origen"], "fecha": m["fecha"], "broker": m["broker"],
+                    "tipo": "operacion"})
     for r in conn.execute(
-            f"""SELECT o.date d, o.broker b FROM operations o
-                 WHERE o.user_id=? AND o.date > ? AND o.broker IN ({ph})
-                   AND NOT EXISTS (SELECT 1 FROM import_op_links l
-                                    WHERE l.operation_id = o.id)""",
-            (uid, D, *pair)):
-        out.append({"origen": "operacion_a_mano", "fecha": str(r["d"])[:10],
-                    "broker": r["b"], "tipo": "operacion"})
+            "SELECT fecha_inicio, closed_at FROM plazos_fijos WHERE user_id=?", (uid,)):
+        ini = str(r["fecha_inicio"] or "")[:10]
+        if ini > D:
+            out.append({"origen": "plazo_fijo", "fecha": ini, "broker": None, "tipo": "armado"})
+        cobro = dia_art_de_texto(r["closed_at"])
+        if cobro and cobro > D:
+            out.append({"origen": "plazo_fijo", "fecha": cobro, "broker": None, "tipo": "cobrado"})
     return out
 
 
