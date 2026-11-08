@@ -12928,15 +12928,18 @@ def get_backtest_cartera(request: Request, activos: str, pesos: str, local: str 
 @app.get("/api/backtest/cartera/hoy")
 def get_backtest_cartera_hoy(request: Request, uid: int = Depends(get_effective_user)):
     """«Mi cartera de hoy» de «Una cartera» (Backtesting): tus activos que tienen
-    precio de todos los días, con su peso sobre 100 entre ellos, y cuáles quedaron
-    afuera y por qué. Sólo porcentajes, nunca plata; igual dicen qué tenés, así
-    que la pantalla no la pide con «Ocultar saldos» prendido. La valuación es LA
-    de «tu plata» (`senales_semana.cartera`); la regla, cartera_simulada.de_hoy."""
+    precio de todos los días y de la última semana, con su peso sobre 100 entre
+    ellos, y cuáles quedaron afuera y por qué. Sólo porcentajes, nunca plata;
+    igual dicen qué tenés, así que la pantalla no la pide con «Ocultar saldos»
+    prendido. La valuación es LA de «tu plata» (`senales_semana.cartera`); la
+    regla, cartera_simulada.de_hoy, con LAS series con que se simula
+    (`cs.ultimo_precio`) y el día argentino."""
     import cartera_simulada as cs
     import senales_semana
+    from fechas import hoy_art_date
     with _freno_tecnico(request, uid), db_abierta() as conn:
         car = senales_semana.cartera(conn, uid)
-    return cs.de_hoy(car)
+        return cs.de_hoy(car, lambda asset, local: cs.ultimo_precio(conn, asset, local), hoy_art_date())
 
 
 @app.post("/api/tecnico/{asset}/resumen")
@@ -46867,7 +46870,18 @@ def import_preview(
         # intentar: re-parsear el archivo es barato y no deja nada a medias. Sin
         # esto el error crudo terminaba en el cartel rojo "database is locked" y el
         # usuario creía que el problema era su archivo (reporte 2026-09-20).
-        payload = _run_with_lock_retry(_previsualizar, attempts=3, base_delay=0.5)
+        # En Postgres la espera tiene tope (`ESPERA_MAX_VISTA_PREVIA_S`): pasados
+        # los 3 intentos se contesta 409 y no 503, que la pantalla reintentaría
+        # sola (gatewayRetry) multiplicando la espera.
+        try:
+            payload = _run_with_lock_retry(_previsualizar, attempts=3, base_delay=0.5)
+        except ERR_OPERACIONAL as ex:
+            if dberrors.es_base_trabada(ex):
+                raise HTTPException(
+                    409, "Hay otra operación de tu cuenta en curso (otra importación o "
+                         "un cambio que todavía se está guardando). No se guardó nada. "
+                         "Esperá un minuto y volvé a generar la vista previa.")
+            raise
         if payload.get("error"):
             # No es 500 — es un error esperado (archivo inválido, formato no soportado).
             raise HTTPException(400, payload["error"])
@@ -49262,6 +49276,23 @@ def _job_avisos_de_la_tarde_programado():
                           lambda: _run_subscription_lifecycle_job(solo_avisos=True))
 
 
+def _job_borradores_vencidos():
+    """Los borradores de importación vencidos de TODAS las cuentas. Antes los
+    borraba cada vista previa, y en Postgres eso hacía esperar a una persona por
+    la importación a medio camino de otra (ver `cleanup_stale_previews`). No
+    espera a nadie; si falla, la próxima hora lo vuelve a intentar."""
+    try:
+        conn = get_db()
+        try:
+            n = _import_pipeline.barrer_borradores_vencidos(conn)
+            if n:
+                log.info("borradores de importación vencidos borrados: %d", n)
+        finally:
+            conn.close()
+    except Exception as ex:
+        log.warning("barrido de borradores vencidos falló (se reintenta en una hora): %s", ex)
+
+
 # Scheduler in-process
 _scheduler = BackgroundScheduler(timezone='UTC')
 
@@ -49823,6 +49854,14 @@ def _start_scheduler():
         _iol_lab_refresh_job,
         CronTrigger(minute=7),
         id='iol_lab_refresh',
+        replace_existing=True,
+    )
+    # Cada hora (minuto 23): los borradores de importación vencidos de todas las
+    # cuentas. La vista previa sólo borra los de su cuenta (`cleanup_stale_previews`).
+    _scheduler.add_job(
+        _job_borradores_vencidos,
+        CronTrigger(minute=23),
+        id='borradores_vencidos',
         replace_existing=True,
     )
     # 03:30 UTC todos los días — después del snapshot. Bajamos a Free los
