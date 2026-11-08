@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { setBrokersRegistry } from './valuation'
 import {
   marcaLocal, primeraCompraDe, urlDelPedido, urlDeComparar, filasDelGrafico, fraseComparacion, monto,
-  vaciaPorVieja,
+  porQueArrancaAhi, vaciaPorVieja,
 } from './comparadorPrecio'
 
 const serie = (clave, final, tipo = 'activo') => ({ clave, nombre: clave, tipo, final, puntos: [] })
@@ -138,5 +138,20 @@ describe('el panel vacío cuando todo lo pedido está viejo (H1, 06/11)', () => 
     expect(vaciaPorVieja(r, ['MU', 'AL30'])).toBeNull()
     expect(vaciaPorVieja({ series: [], faltan: [{ clave: 'AL30', motivo: 'sin_serie' }] }, ['AL30'])).toBeNull()
     expect(vaciaPorVieja({ series: [], faltan: [] }, ['MU'])).toBeNull()
+  })
+})
+
+describe('por qué todos arrancan en 100 ese día', () => {
+  // Un hueco de precios justo antes del día pedido: arrancan con el primer precio
+  // después, y se dice qué días faltan (Nico, 08/11). La forma la manda el servidor
+  // (backend/tests/test_ultimos_n_anios.py, `_arrancan_despues_del_hueco`).
+  it('el hueco, el que cotiza hace menos, el borde de lo guardado o nada', () => {
+    const hueco = { desde: '2025-09-23', hasta: '2025-10-19' }
+    expect(porQueArrancaAhi(res([], { base_corrida: true, base_corrida_por: 'MU', base_corrida_hueco: hueco })))
+      .toBe(' (faltan los precios de MU del 23/09/25 al 19/10/25)')
+    expect(porQueArrancaAhi(res([], { base_corrida: true, base_corrida_por: 'MU' })))
+      .toBe(' (de MU tenemos precios desde ese día)')
+    expect(porQueArrancaAhi(res([], { base_corrida: true }))).toBe(' (los precios guardados empiezan ese día)')
+    expect(porQueArrancaAhi(res([]))).toBe('')
   })
 })

@@ -525,3 +525,24 @@ describe('nunca promete', () => {
 function dolares(x) {
   return `US$ ${Math.abs(x).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`
 }
+
+describe('un hueco de precios justo antes del día de arranque (Nico, 08/11)', () => {
+  // HUECO sin precios del 01/10 al 15/11/2024: el día de arranque de «2 años» (30/10)
+  // cae adentro. La cartera arranca con el primer precio después y dice qué días faltan.
+  const r = CASOS.hueco
+  it('arranca con el primer precio después y lo dice', () => {
+    expect([r.desde, r.recorte_por, r.recorte_hueco])
+      .toEqual(['2024-11-18', 'HUECO', { desde: '2024-10-01', hasta: '2024-11-17' }])
+    expect(lecturaCartera(r).avisos)
+      .toContain('Faltan los precios de HUECO del 01/10/24 al 17/11/24: la simulación arranca el 18/11/24.')
+    expect(lecturaCartera(r).avisos.join(' ')).not.toMatch(/Tenemos precios de HUECO desde/)
+    expect(notaDelResumen(r)).toMatch(/^Del 18\/11\/24 al 30\/10\/26/)
+  })
+
+  it('si después del hueco quedan muy pocos días, lo dice así', () => {
+    const corta = { ...r, disponible: false, motivo: 'poca_historia' }
+    expect(motivoCartera(corta, 3)).toBe('Faltan los precios de HUECO del 01/10/24 al 17/11/24: después quedan muy '
+      + 'pocos días para simular. Sacalo para probar el resto.')
+    expect(motivoCartera(corta, 1)).toMatch(/: después quedan muy pocos días para simular\. Cambialo por otro\.$/)
+  })
+})

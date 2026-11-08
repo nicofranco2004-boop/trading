@@ -14,6 +14,7 @@
   "pedido_desde": "2024-10-28",
   "primera_vela": "2024-07-01",
   "recortado": false,
+  "recorte_hueco": null,
   "recorte_por": null,
   "reglas": [
    "adx_squeeze"
@@ -103,6 +104,78 @@
   "variacion_desde": "2024-10-25",
   "variacion_precio": -34.79309744360775
  },
+ "hueco": {
+  "anios": 2,
+  "asset": "GGAL",
+  "comision": 0.5,
+  "desde": "2024-11-12",
+  "disponible": true,
+  "hasta": "2026-10-27",
+  "mantener": {
+   "final": 64.6404275232323,
+   "peor_caida": -63.37579574097667,
+   "resultado": -35.359572476767696
+  },
+  "pedido_desde": "2024-10-28",
+  "primera_vela": "2024-07-01",
+  "recortado": true,
+  "recorte_hueco": {
+   "desde": "2024-10-01",
+   "hasta": "2024-11-10"
+  },
+  "recorte_por": null,
+  "reglas": [
+   "rsi"
+  ],
+  "resultados": [
+   {
+    "compras": 3,
+    "final": 122.51886523411437,
+    "ganadoras": 2,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-04-10",
+      "precio_compra": 51.7,
+      "precio_venta": 57.05,
+      "resultado": 9.247436481971128,
+      "ruedas": 147,
+      "venta": "2025-11-10"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-05",
+      "precio_compra": 40.66,
+      "precio_venta": 54.44,
+      "resultado": 32.55523817676045,
+      "ruedas": 30,
+      "venta": "2026-06-17"
+     },
+     {
+      "abierta": true,
+      "compra": "2026-08-24",
+      "precio_compra": 41.12,
+      "precio_venta": 35.14,
+      "resultado": -15.395236382750333,
+      "ruedas": 46,
+      "venta": "2026-10-27"
+     }
+    ],
+    "peor_caida": -58.92219131284595,
+    "regla": "rsi",
+    "resultado": 22.518865234114372,
+    "ruedas_comprada": 223,
+    "sin_la_mejor": {
+     "compra": "2026-05-05",
+     "resultado": 32.55523817676045,
+     "sin_ella": -7.571464606523348
+    }
+   }
+  ],
+  "ruedas": 490,
+  "variacion_desde": "2024-11-11",
+  "variacion_precio": -34.696155932286544
+ },
  "media200": {
   "anios": 2,
   "asset": "GGAL",
@@ -118,6 +191,7 @@
   "pedido_desde": "2024-10-28",
   "primera_vela": "2024-07-01",
   "recortado": true,
+  "recorte_hueco": null,
   "recorte_por": "media200",
   "reglas": [
    "media200"
@@ -249,6 +323,7 @@
   "pedido_desde": "2024-10-28",
   "primera_vela": "2024-07-01",
   "recortado": false,
+  "recorte_hueco": null,
   "recorte_por": null,
   "reglas": [
    "media50"
@@ -380,6 +455,7 @@
   "pedido_desde": "2024-10-28",
   "primera_vela": "2024-07-01",
   "recortado": false,
+  "recorte_hueco": null,
   "recorte_por": null,
   "reglas": [
    "media50",
@@ -591,6 +667,7 @@
   "pedido_desde": "2024-10-28",
   "primera_vela": "2024-07-01",
   "recortado": false,
+  "recorte_hueco": null,
   "recorte_por": null,
   "reglas": [
    "media50",
@@ -846,6 +923,7 @@
   "pedido_desde": "2024-10-28",
   "primera_vela": "2024-07-01",
   "recortado": false,
+  "recorte_hueco": null,
   "recorte_por": null,
   "reglas": [
    "rsi"
@@ -914,6 +992,7 @@
   "pedido_desde": "2024-10-28",
   "primera_vela": "2024-07-01",
   "recortado": false,
+  "recorte_hueco": null,
   "recorte_por": null,
   "reglas": [
    "rsi",
@@ -1062,6 +1141,7 @@
   "pedido_desde": "2024-10-28",
   "primera_vela": "2024-07-01",
   "recortado": true,
+  "recorte_hueco": null,
   "recorte_por": "media200",
   "reglas": [
    "rsi",

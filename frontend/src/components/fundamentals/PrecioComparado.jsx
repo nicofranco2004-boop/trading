@@ -29,7 +29,7 @@ import { MONTHS } from '../../utils/format'
 import { hoyISO } from '../../utils/fecha'
 import {
   MAX_ACTIVOS, PLAZOS, marcaLocal, primeraCompraDe, urlDelPedido, filasDelGrafico,
-  monto, fraseComparacion, vaciaPorVieja,
+  monto, fraseComparacion, porQueArrancaAhi, vaciaPorVieja,
 } from '../../utils/comparadorPrecio'
 
 const v = (token) => `rgb(var(--${token}))`
@@ -250,8 +250,7 @@ export default function PrecioComparado({ tickers }) {
               <span>
                 Todos arrancan en 100 el {fechaCorta(res.base)}
                 {esTuCompra ? ', el día de tu primera compra' : ''}
-                {res.base_corrida_por ? ` (de ${res.base_corrida_por} tenemos precios desde ese día)`
-                  : res.base_corrida ? ' (los precios guardados empiezan ese día)' : ''}
+                {porQueArrancaAhi(res)}
               </span>
               <span className="flex-shrink-0">{enPesos ? 'en pesos' : 'en dólares'}</span>
             </div>

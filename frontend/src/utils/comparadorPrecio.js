@@ -9,7 +9,7 @@
 import { isBymaHolding } from './valuation'
 import { esAccionLocal } from './accionLocal'
 import { mismoPapel, miradaSinTenencia } from './buscadorRapido'
-import { primeraCompra, fechaCorta } from './cuantoSeMueve'
+import { primeraCompra, fechaCorta, faltanLosPrecios } from './cuantoSeMueve'
 
 export const MAX_ACTIVOS = 4
 export const PLAZOS = [['compra', 'Desde tu primera compra'], ['1a', '1 año'], ['3a', '3 años']]
@@ -97,6 +97,21 @@ export function monto(v, moneda) {
 function lista(nombres) {
   if (nombres.length <= 1) return nombres.join('')
   return `${nombres.slice(0, -1).join(', ')} y ${nombres[nombres.length - 1]}`
+}
+
+/**
+ * Por qué todos arrancan en 100 ese día, para después de «Todos arrancan en 100 el
+ * …»: entre paréntesis, o '' si es el día pedido. Un hueco de precios justo antes
+ * (`base_corrida_hueco`: arrancan con el primer precio después, como «Una cartera» y
+ * Una regla; Nico, 08/11), un activo que cotiza hace menos (`base_corrida_por`) o el
+ * borde de lo guardado (`base_corrida` solo).
+ */
+export function porQueArrancaAhi(res) {
+  if (res?.base_corrida_hueco && res.base_corrida_por) {
+    return ` (${faltanLosPrecios(res.base_corrida_por, res.base_corrida_hueco)})`
+  }
+  if (res?.base_corrida_por) return ` (de ${res.base_corrida_por} tenemos precios desde ese día)`
+  return res?.base_corrida ? ' (los precios guardados empiezan ese día)' : ''
 }
 
 /**

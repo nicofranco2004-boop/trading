@@ -432,7 +432,10 @@ class BaseCienTest(unittest.TestCase):
         # LA regla del día del 100 de Comparar y de «Una cartera» (H1, 06/11).
         hasta = "2026-11-05"
         hoy = date(2026, 11, 6)                             # lo viejo se mide contra hoy
-        activo = [("2021-11-05", 1.0), (hasta, 2.0)]        # desde un viernes
+        # Desde un viernes, con un precio cada día: con dos precios a años de
+        # distancia, cualquier día del medio sería un hueco (`arranque_de_la_serie`).
+        activo = [((date(2021, 11, 5) + timedelta(days=k)).isoformat(), 1.0)
+                  for k in range((date(2026, 11, 5) - date(2021, 11, 5)).days + 1)]
         sp = [("2021-11-08", 1.0), (hasta, 2.0)]            # desde el lunes
         lejos = [("2021-11-20", 1.0), (hasta, 2.0)]         # no tenemos su historia
         vieja = [("2021-11-08", 1.0), ("2026-10-01", 2.0)]  # dejó de actualizarse
@@ -446,6 +449,12 @@ class BaseCienTest(unittest.TestCase):
         siete, ocho = [("2021-11-12", 1.0), (hasta, 2.0)], [("2021-11-13", 1.0), (hasta, 2.0)]
         self.assertEqual(cien("2019-03-15", [siete])[0], "2021-11-12")
         self.assertEqual(cien("2019-03-15", [ocho])[0], "2021-11-05")
+        # Con un hueco de más de 10 días justo antes, el primer precio después
+        # (`tecnico.arranque_de_la_serie`; Nico, 08/11). A 10 días justos, lo pedido.
+        sin = lambda a, b: [p for p in activo if not a <= p[0] <= b]
+        con = lambda serie: comparar.dia_del_cien("2023-01-02", [serie], [sp], hoy)
+        self.assertEqual(con(sin("2022-12-23", "2023-01-05")), ("2023-01-06", "2023-01-06"), "el último, a 11 días")
+        self.assertEqual(con(sin("2022-12-24", "2023-01-05")), ("2023-01-02", "2023-01-02"), "el último, a 10 días")
 
     def test_regla(self):
         p = [("2025-01-02", 10.0), ("2025-01-03", 12.0), ("2025-01-06", 9.0)]

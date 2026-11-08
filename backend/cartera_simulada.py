@@ -30,8 +30,11 @@ precio, con la compra al cierre de `anios` × 365 días atrás
 «como la ficha». Con el cierre del primer día, un día movido daba otro número que
 la ficha). Un activo o un índice sin precios de la última semana, contada desde
 hoy (`tecnico.es_vieja`), no entra y se dice. Si un activo cotiza desde después,
-arranca el día de ese activo y lo dice (`recorte_por`); hasta una semana después
-no es un recorte (`comparar.DIAS_MARGEN`: el borde de lo guardado, un feriado).
+arranca el día de ese activo y lo dice (`recorte_por`); si le faltan los precios de
+más de 10 días justo antes (un hueco: `tecnico.arranque_de_la_serie`), arranca el
+primero después del hueco y dice qué días faltan (`recorte_hueco`; Nico, 08/11).
+Hasta una semana después no es un recorte (`comparar.DIAS_MARGEN`: el borde de lo
+guardado, un feriado).
 Los índices, con la misma semana y LA regla de Comparar (`comparar.dia_del_cien`):
 con 5 años, lo que se pide es justo lo guardado, y si ese día cae un sábado el
 S&P 500 empieza el lunes. Se arranca el lunes, en vez de dejarlo afuera.
@@ -166,17 +169,23 @@ def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
     hasta = max(p[-1][0] for p in puntos.values())
     pedido = tecnico.dia_de_arranque(hasta, anios * tecnico.DIAS_ANIO)
     primeras = {s: p[0][0] for s, p in puntos.items()}
-    ultimo_en_llegar = max(primeras, key=lambda s: (primeras[s], s))
+    # Desde cuándo cuenta cada uno: su primer precio, o el primero después de un hueco.
+    inicios = {s: comparar.arranque(p, pedido) for s, p in puntos.items()}
+    ultimo_en_llegar = max(inicios, key=lambda s: (inicios[s]["dia"], s))
     # El primer día, con LA regla de Comparar (`comparar.dia_del_cien`): el primero
     # que tienen todos los activos, y si un índice empieza unos días después (con 5
     # años, el lunes después de un sábado), ése. Un índice sin su historia no corre
     # nada: queda afuera, en `faltan`.
     de_los_indices = {clave: _puntos(indices.get(clave) or []) for clave, _, _ in INDICES}
     base, de_los_activos = comparar.dia_del_cien(pedido, list(puntos.values()), list(de_los_indices.values()), hoy)
-    recortado = comparar._dias(pedido, de_los_activos) > comparar.DIAS_MARGEN
+    # Un hueco se dice siempre, aunque el primer precio después caiga en la semana
+    # de margen: ya tiene más de 10 días, no es un feriado largo.
+    hueco = inicios[ultimo_en_llegar]["hueco"]
+    recortado = comparar._dias(pedido, de_los_activos) > comparar.DIAS_MARGEN or bool(hueco)
     fechas = sorted({base} | {d for p in puntos.values() for d, _ in p if base < d <= hasta})
     out.update({"pedido_desde": pedido, "recortado": recortado,
-                "recorte_por": ultimo_en_llegar if recortado else None})
+                "recorte_por": ultimo_en_llegar if recortado else None,
+                "recorte_hueco": hueco if recortado else None})
     if len(fechas) < MIN_DIAS:
         # `recorte_por` sólo si hubo recorte: con pocas ruedas sin recorte (una
         # acción poco negociada) no es que «cotiza hace muy poco» (auditoría 05/11, H10).

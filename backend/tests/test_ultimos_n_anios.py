@@ -314,6 +314,74 @@ class LasTresPantallas(unittest.TestCase):
         hoy = _el_ultimo(SABADO)                              # último precio el viernes: arranca el jueves
         self._el_resumen_dice_lo_de_la_ficha(hoy, hoy - timedelta(days=1))
 
+    # ─── Un hueco de precios justo antes del día de arranque (Nico, 08/11) ─────
+    # Más de 10 días sin precios justo antes: la ficha no daba la ganancia de 12
+    # meses, y Comparar, «Una cartera» y Una regla arrancaban con el cierre de antes
+    # del hueco («1 año» medía un año y tres semanas; auditoría 06/11 del precio de
+    # arranque, H1). Ahora arrancan con el primer precio después, y lo dicen.
+
+    def _sin_precios(self, yahoo, desde, hasta):
+        """Saca de MU los días de `desde` a `hasta`: el S&P 500 y el Nasdaq, enteros."""
+        for d in [d for d in yahoo.series["MU"] if desde <= d <= hasta]:
+            del yahoo.series["MU"][d]
+
+    def _arrancan_despues_del_hueco(self, c, k, b, ficha, yahoo, hasta, arranque):
+        serie = yahoo.series["MU"]
+        antes = max(d for d in serie if d <= arranque)                 # el último antes del hueco
+        despues = min(d for d in serie if d > arranque)                # el primero después
+        siguiente = min(d for d in serie if d > despues)               # la primera rueda de Una regla
+        hueco = {"desde": (antes + timedelta(days=1)).isoformat(), "hasta": (despues - timedelta(days=1)).isoformat()}
+        cierre = serie[hasta] / serie[despues] * 100
+        self.assertEqual((c["base"], c["base_corrida"], c["base_corrida_por"], c["base_corrida_hueco"]),
+                         (despues.isoformat(), True, "MU", hueco), "Comparar")
+        self.assertEqual((k["desde"], k["recortado"], k["recorte_por"], k["recorte_hueco"]),
+                         (despues.isoformat(), True, "MU", hueco), "«Una cartera»")
+        self.assertEqual((b["desde"], b["recortado"], b["recorte_por"], b["recorte_hueco"], b["variacion_desde"]),
+                         (siguiente.isoformat(), True, None, hueco, despues.isoformat()), "Una regla")
+        self.assertAlmostEqual(self._serie(c, "MU")["final"], cierre, places=2)
+        self.assertAlmostEqual(k["cartera"]["final"], cierre, places=2)
+        self.assertAlmostEqual(b["variacion_precio"], cierre - 100, places=6)
+        self.assertIsNone(ficha, "la ficha: sin la ganancia de 12 meses, como antes")
+        sp = next(i for i in k["indices"] if i["clave"] == "sp500")
+        self.assertEqual(self._serie(c, "sp500")["final"], round(sp["final"], 2), "el S&P 500, desde el mismo día")
+
+    def test_con_11_dias_sin_precios_justo_antes_arrancan_despues_y_lo_dicen(self):
+        # El último precio el martes: el día de arranque es el lunes de hace un año.
+        # Sin precios del viernes anterior al domingo siguiente: el último es el jueves,
+        # 11 días antes, y el primero después cae a 7 días, en la semana de margen. El
+        # hueco se dice igual: no es un feriado largo.
+        hoy = _el_ultimo(MIERCOLES)
+        martes = hoy - timedelta(days=1)
+        arranque = martes - timedelta(days=365)
+        self.assertEqual(arranque.weekday(), LUNES)
+        yahoo = self._mercado(hoy, martes)
+        self._sin_precios(yahoo, arranque - timedelta(days=10), arranque + timedelta(days=6))
+        self.assertEqual((arranque - max(d for d in yahoo.series["MU"] if d <= arranque)).days, 11)
+        c, k, b, ficha = self._las_tres(hoy, yahoo, 1, ficha=True)
+        self._arrancan_despues_del_hueco(c, k, b, ficha, yahoo, martes, arranque)
+
+    def test_con_un_hueco_largo_arrancan_despues_y_lo_dicen(self):
+        hoy = _el_ultimo(SABADO)
+        viernes = hoy - timedelta(days=1)
+        arranque = viernes - timedelta(days=365)                       # un jueves
+        yahoo = self._mercado(hoy, viernes)
+        self._sin_precios(yahoo, arranque - timedelta(days=20), arranque + timedelta(days=13))
+        c, k, b, ficha = self._las_tres(hoy, yahoo, 1, ficha=True)
+        self._arrancan_despues_del_hueco(c, k, b, ficha, yahoo, viernes, arranque)
+
+    def test_con_el_ultimo_precio_a_10_dias_justos_arrancan_el_dia_pedido(self):
+        # El borde: a 10 días justos todavía vale ese cierre, en las cuatro pantallas
+        # (la ficha también da su número).
+        hoy = _el_ultimo(MIERCOLES)
+        martes = hoy - timedelta(days=1)
+        arranque = martes - timedelta(days=365)
+        yahoo = self._mercado(hoy, martes)
+        self._sin_precios(yahoo, arranque - timedelta(days=9), arranque + timedelta(days=6))
+        self.assertEqual((arranque - max(d for d in yahoo.series["MU"] if d <= arranque)).days, 10)
+        c, k, b, ficha = self._las_tres(hoy, yahoo, 1, ficha=True)
+        self._arrancan_igual(c, k, b, yahoo, martes, ficha=ficha)
+        self.assertEqual((c["base_corrida"], k["recortado"], b["recorte_hueco"]), (False, False, None))
+
     # ─── H9: los precios viejos se miden contra hoy ─────────────────────────
 
     def _ninguna_compara(self, c, k, b, hasta):
@@ -734,9 +802,22 @@ class LaRegla(unittest.TestCase):
     def test_el_cierre_de_arranque_es_viejo_a_mas_de_diez_dias(self):
         # El día de arranque de «1 año» del 04/11/2026 es el 04/11/2025. La ficha y su
         # resumen ✦ no cuentan un año desde un cierre de antes de un hueco de precios.
-        self.assertFalse(tecnico.base_vieja("2025-11-04", "2026-11-04", 365))
-        self.assertFalse(tecnico.base_vieja("2025-10-25", "2026-11-04", 365), "10 días: todavía sirve")
-        self.assertTrue(tecnico.base_vieja("2025-10-24", "2026-11-04", 365))
+        self.assertFalse(tecnico.base_vieja("2025-11-04", "2025-11-04"))
+        self.assertFalse(tecnico.base_vieja("2025-10-25", "2025-11-04"), "10 días: todavía sirve")
+        self.assertTrue(tecnico.base_vieja("2025-10-24", "2025-11-04"))
+
+    def test_desde_que_dia_cuenta_una_serie(self):
+        # `arranque_de_la_serie`: con precio hasta 10 días antes, el día pedido; sin
+        # precios antes, su primer día; después de un hueco de más de 10 días, el
+        # primero después, y qué días faltan (Nico, 08/11: «arrancá después y avisalo»).
+        f = ["2025-09-01", "2025-09-22", "2025-10-20", "2025-10-21", "2025-11-04"]
+        a = tecnico.arranque_de_la_serie
+        self.assertIsNone(a([], "2025-10-01"))
+        self.assertEqual(a(f, "2025-08-01"), {"dia": "2025-09-01", "hueco": None}, "cotiza desde después")
+        self.assertEqual(a(f, "2025-10-02"), {"dia": "2025-10-02", "hueco": None}, "el último, a 10 días")
+        self.assertEqual(a(f, "2025-10-03"), {"dia": "2025-10-20", "hueco": {"desde": "2025-09-23", "hasta": "2025-10-19"}})
+        self.assertEqual(a(f, "2025-10-20"), {"dia": "2025-10-20", "hueco": None}, "con precio ese día")
+        self.assertEqual(a(f, "2025-11-20"), {"dia": "2025-11-20", "hueco": None}, "sin precios después: el pedido")
 
     def test_la_ficha_cuenta_el_anio_desde_un_cierre_a_diez_dias_y_no_a_once(self):
         # El mismo borde, por la ficha: sin rueda en los `hueco` días que terminan en el

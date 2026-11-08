@@ -104,7 +104,7 @@ def _cierre_hace(puntos, dias):
     import tecnico
     piso = tecnico.dia_de_arranque(puntos[-1]["d"], dias)
     previos = [p for p in puntos if p["d"] <= piso]
-    if not previos or tecnico.base_vieja(previos[-1]["d"], puntos[-1]["d"], dias):
+    if not previos or tecnico.base_vieja(previos[-1]["d"], piso):
         return None
     return previos[-1]
 

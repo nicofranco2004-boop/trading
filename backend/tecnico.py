@@ -250,7 +250,9 @@ MIN_ANCHOS_BB = 60
 BB_QUIETO = 1e-9
 # La vela de «hace 12 meses» tiene que estar a lo sumo a estos días de esa
 # fecha: después de un hueco largo era una de hace años (auditoría 28/10).
-# `base_vieja`: lo usan la ficha y su resumen ✦ (también para «en tres meses»).
+# `base_vieja`: lo usan la ficha y su resumen ✦ (también para «en tres meses»), y
+# Comparar, «Una cartera» y Una regla para arrancar después del hueco
+# (`arranque_de_la_serie`).
 DIAS_BASE_ANIO = 10
 # Cuánto se mueve: el día normal de los últimos 20 días de mercado, contra el
 # de su último año (con al menos 120 días medidos). Medido el 28/10 en 15
@@ -489,20 +491,50 @@ def dia_de_arranque(ultimo: str, dias: int) -> str:
 
     Un último cierre anterior de más de `DIAS_BASE_ANIO` días antes (un hueco de
     precios, `base_vieja`): la ficha y su resumen ✦ no dan el número; Comparar, «Una
-    cartera» y Una regla todavía lo usan (qué muestran en ese caso lo decide Nico:
-    auditoría 06/11 del precio de arranque, H1)."""
+    cartera» y Una regla arrancan después del hueco y lo dicen (`arranque_de_la_serie`)."""
     return (date.fromisoformat(ultimo) - timedelta(days=dias)).isoformat()
 
 
-def base_vieja(fecha: str, ultimo: str, dias: int) -> bool:
-    """¿El cierre de arranque (`fecha`, el último hasta `dia_de_arranque`) es de
-    más de `DIAS_BASE_ANIO` días antes del día de arranque? Pasa con un hueco de
-    precios justo antes (un papel suspendido, un agujero de la fuente): «hace 12
-    meses» era un precio de semanas antes y el año medía otra cosa. La ficha no da
-    la ganancia de 12 meses, y su resumen ✦ no dice «en un año»: la ficha callaba y
-    su resumen decía «en un año subió 20 %» (auditoría 06/11 del precio de arranque,
-    H1)."""
-    return (date.fromisoformat(dia_de_arranque(ultimo, dias)) - date.fromisoformat(fecha)).days > DIAS_BASE_ANIO
+def base_vieja(fecha: str, dia: str) -> bool:
+    """¿El último cierre hasta `dia`, el día de arranque (`fecha`), es de más de
+    `DIAS_BASE_ANIO` días antes? Pasa con un hueco de precios justo antes (un papel
+    suspendido, un agujero de la fuente): «hace 12 meses» era un precio de semanas
+    antes y el año medía otra cosa. La ficha no da la ganancia de 12 meses y su
+    resumen ✦ no dice «en un año» (la ficha callaba y su resumen decía «en un año
+    subió 20 %»: auditoría 06/11 del precio de arranque, H1); Comparar, «Una
+    cartera» y Una regla arrancan después del hueco (`arranque_de_la_serie`)."""
+    return (date.fromisoformat(dia) - date.fromisoformat(fecha)).days > DIAS_BASE_ANIO
+
+
+def arranque_de_la_serie(fechas: list, dia: str):
+    """LA regla de desde qué día cuenta una serie (`fechas`, ordenadas) en un
+    período que arranca `dia` (el día de arranque, `dia_de_arranque`, o tu primera
+    compra en Comparar): {'dia', 'hueco'}, o None si no tiene fechas.
+
+      · Con un precio ese día o hasta `DIAS_BASE_ANIO` días antes: `dia` (vale el
+        último cierre hasta ese día, lo que tenía ese día).
+      · Sin ningún precio hasta `dia` (cotiza desde después): su primer día.
+      · Con el último precio anterior de más de `DIAS_BASE_ANIO` días antes
+        (`base_vieja`, un hueco): el primer día con precio después de `dia`, y
+        `hueco` = {'desde', 'hasta'}, los días sin precios, para decirlo. Antes el 100
+        era ese cierre de semanas antes y «1 año» medía un año y tres semanas
+        (auditoría 06/11 del precio de arranque, H1; Nico, 08/11: «arrancá después
+        del hueco y avisalo»). Sin precios después (no pasa: lo que no tiene precios
+        de la última semana queda afuera antes, `es_vieja`), `dia`.
+
+    La usan Comparar y «Una cartera» (`comparar.dia_del_cien`) y Una regla
+    (`backtest.ventana`): el que arranca después corre el día para todos, como un
+    activo que cotiza hace menos, y cada pantalla dice por qué."""
+    if not fechas:
+        return None
+    i = bisect_right(fechas, dia)                       # las de `dia` o antes
+    if i == 0:
+        return {"dia": fechas[0], "hueco": None}
+    if i == len(fechas) or not base_vieja(fechas[i - 1], dia):
+        return {"dia": dia, "hueco": None}
+    antes, despues = date.fromisoformat(fechas[i - 1]), date.fromisoformat(fechas[i])
+    return {"dia": fechas[i], "hueco": {"desde": (antes + timedelta(days=1)).isoformat(),
+                                         "hasta": (despues - timedelta(days=1)).isoformat()}}
 
 
 def primer_dia(ultimo: str, dias: int) -> str:
@@ -662,7 +694,7 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
     # normal llevado a un año: × √ de los días de mercado del año). Medido el
     # 28/10 en 15 acciones: este número NO anticipó qué acción rindió más
     # después (INFORME_riesgo_beneficio.md). Sólo con el año completo.
-    base_ok = i_anio > 0 and not base_vieja(velas[i_anio - 1]["date"], velas[-1]["date"], DIAS_ANIO)
+    base_ok = i_anio > 0 and not base_vieja(velas[i_anio - 1]["date"], dia_de_arranque(velas[-1]["date"], DIAS_ANIO))
     ret_12m = _pct(ultimo, cierres[i_anio - 1]) if base_ok else None
     vol_anual = mov_anio * (n - i_anio) ** 0.5 if mov_anio is not None else None
     vols = [v.get("volume") for v in velas[-21:-1] if v.get("volume")]

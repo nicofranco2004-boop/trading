@@ -111,9 +111,11 @@ def dia_del_cien(desde: str, activos: list, varas: list, hoy: date) -> tuple:
     se compara que tienen su propia historia guardada (el S&P 500, el Nasdaq).
     Devuelve (el día del 100, el de los activos solos).
 
-    El de los activos: el más tardío entre `desde` y el primer precio de cada
-    activo. Si queda a más de `DIAS_MARGEN` días de `desde`, un activo cotiza hace
-    menos (o lo guardado empieza ahí) y cada pantalla lo dice.
+    El de los activos: el más tardío entre `desde` y el día desde el que cuenta cada
+    activo (`arranque`: su primer precio si cotiza desde después; el primero después
+    del hueco si le faltan precios de más de 10 días justo antes de `desde`,
+    `tecnico.base_vieja`). Si queda a más de `DIAS_MARGEN` días de `desde`, un activo cotiza
+    hace menos o tiene un hueco (o lo guardado empieza ahí), y cada pantalla lo dice.
 
     El del 100: si una vara empieza hasta `DIAS_MARGEN` días DESPUÉS del de los
     activos, el de esa vara. En el borde de lo guardado cada serie tiene su
@@ -124,11 +126,17 @@ def dia_del_cien(desde: str, activos: list, varas: list, hoy: date) -> tuple:
     método 06/11, H1). Una vara que empieza mucho después (no tenemos su historia)
     o que quedó vieja (`tecnico.es_vieja`, contra `hoy`) no corre nada: queda
     afuera y se dice."""
-    de_los_activos = max([desde] + [p[0][0] for p in activos if p])
+    de_los_activos = max([desde] + [arranque(p, desde)["dia"] for p in activos if p])
     corren = [p[0][0] for p in varas
               if p and de_los_activos < p[0][0] and _dias(de_los_activos, p[0][0]) <= DIAS_MARGEN
               and not tecnico.es_vieja(p[-1][0], hoy)]
     return max([de_los_activos] + corren), de_los_activos
+
+
+def arranque(puntos: list, desde: str):
+    """Desde qué día cuenta `puntos` [(fecha, valor)] en un período que arranca
+    `desde`: LA regla, `tecnico.arranque_de_la_serie` ({'dia', 'hueco'})."""
+    return tecnico.arranque_de_la_serie([d for d, _ in puntos], desde)
 
 
 def _mep(conn, desde: str) -> list:
@@ -151,16 +159,18 @@ def comparar(conn, activos: list, moneda: str, desde: str = None, *, anios: int 
     'UVA'). `hoy`: el día argentino (ninguna línea pasa de hoy, y la que no tiene
     precios de la última semana contada desde hoy no se dibuja).
 
-    {moneda, desde, base, base_corrida, base_corrida_por, hasta, series:
+    {moneda, desde, base, base_corrida, base_corrida_por, base_corrida_hueco, hasta, series:
     [{clave, tipo, nombre, ticker, convertida, puntos, final, fecha_final}],
     faltan: [{clave, motivo, hasta?}]}. `base` es el día del 100 y `hasta` el
-    último día (None si ningún activo tiene precios de la última semana)."""
+    último día (None si ningún activo tiene precios de la última semana).
+    `base_corrida_hueco`: si el que corrió el 100 tiene un hueco de precios justo
+    antes de `desde`, los días que le faltan ({desde, hasta}); si no, None."""
     from fechas import hoy_art_date
     moneda = "ars" if moneda == "ars" else "usd"
     hoy = hoy or hoy_art_date()
     tope = hoy.isoformat()
     out = {"moneda": moneda, "desde": desde, "base": None, "base_corrida": False,
-           "base_corrida_por": None, "hasta": None, "series": [], "faltan": []}
+           "base_corrida_por": None, "base_corrida_hueco": None, "hasta": None, "series": [], "faltan": []}
 
     crudas = []
     for asset, local in activos:
@@ -195,14 +205,20 @@ def comparar(conn, activos: list, moneda: str, desde: str = None, *, anios: int 
     # ése (`dia_del_cien`, LA regla de las dos pantallas).
     sp = _cierres(tecnico.sp500(conn, moneda))
     base, de_los_activos = dia_del_cien(desde, [c["puntos"] for c in crudas], [sp], hoy)
-    if _dias(desde, de_los_activos) > DIAS_MARGEN:
+    # El que llega último, y si llega tarde por un hueco de precios: eso se dice
+    # siempre, aunque el primer precio después caiga en la semana de margen (el
+    # hueco ya tiene más de 10 días: no es un feriado largo).
+    inicios = {c["clave"]: arranque(c["puntos"], desde) for c in crudas}
+    ultimo_en_llegar = max(crudas, key=lambda c: inicios[c["clave"]]["dia"])
+    hueco = inicios[ultimo_en_llegar["clave"]]["hueco"]
+    if _dias(desde, de_los_activos) > DIAS_MARGEN or hueco:
         out["base_corrida"] = True
         # ¿Cotiza hace menos, o es donde empieza lo guardado para todos? El S&P
         # guarda la historia entera: si arranca bastante antes, es el activo.
         guardado = sp[0][0] if sp else min(c["puntos"][0][0] for c in crudas)
-        ultimo_en_llegar = max(crudas, key=lambda c: c["puntos"][0][0])
-        if _dias(guardado, ultimo_en_llegar["puntos"][0][0]) > DIAS_MARGEN:
+        if hueco or _dias(guardado, inicios[ultimo_en_llegar["clave"]]["dia"]) > DIAS_MARGEN:
             out["base_corrida_por"] = ultimo_en_llegar["clave"]
+            out["base_corrida_hueco"] = hueco
     out["base"] = base
 
     varas = [{"clave": "sp500", "puntos": sp, "ticker": "^GSPC"}]

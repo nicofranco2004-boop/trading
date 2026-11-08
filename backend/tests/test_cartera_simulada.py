@@ -667,6 +667,11 @@ def _casos_de_la_pantalla():
         "tres_anios": cs.simular(activos, {"sp500": sp, "nasdaq": nq}, 3, HOY),
         "tramo_corto": cs.simular(activos[:2] + [_activo("NUEVA", 20, _habiles(420, lambda i: 10 + i * 0.02))],
                                   {"sp500": sp, "nasdaq": nq}, 3, HOY),
+        # Un hueco de precios justo antes del día de arranque (30/10/2024): arranca
+        # con el primero después y lo dice (Nico, 08/11).
+        "hueco": cs.simular(activos[:2] + [_activo("HUECO", 20, [v for v in _habiles(800, lambda i: 30 + i * 0.01)
+                                                                 if not "2024-10-01" <= v["date"] <= "2024-11-15"])],
+                            {"sp500": sp, "nasdaq": nq}, 2, HOY),
     }
     for r in casos.values():
         r.pop("curva", None)
@@ -709,6 +714,9 @@ class LoQueLeeLaPantalla(unittest.TestCase):
         self.assertIsNone(casos["todos_restan"]["anio_por_anio"])
         self.assertEqual([t["completo"] for t in casos["tres_anios"]["anio_por_anio"]["tramos"]], [True] * 3)
         self.assertEqual([t["completo"] for t in casos["tramo_corto"]["anio_por_anio"]["tramos"]], [False, True])
+        h = casos["hueco"]
+        self.assertEqual((h["desde"], h["recortado"], h["recorte_por"], h["recorte_hueco"]),
+                         ("2024-11-18", True, "HUECO", {"desde": "2024-10-01", "hasta": "2024-11-17"}))
 
     def test_las_pruebas_de_la_pantalla_leen_la_cartera_de_hoy_que_da_el_servidor(self):
         """fixtures/cartera_de_hoy.json, lo mismo para «Mi cartera de hoy»: la salida de

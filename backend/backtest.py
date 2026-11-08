@@ -208,15 +208,27 @@ def ventana(velas: list, anios: int, desde_regla: int) -> dict:
     precio de arranque de la ficha, Comparar y «Una cartera», `tecnico.dia_de_arranque`),
     y nunca antes de que la regla exista
     (`desde_regla`). {'desde_i', 'hasta_i', 'pedido_i', 'pedido_desde',
-    'recortado'}: `recortado` si arranca después de lo pedido porque la regla
-    necesita días antes que el papel no tiene (toda regla necesita al menos uno:
-    un papel con menos historia que el período también cae acá)."""
+    'recortado', 'por_la_regla', 'hueco'}: `recortado` si arranca después de lo
+    pedido, por una de dos:
+      · la regla necesita días antes que el papel no tiene (`por_la_regla`; toda
+        regla necesita al menos uno: un papel con menos historia que el período
+        también cae acá);
+      · al papel le faltan los precios de más de 10 días justo antes del día de
+        arranque (`hueco`, los días que faltan; `tecnico.arranque_de_la_serie`): el
+        precio de arranque es el primero después del hueco, como en Comparar y
+        «Una cartera», y la prueba arranca la vela siguiente (Nico, 08/11)."""
     hasta_i = len(velas) - 1
-    pedido_desde = tecnico.primer_dia(velas[-1]["date"], anios * tecnico.DIAS_ANIO)
-    pedido_i = next((i for i, v in enumerate(velas) if v["date"] >= pedido_desde), hasta_i)
-    desde_i = max(pedido_i, desde_regla)
+    fechas = [v["date"] for v in velas]
+    dias = anios * tecnico.DIAS_ANIO
+    pedido_desde = tecnico.primer_dia(fechas[-1], dias)
+    pedido_i = next((i for i, d in enumerate(fechas) if d >= pedido_desde), hasta_i)
+    arranque = tecnico.arranque_de_la_serie(fechas, tecnico.dia_de_arranque(fechas[-1], dias))
+    tras_hueco = fechas.index(arranque["dia"]) + 1 if arranque["hueco"] else pedido_i
+    desde_i = max(tras_hueco, desde_regla)
+    por_la_regla = desde_regla > tras_hueco
     return {"desde_i": desde_i, "hasta_i": hasta_i, "pedido_i": pedido_i,
-            "pedido_desde": pedido_desde, "recortado": desde_i > pedido_i}
+            "pedido_desde": pedido_desde, "recortado": desde_i > pedido_i,
+            "por_la_regla": por_la_regla, "hueco": None if por_la_regla else arranque["hueco"]}
 
 
 def _resumen(curva: list) -> dict:
@@ -283,7 +295,8 @@ def probar(velas: list, reglas: list, anios: int, comision: float = COMISION, *,
     v = ventana(velas, anios, s[limita]["desde"])
     base = {"reglas": reglas, "anios": anios, "primera_vela": velas[0]["date"],
             "pedido_desde": v["pedido_desde"], "recortado": v["recortado"],
-            "recorte_por": limita if v["desde_i"] > v["pedido_i"] else None}
+            "recorte_por": limita if v["recortado"] and v["por_la_regla"] else None,
+            "recorte_hueco": v["hueco"] if v["recortado"] else None}
     if v["hasta_i"] - v["desde_i"] + 1 < MIN_RUEDAS:
         return {**base, "disponible": False, "motivo": "poca_historia"}
     sims = {r: simular(velas, s[r], v["desde_i"], v["hasta_i"], comision) for r in reglas}

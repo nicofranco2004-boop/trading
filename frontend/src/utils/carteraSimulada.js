@@ -22,7 +22,7 @@
 //
 // `cliente`: el asesor adentro de la cuenta de un cliente (`nombreDelCliente`).
 // Ahí no es «tu cartera»: es la de él (M11).
-import { fechaCorta } from './cuantoSeMueve'
+import { fechaCorta, faltanLosPrecios } from './cuantoSeMueve'
 import { comoSeVe, porcentaje } from './backtesting'
 
 // Los del servidor (backend/cartera_simulada.py): cuántos activos entran y con
@@ -352,7 +352,11 @@ export function lecturaCartera(res, { origen = 'cero', cliente = null } = {}) {
     }
   }
   const avisos = []
-  if (res.recortado && res.recorte_por) {
+  if (res.recortado && res.recorte_por && res.recorte_hueco) {
+    // Un hueco de precios justo antes del día de arranque: arranca después (Nico, 08/11).
+    avisos.push(`${capital(faltanLosPrecios(res.recorte_por, res.recorte_hueco))}: la simulación arranca el `
+      + `${fechaCorta(res.desde)}.`)
+  } else if (res.recortado && res.recorte_por) {
     const primera = xs.find(a => a.asset === res.recorte_por)?.primera_vela || res.desde
     avisos.push(`Tenemos precios de ${res.recorte_por} desde el ${fechaCorta(primera)}: la simulación arranca ese día.`)
   }
@@ -515,6 +519,10 @@ export function motivoCartera(res, cuantos = 2) {
         return cuantos === 1
           ? 'Tenemos muy pocos días de precios de este activo: no alcanzan para simular. Cambialo por otro con más historia.'
           : 'Con estos activos tenemos muy pocos días de precios: no alcanzan para simular.'
+      }
+      if (res.recorte_hueco) {
+        return `${capital(faltanLosPrecios(res.recorte_por, res.recorte_hueco))}: después quedan muy pocos días para `
+          + `simular. ${cuantos === 1 ? 'Cambialo por otro.' : 'Sacalo para probar el resto.'}`
       }
       return `Tenemos muy pocos días de precios de ${res.recorte_por}: no alcanzan para simular. `
         + (cuantos === 1 ? 'Cambialo por otro con más historia.' : 'Sacalo para probar el resto.')

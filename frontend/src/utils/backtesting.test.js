@@ -431,3 +431,18 @@ describe('nunca promete', () => {
     expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|rebota|frena|antesala|arranque|esperad|potencial|oportunidad|anticipa\b|conviene|deber[íi]as|mejor regla|la mejor\b|te recomend|ayuda|muchas veces/i)
   })
 })
+
+describe('un hueco de precios justo antes del día de arranque (Nico, 08/11)', () => {
+  // GGAL sin precios del 01/10 al 08/11/2024 (backend/tests/test_backtest.py, `_con_hueco`):
+  // el precio de arranque es el primero después del hueco (11/11) y la prueba, la rueda siguiente.
+  const H = GGAL.hueco
+  it('dice qué días faltan y desde cuándo se prueba', () => {
+    expect(textoDelRecorte(H)).toBe('Faltan los precios de GGAL del 01/10/24 al 10/11/24: la prueba arranca el 12/11/24.')
+    expect(lectura(H).frases[0]).toMatch(/^GGAL bajó 35% desde el cierre del 11\/11\/24 y la regla /)
+  })
+
+  it('si después del hueco quedan muy pocos días, lo dice así', () => {
+    expect(motivoEnPalabras({ ...H, disponible: false, motivo: 'poca_historia' }))
+      .toBe('Faltan los precios de GGAL del 01/10/24 al 10/11/24: después quedan muy pocos días para probar una regla.')
+  })
+})
