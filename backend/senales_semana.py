@@ -13,7 +13,8 @@ Qué junta, por persona:
     Cartera, las alertas técnicas y la tabla de la watchlist);
   · cuánto pesa cada tenencia y el % de la plata en activos con tendencia de
     fondo alcista, con la regla de la radiografía (precio ≥ promedio de 200
-    días, en dólares; una lectura de hace más de 10 días no cuenta).
+    días, en dólares; una lectura sin precios de la última semana no cuenta:
+    `tecnico.lectura_vieja`).
 
 El VALOR de cada tenencia sale del motor de valuación del servidor
 (`snapshots_job.compute_broker_value_usd`, el port de `computeBrokerValue` que
@@ -37,10 +38,6 @@ log = logging.getLogger("senales_semana")
 # Los 7 días corridos del período: los de la radiografía (`tecnico.DIAS_CAMBIOS`).
 from tecnico import DIAS_CAMBIOS as DIAS_SEMANA  # noqa: E402
 from pesado import pesado  # noqa: E402
-# La regla de las filas de la Cartera (DIAS_LECTURA_VIEJA de
-# frontend/src/utils/radiografia.js): una lectura cuya última vela es más vieja
-# que esto no describe el precio de hoy.
-DIAS_LECTURA_VIEJA = 10
 # El resumen sale los sábados desde esta hora de Argentina (las velas del
 # viernes se guardan a la medianoche; a las 10 ya no despierta a nadie).
 DIA_RESUMEN = 5          # sábado (date.weekday)
@@ -312,16 +309,13 @@ def _repartir_cien(valores: list) -> list:
     return repartir_enteros([v / total * 100 for v in valores], 100)
 
 
-def _lectura_vieja(lectura: dict, hoy: date) -> bool:
-    f = (lectura or {}).get("fecha")
-    return bool(f) and (hoy - date.fromisoformat(f)).days > DIAS_LECTURA_VIEJA
-
-
 def _se_lee(x: dict, hoy: date) -> bool:
-    """¿Esta serie tiene algo que leer HOY? Está y su última vela no es vieja.
-    Una serie cortada no tiene «esta semana» (los cambios ya cuentan desde hoy,
-    pero una lectura vieja tampoco describe el precio)."""
-    return bool(x) and bool(x.get("disponible")) and not _lectura_vieja(x.get("lectura"), hoy)
+    """¿Esta serie tiene algo que leer HOY? Está y su última vela no es vieja
+    (`tecnico.lectura_vieja`, LA regla de «precio viejo»: hasta el 06/11 acá eran
+    10 días y en Comparar 7). Una serie cortada no tiene «esta semana» (los
+    cambios ya cuentan desde hoy, pero una lectura vieja tampoco describe el precio)."""
+    import tecnico
+    return bool(x) and bool(x.get("disponible")) and not tecnico.lectura_vieja(x.get("lectura"), hoy)
 
 
 def _alcista(x: dict, hoy: date):
@@ -337,8 +331,8 @@ def _alcista(x: dict, hoy: date):
 # Por qué algo va «sin lectura» (las claves de MOTIVOS_SIN_LECTURA de
 # utils/radiografia.js, que pone las palabras): un bono o un fondo no se mide
 # así; una acción sin velas todavía, aparece en un día; con menos de 200 días
-# de mercado no hay promedio de 200; una última vela de hace más de 10 días no
-# describe el precio de hoy.
+# de mercado no hay promedio de 200; una última vela de antes de la última semana
+# no describe el precio de hoy (`tecnico.lectura_vieja`).
 # Como `noSeMide` de la pantalla: renta fija (`_FIXED_INCOME_TYPES`) y fondos
 # (`_FUND_TYPES`, los de la regla de qué tiene precio de todos los días).
 
@@ -349,7 +343,8 @@ def _porque(x: dict, tipo: str, asset: str, hoy: date) -> str:
         return "no_se_mide"
     if not x or not x.get("disponible"):
         return "sin_historia"
-    if _lectura_vieja(x.get("lectura"), hoy):
+    import tecnico
+    if tecnico.lectura_vieja(x.get("lectura"), hoy):
         return "vieja"
     return "pocos_dias"
 

@@ -767,9 +767,11 @@ export default function LecturaTecnica({
   // Hasta el último día que se dibuja: con la vela de hoy, hoy; en 1H/4H, hoy
   // también (las diarias todavía no lo tienen).
   const misMarcas = marcas(lotes, operaciones).filter(m => m.fecha <= serieConHoy[serieConHoy.length - 1]?.d)
-  // Si los precios no se pudieron actualizar en más de una semana, se avisa
-  // arriba (antes sólo se veía la fecha en letra chica al pie).
-  const diasViejo = ultimaFecha ? Math.floor((Date.now() - Date.parse(ultimaFecha + 'T12:00:00Z')) / 86400000) : 0
+  // Sin precios de la última semana se avisa arriba (antes sólo se veía la fecha
+  // en letra chica al pie). Lo dice el servidor (`vieja`, tecnico.es_vieja, desde
+  // el día argentino): antes se contaba acá desde las 9 de la mañana del último
+  // precio con el reloj de la compu, y el octavo día hasta las 9 el Backtesting ya
+  // decía «viejo» y el gráfico todavía no (auditoría de «1 año» 06/11, H7).
   // Con el aviso de hoy en la tarjeta que el precio de hoy da vuelta (la
   // lectura sigue con el cierre: utils/tecnico.js `avisosDeHoy`).
   const lista = conAvisosDeHoy(tarjetas(actual.lectura), vivas, actual.lectura)
@@ -1058,7 +1060,7 @@ export default function LecturaTecnica({
 
   return marco(
     <>
-      {diasViejo > 7 && (
+      {actual.vieja && ultimaFecha && (
         <div className="rounded-lg border border-rendi-warn/40 bg-rendi-warn/10 px-3.5 py-2.5 mb-3 text-[13px] text-ink-1">
           <b className="text-rendi-warn font-semibold">Los precios son del {fechaCorta(ultimaFecha)}.</b> No se pudieron actualizar desde ese día.
         </div>

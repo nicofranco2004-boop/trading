@@ -204,8 +204,9 @@ def sin_la_mejor(ops: list):
 
 def ventana(velas: list, anios: int, desde_regla: int) -> dict:
     """De qué vela a qué vela se prueba: los últimos `anios` años contados por
-    CALENDARIO desde la última vela (`tecnico.primer_dia`, LA regla de la ficha,
-    Comparar y «Una cartera»), y nunca antes de que la regla exista
+    CALENDARIO desde la última vela (`tecnico.primer_dia`: el día siguiente al del
+    precio de arranque de la ficha, Comparar y «Una cartera», `tecnico.dia_de_arranque`),
+    y nunca antes de que la regla exista
     (`desde_regla`). {'desde_i', 'hasta_i', 'pedido_i', 'pedido_desde',
     'recortado'}: `recortado` si arranca después de lo pedido porque la regla
     necesita días antes que el papel no tiene (toda regla necesita al menos uno:
@@ -262,8 +263,14 @@ def probar(velas: list, reglas: list, anios: int, comision: float = COMISION, *,
     desde `hoy` (`tecnico.es_vieja`: un papel que dejó de cotizar se probaba en
     «los últimos 2 años» terminados hace meses, sin avisar; auditoría de «Una
     cartera» 05/11, H9). `variacion_precio`: cuánto se movió el precio en el
-    período (de la apertura del primer día al último cierre), sin comisiones: lo
-    que la pantalla dice que «subió» o «bajó» el papel."""
+    período, sin comisiones: lo que la pantalla dice que «subió» o «bajó» el papel.
+    Desde el cierre de la víspera del primer día, el precio de arranque de LA regla
+    (`tecnico.dia_de_arranque`, como la ficha, Comparar y «Una cartera»; Nico,
+    06/11), hasta el último cierre. `variacion_desde`: el día de ese cierre; la
+    pantalla lo nombra cuando la prueba arranca más tarde («desde el 17/04» era el
+    cierre del 16: auditoría 06/11 del precio de arranque, H2). Las operaciones (la
+    regla y comprar y mantener) siguen entrando a la apertura: la señal se ve al
+    cierre y se actúa al día siguiente (CÓMO SE SIMULA)."""
     reglas = list(reglas)
     velas = velas_que_sirven(velas)
     if not velas:
@@ -282,6 +289,11 @@ def probar(velas: list, reglas: list, anios: int, comision: float = COMISION, *,
     sims = {r: simular(velas, s[r], v["desde_i"], v["hasta_i"], comision) for r in reglas}
     m = mantener(velas, v["desde_i"], v["hasta_i"], comision)
     fechas = [x["date"] for x in velas[v["desde_i"]:v["hasta_i"] + 1]]
+    # Toda regla necesita al menos un día antes (`_desde`): la víspera está siempre.
+    # Si faltara, la apertura del primer día; nunca velas[-1], la última.
+    i = v["desde_i"]
+    vispera = velas[i - 1] if i > 0 else None
+    arranque = vispera["close"] if vispera else tecnico.aperturas(velas)[i]
     return {
         **base,
         "disponible": True,
@@ -289,7 +301,8 @@ def probar(velas: list, reglas: list, anios: int, comision: float = COMISION, *,
         "hasta": fechas[-1],
         "ruedas": len(fechas),
         "comision": comision * 100,
-        "variacion_precio": (velas[v["hasta_i"]]["close"] / tecnico.aperturas(velas)[v["desde_i"]] - 1) * 100,
+        "variacion_precio": (velas[v["hasta_i"]]["close"] / arranque - 1) * 100,
+        "variacion_desde": vispera["date"] if vispera else fechas[0],
         "resultados": [_resultado(r, sims[r]) for r in reglas],
         "mantener": _resumen(m),
         "curva": [{"d": d, "mantener": round(m[k] * 100, 2),

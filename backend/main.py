@@ -13045,7 +13045,7 @@ def get_comparar_precio(request: Request, activos: str, local: str = "", moneda:
         inicio = d.isoformat()
     elif plazo in comparar.PLAZOS:
         # «1 año» y «3 años» terminan en el último precio de los activos, no hoy:
-        # el día lo elige comparar.comparar, que sabe cuál es (tecnico.primer_dia).
+        # el día lo elige comparar.comparar, que sabe cuál es (tecnico.dia_de_arranque).
         anios = comparar.PLAZOS[plazo]
     else:
         raise HTTPException(400, "Plazo inválido")
