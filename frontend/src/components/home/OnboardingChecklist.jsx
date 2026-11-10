@@ -79,6 +79,7 @@ import AvisoNotificaciones from '../AvisoNotificaciones'
 import { useToast } from '../Toast'
 import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../../utils/almacen'
 import { CATALOGO } from '../../utils/catalogoDelAlmacen'
+import { rutaParaImportar } from '../../utils/navegacion'
 
 const CHECKLIST_DISMISSED_KEY = 'rendi_checklist_dismissed'
 const OMITIDOS_KEY = 'rendi_checklist_omitidos'
@@ -249,7 +250,7 @@ export default function OnboardingChecklist() {
       recomendado: true,
       desc: 'Paso 1 de 2 · Subí el CSV de tu broker. Lo creamos solo y traemos todas tus operaciones, todo de una.',
       cta: 'Importar CSV',
-      onClick: () => navigate('/imports?from=checklist'),
+      onClick: () => navigate(rutaParaImportar('checklist')),
     },
     {
       id: 'instalar',

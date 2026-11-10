@@ -2,6 +2,7 @@ import ModoRendimiento from '../components/ModoRendimiento'
 import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
+import { rutaParaImportar } from '../utils/navegacion'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { chartGrid, chartTick, chartTooltip, chartReferenceStroke, trendStroke, trendArea } from '../utils/chartTheme'
 import { TrendingUp, TrendingDown, Upload, ArrowRight, Eye, EyeOff } from 'lucide-react'
@@ -1013,17 +1014,19 @@ function PersonalDashboard() {
                 Empezá importando tu historial
               </h2>
               <p className="text-sm text-ink-2">
-                Andá a <strong>Configuración</strong> y subí un CSV con tus operaciones. Reconstruimos tu cartera en segundos — vas a poder revisar fila por fila antes de guardar.
+                Subí un CSV con tus operaciones. Reconstruimos tu cartera en segundos — vas a poder revisar fila por fila antes de guardar.
               </p>
             </div>
             <div className="flex flex-col sm:flex-row gap-2">
-              {/* CTA principal — usa rendi-pos como verde de marca/CTA */}
-              <a
-                href="/config"
+              {/* CTA principal — usa rendi-pos como verde de marca/CTA. Abre la
+                  ventana de carga directo (antes dejaba en Configuración y había
+                  que buscar «Importar CSV» ahí adentro). */}
+              <Link
+                to={rutaParaImportar('dashboard')}
                 className="inline-flex items-center justify-center gap-1.5 text-sm bg-rendi-accent text-white hover:bg-rendi-accent/90 px-4 py-2 rounded-sm font-semibold transition"
               >
-                <Upload size={14} strokeWidth={1.5} /> Ir a Configuración
-              </a>
+                <Upload size={14} strokeWidth={1.5} /> Subir mi CSV
+              </Link>
               <a
                 href="/posiciones"
                 className="inline-flex items-center justify-center gap-1.5 text-sm text-ink-2 hover:text-ink-0 dark:hover:text-ink-0 px-3 py-2 transition"

@@ -78,8 +78,10 @@ export const LOOSE = [
   // `enRegistrar`: no es una fila del menú, vive ADENTRO del botón Registrar
   // (el de la compu y el "+" del celular), en su franja de abajo (pedido de
   // Nico, 2026-10-19). Sigue en esta lista para que la regla de quién lo ve sea
-  // una sola y para que el buscador ⌘K lo encuentre.
-  { to: '/imports', label: 'Importar', icon: Upload, enRegistrar: true },
+  // una sola y para que el buscador ⌘K lo encuentre. `abre`: a dónde llevan
+  // esos dos menús — la pantalla con la ventana de carga YA abierta (ver
+  // rutaParaImportar, al final). `to` sigue siendo la pantalla, para el buscador.
+  { to: '/imports', label: 'Importar', icon: Upload, enRegistrar: true, abre: rutaParaImportar('registrar') },
 ]
 
 // Plan Asesor en SU nivel (sin haber entrado a un cliente): su home. Dashboard
@@ -163,4 +165,18 @@ export function pantallasVisibles({ user, clientCtx } = {}) {
   ]
   const vistos = new Set()
   return lista.filter(i => i && !vistos.has(i.to) && vistos.add(i.to))
+}
+
+// ── «Importá tu historial» ────────────────────────────────────────────────
+// Todo botón que invita a subir el CSV lleva al mismo lugar: la pantalla de
+// importaciones con la ventana de carga YA abierta (Imports la abre sola cuando
+// llega `?from=`). Antes 4 de esos botones (Dashboard vacío, Reportes, Sesgos,
+// Diagnóstico) mandaban a /config, donde había que encontrar «Importar CSV»
+// adentro de la sección Cuenta — y con un cliente abierto el asesor ni lo veía,
+// porque Cuenta se esconde en ese contexto; y otros 3 (Registrar → Importar
+// historial, Cartera vacía, «Importar otro CSV») dejaban en la pantalla con la
+// ventana cerrada. `origen` dice de qué botón vino. Los «Ver historial» NO van
+// por acá: ahí se quiere la lista, no subir nada.
+export function rutaParaImportar(origen) {
+  return `/imports?from=${encodeURIComponent(origen)}`
 }

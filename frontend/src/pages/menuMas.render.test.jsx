@@ -42,7 +42,7 @@ vi.mock('../hooks/usePushNotifications', () => ({ usePushNotifications: () => pu
 // menú lateral le pasa: si el lateral deja de pasárselo, «Importar» falta en la
 // compu y la comparación con el celular da rojo.
 vi.mock('../components/RegistrarMenu', () => ({
-  default: ({ importar }) => (importar ? <a href={importar.to}>Importar historial</a> : null),
+  default: ({ importar }) => (importar ? <a href={importar.abre}>Importar historial</a> : null),
 }))
 
 import More, { seccionesDelMenuMas } from './More'
@@ -311,7 +311,7 @@ describe('Importar historial: en el "+" del celular, no en «Más»', () => {
   it('usuario común: está en la hoja del "+", con su franja, y «Más» ya no lo lista', () => {
     usuario = { tier: 'pro' }; cliente = null
     const hoja = renderToStaticMarkup(<MemoryRouter><QuickActionsSheet onClose={() => {}} /></MemoryRouter>)
-    expect(hoja).toContain('href="/imports"')
+    expect(hoja).toContain('href="/imports?from=registrar"')
     expect(hoja).toContain('Importar historial')
     expect(hoja).toContain('¿Tenés el historial del broker?')
     // Va después de las acciones a mano, aparte.
@@ -321,6 +321,6 @@ describe('Importar historial: en el "+" del celular, no en «Más»', () => {
   it('asesor adentro de un cliente: también en el "+"', () => {
     usuario = { tier: 'advisor' }; cliente = CLIENTE
     const hoja = renderToStaticMarkup(<MemoryRouter><QuickActionsSheet onClose={() => {}} /></MemoryRouter>)
-    expect(hoja).toContain('href="/imports"')
+    expect(hoja).toContain('href="/imports?from=registrar"')
   })
 })

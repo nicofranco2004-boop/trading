@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { rutaParaImportar } from '../utils/navegacion'
 import {
   Brain, Activity, TrendingDown, RefreshCw, Repeat, Info, AlertTriangle,
   CheckCircle2, ChevronRight, ArrowRight, X, BookOpen, Share2,
@@ -192,7 +193,7 @@ export default function Behavioral() {
               esto es lo que Rendi va a analizar sobre tu cartera:
             </p>
             <Link
-              to="/config"
+              to={rutaParaImportar('sesgos')}
               className="inline-flex items-center gap-1.5 text-sm bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-4 py-2 rounded-sm transition-colors press"
             >
               Importar mi historial

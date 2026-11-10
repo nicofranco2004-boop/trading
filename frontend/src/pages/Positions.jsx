@@ -35,6 +35,7 @@ import CashFlowModal from '../components/cash/CashFlowModal'
 import CashMenuModal from '../components/cash/CashMenuModal'
 import ConvertMenuModal from '../components/cash/ConvertMenuModal'
 import { accionDelPedido, cajasParaConvertir } from '../utils/registrar'
+import { rutaParaImportar } from '../utils/navegacion'
 import { detectPendingCashflows, esPagoDelBono, esCobroAMano, cobradoDelBonoUsd, fxDeCobroAMano } from '../utils/pendingCashflows'
 import { getBondMeta, formatBondType, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
 import InlineAIButton from '../components/ai/InlineAIButton'
@@ -2197,7 +2198,7 @@ function PositionsDesktop() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => navigate('/imports')}
+                  onClick={() => navigate(rutaParaImportar('cartera'))}
                   className="inline-flex items-center gap-2 border border-line-3 hover:border-ink-2 text-ink-0 text-sm font-medium rounded-sm px-4 py-2 transition-colors"
                 >
                   Importar CSV

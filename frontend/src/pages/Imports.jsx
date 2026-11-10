@@ -29,9 +29,10 @@ export default function Imports() {
   // un import acá caería en su cuenta de trabajo y quedaría invisible
   // (audit). Aviso no bloqueante — la página sigue operable.
   const advisorOwnLevel = user?.tier === 'advisor' && !clientCtx
-  const [searchParams] = useSearchParams()
-  const from = searchParams.get('from')
-  const fromOnboarding = from === 'onboarding' || from === 'checklist'
+  const [searchParams, setSearchParams] = useSearchParams()
+  // ?from=<botón de origen> = alguien lo mandó acá a subir un CSV (ver
+  // rutaParaImportar en utils/navegacion): abrimos el wizard solo.
+  const vieneACargar = !!searchParams.get('from')
   const [batches, setBatches] = useState([])
   const [loading, setLoading] = useState(true)
   const [reverting, setReverting] = useState(null) // batch_id en proceso
@@ -50,11 +51,19 @@ export default function Imports() {
 
   useEffect(() => { load() }, [])
 
-  // Si el user viene del onboarding (?from=onboarding) abrimos el wizard
-  // automáticamente — un paso menos para ver su P&L real.
+  // Si el user viene de un «Importá tu historial» (onboarding, primeros pasos,
+  // pantallas vacías, Registrar) abrimos el wizard automáticamente — un paso
+  // menos para ver su P&L real. Y sacamos el ?from= de la dirección: si no,
+  // estando acá con el wizard cerrado, tocar otra vez «Importar historial»
+  // navega a la MISMA dirección, nada cambia y el wizard no se abre (y
+  // recargar la página lo reabriría sin que nadie lo pida).
   useEffect(() => {
-    if (fromOnboarding) setShowWizard(true)
-  }, [fromOnboarding])
+    if (!vieneACargar) return
+    setShowWizard(true)
+    const next = new URLSearchParams(searchParams)
+    next.delete('from')
+    setSearchParams(next, { replace: true })
+  }, [vieneACargar])  // eslint-disable-line react-hooks/exhaustive-deps — sólo reacciona a la llegada, no a cada cambio de la dirección
 
   async function load() {
     setLoading(true)

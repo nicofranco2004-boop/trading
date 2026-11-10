@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { rutaParaImportar } from '../utils/navegacion'
 import { ArrowRight } from 'lucide-react'
 import EmptyState from '../components/EmptyState'
 import {
@@ -2908,7 +2909,7 @@ function InsightsDesktop({ _embeddedTab }) {
             Los insights de concentración, drawdown y atribución necesitan al menos 30 días de historial. Importá tu CSV para empezar.
           </p>
           <Link
-            to="/config"
+            to={rutaParaImportar('diagnostico')}
             className="inline-flex items-center gap-1.5 text-sm bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-4 py-2 rounded-sm transition-colors"
           >
             Importar mi historial

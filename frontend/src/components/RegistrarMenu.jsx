@@ -112,7 +112,9 @@ export default function RegistrarMenu({ collapsed = false, importar = null }) {
   function irAImportar() {
     track('registrar_elegido', { code: 'importar' })
     setOpen(false)
-    navigate(importar.to)
+    // Con la ventana de carga ya abierta: «Subí el archivo de tu broker» no
+    // puede dejarte en una pantalla donde hay que volver a tocar «Importar».
+    navigate(importar.abre)
   }
 
   // Flechas arriba/abajo entre opciones.

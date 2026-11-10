@@ -287,7 +287,7 @@ export function QuickActionsSheet({ onClose }) {
           <div className="mx-3 mb-3 pt-2 border-t border-line">
             <p className="px-3 pt-1 pb-1 text-[12px] text-ink-3">{IMPORTAR_HISTORIAL.pregunta}</p>
             <Link
-              to={importar.to}
+              to={importar.abre}
               onClick={onClose}
               className="w-full flex items-center gap-3 px-3 py-3 rounded-lg bg-bg-1 hover:bg-bg-2/60 active:bg-bg-3 transition-colors text-left"
             >

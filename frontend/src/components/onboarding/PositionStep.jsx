@@ -21,6 +21,7 @@ import { useEnVuelo } from '../../hooks/useEnVuelo'
 import { parseNum } from '../../utils/format'
 import { guardar as guardarEnAlmacen } from '../../utils/almacen'
 import { CATALOGO } from '../../utils/catalogoDelAlmacen'
+import { rutaParaImportar } from '../../utils/navegacion'
 
 // Brokers comunes en AR + moneda default sugerida (mismo set que el viejo
 // BrokerStep). El chip pre-llena nombre + moneda; el user puede tipear otro.
@@ -58,7 +59,7 @@ function ModeSelector({ setMode, onBack, navigate, onSkip }) {
     try {
       guardarEnAlmacen(CATALOGO.volverABienvenida, '1')
     } catch {}
-    navigate('/imports?from=onboarding')
+    navigate(rutaParaImportar('onboarding'))
   }
 
   return (

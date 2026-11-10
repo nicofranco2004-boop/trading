@@ -13,6 +13,7 @@
 
 import { useEffect, useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { rutaParaImportar } from '../utils/navegacion'
 import { Sparkles, TrendingUp, TrendingDown, ArrowRight, Wallet } from 'lucide-react'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols } from '../utils/valuation'
@@ -340,7 +341,7 @@ export default function FirstInsight() {
       {/* CTAs */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Link
-          to="/imports"
+          to={rutaParaImportar('primer-insight')}
           className="text-xs text-ink-3 hover:text-ink-0 transition-colors"
         >
           Importar otro CSV →

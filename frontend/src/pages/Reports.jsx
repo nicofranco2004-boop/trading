@@ -11,6 +11,7 @@
 
 import { useState, useMemo, useEffect, Fragment } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { rutaParaImportar } from '../utils/navegacion'
 import PageHeader from '../components/PageHeader'
 import EmptyState from '../components/EmptyState'
 import { Loader2, FileText, AlertTriangle, ChevronDown, ChevronUp, ArrowRight } from 'lucide-react'
@@ -245,7 +246,7 @@ export default function Reports() {
           description="El primer reporte se genera al cerrar tu primer mes con actividad. Si recién importaste tu CSV, esperá al cambio de mes — te avisamos cuando esté listo."
           action={
             <Link
-              to="/config"
+              to={rutaParaImportar('reportes')}
               className="inline-flex items-center gap-1.5 text-sm bg-rendi-pos/10 hover:bg-rendi-pos/15 text-rendi-pos border border-rendi-pos/30 px-4 py-2 rounded-sm transition-colors"
             >
               Importar mi historial
