@@ -203,5 +203,123 @@ class RegaloMasivoTest(unittest.TestCase):
         self.assertIn(r.status_code, (401, 403))
 
 
+
+
+class LosTextosDelRegaloTest(unittest.TestCase):
+    """Quien recibe un regalo es 'credit_only' sin suscripción, igual que quien
+    cambió de plan, y por eso la pantalla le decía «Cambiaste de plan… con el
+    crédito convertido» y el mail «tu suscripción expira… volvé a suscribirte».
+    La regla de qué es un regalo es una sola (`credits.es_regalo`); acá se mide
+    que llegue a la pantalla (`/api/auth/me`) y al mail del proceso nocturno
+    real (`run_lifecycle_job`)."""
+
+    def setUp(self):
+        self.client = TestClient(main.app)
+        self.tag = uuid.uuid4().hex[:10]
+        conn = main.get_db()
+        self.admin = RegaloMasivoTest._user(self, conn, "admin", is_admin=1)
+        # Recibe el regalo por el botón masivo, como en producción.
+        self.free = RegaloMasivoTest._user(self, conn, "free", tier="free",
+                                           trial_used_at=_iso(-60), email_verified=1)
+        fin = _iso(6)
+        self.prueba = RegaloMasivoTest._user(self, conn, "prueba", tier="plus",
+                                             trial_used_at=_iso(-14), trial_started_at=_iso(-14),
+                                             trial_ends_at=fin, credit_active_until=fin,
+                                             email_verified=1)
+        # Canceló y le quedan días que pagó: su texto NO cambia.
+        self.pago = RegaloMasivoTest._user(self, conn, "pago", tier="pro",
+                                           credit_active_until=_iso(2.5),
+                                           credit_anchor_plan="pro",
+                                           credit_anchor_period="monthly",
+                                           credit_anchor_amount_usd=14.99, email_verified=1)
+        conn.commit()
+        conn.close()
+        r = self.client.post(
+            "/api/admin/billing/regalo-masivo",
+            json={"days": 5, "confirm": True, "ids": [self.free, self.prueba]},
+            headers={"Authorization": f"Bearer {main.create_token(self.admin)}"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(len(r.json()["regaladas"]), 2, r.text)
+
+    def _me(self, uid):
+        r = self.client.get("/api/auth/me",
+                            headers={"Authorization": f"Bearer {main.create_token(uid)}"})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def test_la_pantalla_sabe_que_es_un_regalo(self):
+        me = self._me(self.free)
+        self.assertEqual(me["access_mode"], "credit_only")
+        self.assertIs(me["credit_es_regalo"], True)
+        # La prueba alargada sigue siendo la prueba, y el pago sigue siendo pago.
+        self.assertIs(self._me(self.prueba)["credit_es_regalo"], False)
+        self.assertIs(self._me(self.pago)["credit_es_regalo"], False)
+
+    def _avisos(self):
+        from unittest.mock import patch
+        from billing import emails, subscriptions
+        conn = main.get_db()
+        try:
+            # 2,5 días antes de vencer: dentro de la ventana de 3 días del aviso.
+            conn.execute("UPDATE users SET credit_active_until=? WHERE id=?",
+                         (_iso(2.5), self.free))
+            conn.commit()
+            with patch.object(emails, "_send", return_value=True) as send:
+                subscriptions.run_lifecycle_job(conn)
+        finally:
+            conn.close()
+        por_mail = {}
+        for c in send.call_args_list:
+            por_mail.setdefault(c.args[0], []).append(
+                (c.args[1], " ".join(str(a) for a in c.args[2:4])))
+        return por_mail
+
+    def test_el_aviso_de_vencimiento_del_regalo_no_habla_de_suscripcion(self):
+        avisos = self._avisos()
+        mios = [m for m in avisos.get(f"free-{self.tag}@rendi.test", []) if "vence en" in m[0]]
+        self.assertEqual(len(mios), 1, avisos.get(f"free-{self.tag}@rendi.test"))
+        asunto, cuerpo = mios[0]
+        self.assertIn("regalo", asunto)
+        self.assertIn("que te regalamos termina", cuerpo)
+        self.assertNotIn("suscripci", cuerpo)
+        self.assertNotIn("suscribi", cuerpo)
+        # Y el de quien pagó sigue diciendo lo de siempre.
+        pagos = [m for m in avisos.get(f"pago-{self.tag}@rendi.test", []) if "vence en" in m[0]]
+        self.assertEqual(len(pagos), 1, avisos.get(f"pago-{self.tag}@rendi.test"))
+        self.assertNotIn("regalo", pagos[0][0])
+        self.assertIn("suscripción", pagos[0][1])
+
+
+class LaCampañaDeRegaloUsaLaMismaReglaTest(unittest.TestCase):
+    """La campaña «Regalo Pro» (`/api/admin/email/gift-plan`, only_gifted)
+    tenía su propia copia de qué es un regalo; ahora usa `credits.es_regalo`.
+    Un regalo VENCIDO (la cuenta todavía dice 'pro' porque el cron de la noche
+    no corrió) no es un regalo: el mail le prometería algo que ya se terminó."""
+
+    def test_sólo_cuenta_el_regalo_vigente(self):
+        client = TestClient(main.app)
+        self.tag = uuid.uuid4().hex[:10]
+        conn = main.get_db()
+        admin = RegaloMasivoTest._user(self, conn, "admin", is_admin=1)
+        vigente = RegaloMasivoTest._user(self, conn, "vigente", tier="pro", email_verified=1,
+                                         credit_active_until=_iso(10), credit_anchor_plan="pro",
+                                         credit_anchor_amount_usd=0)
+        vencido = RegaloMasivoTest._user(self, conn, "vencido", tier="pro", email_verified=1,
+                                         credit_active_until=_iso(-1), credit_anchor_plan="pro",
+                                         credit_anchor_amount_usd=0)
+        pagado = RegaloMasivoTest._user(self, conn, "pagado", tier="pro", email_verified=1,
+                                        credit_active_until=_iso(10), credit_anchor_plan="pro",
+                                        credit_anchor_amount_usd=14.99)
+        conn.commit()
+        conn.close()
+        r = client.post("/api/admin/email/gift-plan", json={"only_gifted": True},
+                        headers={"Authorization": f"Bearer {main.create_token(admin)}"})
+        self.assertEqual(r.status_code, 200, r.text)
+        ids = {x["id"] for x in r.json()["recipients"]}
+        self.assertIn(vigente, ids)
+        self.assertNotIn(vencido, ids)
+        self.assertNotIn(pagado, ids)
+
+
 if __name__ == "__main__":
     unittest.main()

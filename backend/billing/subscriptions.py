@@ -61,6 +61,7 @@ def _avisar_vencimiento(conn, tanda, r, fin, days_before: int, que: str) -> bool
     en que se termina el acceso, una vez; si la fecha cambia (renovó, le
     regalaron días) y vuelve a vencer, se avisa la fecha nueva."""
     from billing import emails
+    from billing import credits
     from billing import trial as _trial
     from billing import plan_textos as _plan_textos
     dia = _dia(fin)
@@ -85,6 +86,11 @@ def _avisar_vencimiento(conn, tanda, r, fin, days_before: int, que: str) -> bool
     # El plan que vence es el del ancla del crédito; si falta, el que tiene
     # puesto. Caía a "pro" y a un Plus sin ancla le avisaba que vencía su Pro.
     plan = (r["credit_anchor_plan"] if "credit_anchor_plan" in keys else None) or r["tier"]
+    # Un regalo no es una suscripción: el mail no le puede decir "tu suscripción
+    # expira" ni "volvé a suscribirte" a quien nunca pagó. La fila de una
+    # suscripción cancelada no trae el precio → no es regalo, como corresponde.
+    es_regalo = ("credit_anchor_amount_usd" in keys and credits.es_regalo(
+        r["credit_active_until"], r["credit_anchor_plan"], r["credit_anchor_amount_usd"]))
     datos = dict(
         to=r["email"],
         user_name=(r["name"] or r["email"].split("@")[0]),
@@ -95,6 +101,7 @@ def _avisar_vencimiento(conn, tanda, r, fin, days_before: int, que: str) -> bool
         requiere_plan=_trial._requiere_plan(conn, uid),
         # Los cupos de ESTA persona, no los del plan: ver cupos_del_usuario.
         cupos=_plan_textos.cupos_del_usuario(conn, uid, plan),
+        es_regalo=es_regalo,
     )
 
     # Marca ANTES de mandar, condicional (dos corridas a la vez no la ganan las
@@ -495,7 +502,8 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3, tanda=None) -> i
     today_str = datetime.utcnow().isoformat()
     rows = conn.execute(
         """SELECT u.id as user_id, u.email, u.name, u.credit_active_until,
-                  u.credit_anchor_plan, u.credit_anchor_period, u.tier
+                  u.credit_anchor_plan, u.credit_anchor_period, u.tier,
+                  u.credit_anchor_amount_usd
            FROM users u
            WHERE u.tier IN ('pro', 'plus', 'advisor')
              AND u.credit_active_until IS NOT NULL

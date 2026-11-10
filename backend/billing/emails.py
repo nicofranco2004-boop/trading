@@ -860,8 +860,13 @@ def send_cancellation(*, to: str, user_name: str, valid_until: str,
 def send_expiration_reminder(*, to: str, user_name: str,
                              days_left: int, expires_at: str,
                              plan: str = "pro", requiere_plan: bool = False,
-                             cupos: Optional[dict] = None) -> bool:
+                             cupos: Optional[dict] = None,
+                             es_regalo: bool = False) -> bool:
     """3 días antes de que se termine un plan cancelado (o su crédito).
+
+    Con `es_regalo` (un plan que regaló el admin, ver `credits.es_regalo`) no
+    se habla de suscripción: esa persona nunca se suscribió, y "tu suscripción
+    expira… volvé a suscribirte" le decía algo que no hizo.
 
     La lista de "lo que vas a perder" describe la caída a Free ("N análisis
     IA por semana (vas a quedar con M)"). Para quien nació sin plan gratis
@@ -883,23 +888,40 @@ def send_expiration_reminder(*, to: str, user_name: str,
         {_plan_loss_html(plan, cupos)}
       </ul>"""
         _perdida_txt = f"Después de esa fecha, vas a perder acceso a:\n{_plan_loss_text(plan, cupos)}"
+    dias_txt = f"{days_left} {'día' if days_left == 1 else 'días'}"
+    if es_regalo:
+        titulo = f"Tu regalo de Rendi {plan_label} vence en {dias_txt}"
+        aviso_html = (f"Hola {user_name}, el {plan_label} que te regalamos termina el "
+                      f"<b>{_fmt_date(expires_at)}</b>.")
+        aviso_txt = f"Hola {user_name}, el {plan_label} que te regalamos termina el {_fmt_date(expires_at)}."
+        cierre_html = f"Si querés seguir con {plan_label}, elegí un plan desde"
+        cierre_txt = "Para seguir: elegí un plan en rendi.finance/planes"
+        asunto = f"⏰ Tu regalo de Rendi {plan_label} vence en {dias_txt}"
+    else:
+        titulo = f"Tu plan {plan_label} vence en {dias_txt}"
+        aviso_html = (f"Hola {user_name}, te avisamos que tu suscripción Rendi {plan_label} "
+                      f"va a expirar el <b>{_fmt_date(expires_at)}</b>.")
+        aviso_txt = f"Hola {user_name}, tu suscripción expira el {_fmt_date(expires_at)}."
+        cierre_html = f"Si querés mantener {plan_label}, volvé a suscribirte desde"
+        cierre_txt = "Para renovar: andá a rendi.finance/planes"
+        asunto = f"⏰ Tu Rendi {plan_label} vence en {dias_txt}"
     body_html = f"""
-      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Tu plan {plan_label} vence en {days_left} {'día' if days_left == 1 else 'días'}</h1>
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{titulo}</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Hola {user_name}, te avisamos que tu suscripción Rendi {plan_label} va a expirar el <b>{_fmt_date(expires_at)}</b>.
+        {aviso_html}
       </p>{_perdida_html}
       <p style="font-size:14px;color:#374151;line-height:1.6;">
-        Si querés mantener {plan_label}, volvé a suscribirte desde <a href="https://rendi.finance/planes" style="color:#8B7BFF;text-decoration:none;">tu panel</a>.
+        {cierre_html} <a href="https://rendi.finance/planes" style="color:#8B7BFF;text-decoration:none;">tu panel</a>.
       </p>
     """
     text = (
-        f"Tu plan Rendi {plan_label} vence en {days_left} {'día' if days_left == 1 else 'días'}\n\n"
-        f"Hola {user_name}, tu suscripción expira el {_fmt_date(expires_at)}.\n\n"
+        f"{'Tu regalo de Rendi' if es_regalo else 'Tu plan Rendi'} {plan_label} vence en {dias_txt}\n\n"
+        f"{aviso_txt}\n\n"
         f"{_perdida_txt}\n\n"
-        f"Para renovar: andá a rendi.finance/planes\n\n"
+        f"{cierre_txt}\n\n"
         f"— Rendi"
     )
-    return _send(to, f"⏰ Tu Rendi {plan_label} vence en {days_left} {'día' if days_left == 1 else 'días'}",
+    return _send(to, asunto,
                  _wrap_html(body_html), text,
                  from_addr=_from_noreply())
 

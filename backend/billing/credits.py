@@ -136,6 +136,30 @@ def get_credit_state(conn, user_id: int) -> dict:
     }
 
 
+def es_regalo(active_until, anchor_plan, anchor_amount_usd, now=None) -> bool:
+    """¿El acceso vigente es un REGALO (comp del admin) y no algo pagado ni la
+    prueba gratis?
+
+    Un regalo deja plan pero precio 0 (`_otorgar_cortesia`). Un pago siempre
+    deja su precio: `grant_payment_credit` usa el del catálogo si el cobro no lo
+    trae. La prueba deja el plan en NULL a propósito (ver `trial.credit_is_trial`),
+    así que no entra acá. Recibe los valores sueltos para que sirva igual con
+    una fila de `users` que con `get_credit_state`.
+
+    Lo leen el panel (`/auth/me` → Configuración y Planes), el aviso de "tu plan
+    vence", la campaña de regalo y el regalo masivo: antes cada uno tenía su
+    copia, y la pantalla le decía "cambiaste de plan… con el crédito convertido"
+    a quien sólo había recibido un regalo."""
+    if not active_until or anchor_plan is None:
+        return False
+    try:
+        if _parse_iso(active_until) <= (now or datetime.utcnow()):
+            return False
+    except Exception:
+        return False
+    return float(anchor_amount_usd or 0) == 0
+
+
 def _empty_state(anchor_plan=None, anchor_period=None) -> dict:
     return {
         "active_until":      None,

@@ -72,6 +72,10 @@ export function mapMeToUser(me) {
     credit_remaining_usd:  me.credit_remaining_usd ?? 0,
     credit_anchor_plan:    me.credit_anchor_plan || null,
     credit_anchor_period:  me.credit_anchor_period || null,
+    // Ese crédito es un regalo del admin, no un pago ni un cambio de plan
+    // (`credits.es_regalo` en el backend): cambia los textos de Configuración
+    // y de Planes.
+    credit_es_regalo:      !!me.credit_es_regalo,
     // access_mode: single source of truth para el estado del acceso.
     // Valores: 'authorized' (sub Rebill renovable) | 'credit_only'
     // (cambió plan, vive del crédito) | 'cancelled' (canceló manual,

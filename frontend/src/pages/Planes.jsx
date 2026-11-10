@@ -363,7 +363,20 @@ export default function Planes({ embedded = false }) {
           - authorized: nada (auto-renueva, no hay que avisar)
           - credit_only: "tenés acceso por crédito, cambiá o configurá pago"
           - cancelled: "cancelaste, vence X, reactivá si querés seguir" */}
-      {isCreditOnlyMode && hasCredit && anchorPlan && !trial?.active && (
+      {/* El regalo del admin también es credit_only, pero no viene de ningún
+          plan anterior: "usando el crédito de tu plan anterior" le describía
+          algo que no hizo. La regla es `credits.es_regalo` (backend). */}
+      {isCreditOnlyMode && hasCredit && anchorPlan && !trial?.active && user?.credit_es_regalo && (
+        <div className="max-w-3xl mx-auto mb-6 flex items-center gap-3 border border-data-cyan/40 bg-data-cyan/[0.06] rounded-lg px-4 py-3">
+          <Clock size={16} strokeWidth={1.75} className="text-data-cyan flex-shrink-0" />
+          <div className="flex-1 min-w-0 text-sm text-ink-1 leading-snug">
+            Tenés <span className="font-medium capitalize">{anchorPlan}</span> de regalo
+            {' '}por <span className="tabular text-ink-0">{Math.round(creditDays)} días más</span>.
+            {' '}Cuando termine, {alTerminar(requierePlan)}{requierePlan ? '.' : ' — si querés seguir, elegí un plan.'}
+          </div>
+        </div>
+      )}
+      {isCreditOnlyMode && hasCredit && anchorPlan && !trial?.active && !user?.credit_es_regalo && (
         <div className="max-w-3xl mx-auto mb-6 flex items-center gap-3 border border-data-cyan/40 bg-data-cyan/[0.06] rounded-lg px-4 py-3">
           <Clock size={16} strokeWidth={1.75} className="text-data-cyan flex-shrink-0" />
           <div className="flex-1 min-w-0 text-sm text-ink-1 leading-snug">

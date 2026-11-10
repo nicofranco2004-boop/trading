@@ -1239,6 +1239,11 @@ function PlanHeroPro({ tier = 'pro', usage }) {
   // activó una prueba gratis (audit).
   const isTrial = !!trial?.active
   const isCreditOnly = accessMode === 'credit_only' && !isTrial
+  // Lo mismo le pasaba al REGALO del admin: también es 'credit_only' sin
+  // suscripción, y la pantalla le decía "cambiaste de plan… con el crédito
+  // convertido" a quien sólo había recibido días. La regla es del servidor
+  // (`credits.es_regalo`, que lee también el mail de "tu plan vence").
+  const isRegalo = isCreditOnly && !!user?.credit_es_regalo
   // Nació sin plan gratis: cuando se le termina lo que tiene, no vuelve a Free.
   const requierePlan = !!user?.requires_plan
   const isAuthorized = accessMode === 'authorized'
@@ -1320,13 +1325,15 @@ function PlanHeroPro({ tier = 'pro', usage }) {
       // justo al lado de "Estás probando Rendi Pro" (audit 2026-08-10).
       ? { dotCls: 'bg-data-violet', textCls: 'text-data-violet', label: 'En prueba' }
       : isCreditOnly
-        ? { dotCls: 'bg-data-cyan', textCls: 'text-data-cyan', label: 'En crédito' }
+        ? { dotCls: 'bg-data-cyan', textCls: 'text-data-cyan', label: isRegalo ? 'Regalo' : 'En crédito' }
         : { dotCls: 'bg-ink-3', textCls: 'text-ink-2', label: 'Cancelado' }
 
   const title = isAuthorized
     ? `Rendi ${isPlus ? 'Plus' : 'Pro'} está activo`
     : isTrial
       ? `Estás probando Rendi ${isPlus ? 'Plus' : 'Pro'}`
+      : isRegalo
+        ? `Rendi ${isPlus ? 'Plus' : 'Pro'} de regalo`
       : isCreditOnly
         ? `Rendi ${isPlus ? 'Plus' : 'Pro'} con tu crédito convertido`
         : `Rendi ${isPlus ? 'Plus' : 'Pro'} hasta fin de período`
@@ -1339,6 +1346,8 @@ function PlanHeroPro({ tier = 'pro', usage }) {
       ? (trial?.stage === 'pro'
           ? `Prueba gratis: tenés Pro${trialProStageLabel(trial?.days_to_switch)} y después seguís con Plus hasta completar los ${trial?.total_days ?? TRIAL_TOTAL_DAYS} días. No hace falta que hagas nada: no cargamos ninguna tarjeta.`
           : `Prueba gratis: estás en Plus${trial?.days_left != null ? ` por ${trial.days_left} día${trial.days_left === 1 ? '' : 's'} más` : ''}. Cuando termine, ${alTerminar(requierePlan)}${requierePlan ? '.' : ' — si querés seguir, elegí un plan.'}`)
+    : isRegalo
+      ? `Te regalamos ${isPlus ? 'Plus' : 'Pro'}${periodEndLabel ? ` hasta el ${periodEndLabel}` : ''}. Cuando termine, ${alTerminar(requierePlan)}${requierePlan ? '.' : ' — si querés seguir, elegí un plan.'}`
     : isCreditOnly
       ? (periodEndLabel
           ? `Cambiaste de plan: tenés acceso a ${isPlus ? 'Plus' : 'Pro'} hasta el ${periodEndLabel} con el crédito convertido. Después te avisamos para que configures el pago si querés seguir.`

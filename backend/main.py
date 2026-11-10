@@ -6000,6 +6000,10 @@ def me(request: Request, uid: int = Depends(get_effective_user)):
             d["credit_remaining_usd"]  = cstate["remaining_usd"]
             d["credit_anchor_plan"]    = cstate["anchor_plan"]
             d["credit_anchor_period"]  = cstate["anchor_period"]
+            # Que la pantalla no le diga "cambiaste de plan… con el crédito
+            # convertido" a quien sólo recibió un regalo (Configuración, Planes).
+            d["credit_es_regalo"]      = billing_credits.es_regalo(
+                cstate["active_until"], cstate["anchor_plan"], cstate["anchor_amount_usd"])
         except Exception as ex:
             log.warning("credits.get_credit_state failed for user %s: %s", uid, ex)
             d["credit_active_until"]   = None
@@ -6007,6 +6011,7 @@ def me(request: Request, uid: int = Depends(get_effective_user)):
             d["credit_remaining_usd"]  = 0
             d["credit_anchor_plan"]    = None
             d["credit_anchor_period"]  = None
+            d["credit_es_regalo"]      = False
 
         # access_mode: estado canónico del acceso del user al tier. Single source
         # of truth para el frontend — evita lógica condicional duplicada en cada
@@ -31496,21 +31501,14 @@ def _gift_plan_candidatos(conn, data, ids=None):
     def _has_gift(d):
         if (d.get("tier") or "free") not in ("plus", "pro"):
             return False
-        if not _credito_vigente(d):
-            return False
-        # El trial NO es un regalo. Su anchor queda en NULL a propósito
-        # (ponerle precio a los 15 días gratis los convertía en plata real),
-        # y NULL pasaba el test de "comp" por la ventana de atrás:
-        # float(None or 0) == 0 daba True. Resultado: al que estaba en la
-        # mitad de su prueba le entraba un mail ofreciéndole de REGALO
-        # exactamente lo que ya estaba usando gratis.
-        #
-        # Sin anchor no hay plan pago detrás que regalar: todo lo que otorga
-        # crédito de verdad (pago, comp, cambio de plan) lo deja escrito.
-        if d.get("credit_anchor_plan") is None:
-            return False
-        # comp = sin costo (amount 0); evita marcar a quien paga su plan
-        return float(d.get("credit_anchor_amount_usd") or 0) == 0
+        # La regla vive en `credits.es_regalo`. Ojo con el trial: su anchor
+        # queda en NULL a propósito y, cuando esta función tenía su propia
+        # copia, NULL pasaba por "comp" (float(None or 0) == 0): al que estaba
+        # en la mitad de su prueba le entraba un mail ofreciéndole de REGALO
+        # lo que ya usaba gratis.
+        from billing import credits as _cr
+        return _cr.es_regalo(d.get("credit_active_until"), d.get("credit_anchor_plan"),
+                             d.get("credit_anchor_amount_usd"), now)
 
     targets = []
     en_trial = 0
@@ -33251,10 +33249,11 @@ def _regalo_masivo_clasificar(conn, u, ya_recibieron) -> tuple:
     if state["is_active"]:
         if _trial.credit_is_trial(u["credit_active_until"], u["trial_ends_at"]):
             return "prueba", None
+        if _credits.es_regalo(state["active_until"], state["anchor_plan"],
+                              state["anchor_amount_usd"]):
+            return "regalo", None
         if float(state["anchor_amount_usd"] or 0) > 0:
             return None, "paga"
-        if (state["anchor_plan"] or "") in ("plus", "pro"):
-            return "regalo", None
         return None, "revisar"
     el = _trial.eligibility(conn, u["id"])
     if el.get("can_start") or el.get("reason") == "email_not_verified":
