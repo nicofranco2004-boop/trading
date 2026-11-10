@@ -23,6 +23,12 @@ import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 const todayStr = () => hoyISO()
 const moneyOf = (m) => (n) => (m === 'USD' ? 'US$' : '$') + Math.round(n).toLocaleString('es-AR')
 
+// De qué broker salió la plata del plazo fijo, o null (plata de afuera, o uno
+// armado antes de que se guardara).
+export function origenDelPlazoFijo(pf) {
+  try { return JSON.parse(pf?.undo_meta_json || '{}')?.broker || null } catch { return null }
+}
+
 export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers = [], onChange }) {
   // «Ocultar saldos»: capital, interés, valor de hoy y subtotales se tapan; la
   // tasa y el plazo quedan (re-test A3, 29/10: como Futuros, nunca le llegaba).
@@ -64,9 +70,22 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
   const renovar = (pf) => enVuelo.correr(() => renovarPf(pf), pf.id)
   const cobrar = (pf, broker) => enVuelo.correr(() => cobrarPf(pf, broker), pf.id)
 
+  // Borrar deshace el alta: si la plata salió de un broker (lo guarda el servidor
+  // desde 2026-11-10 en la receta del alta), vuelve ahí — salvo que ya haya
+  // vencido, porque entonces pudo volver por otro lado (para eso está «Cobrar»).
+  // Se dice ANTES de confirmar, no después.
   async function borrar(pf) {
-    if (!await confirmar(`¿Eliminar el plazo fijo en ${pf.banco}? Esta acción no se puede deshacer.`)) return
-    try { await api.delete(`/plazos-fijos/${pf.id}`); await load() }
+    const origen = origenDelPlazoFijo(pf)
+    const vencido = (pf.fecha_vencimiento || '') <= todayStr()
+    const plata = !origen ? ''
+      : vencido ? ` Ya venció: borrarlo no le devuelve la plata a ${origen} (si ya la cobraste, usá «Cobrar»).`
+      : ` La plata vuelve a ${origen}, como si no lo hubieras armado.`
+    if (!await confirmar(`¿Eliminar el plazo fijo en ${pf.banco}?${plata} Esta acción no se puede deshacer.`)) return
+    try {
+      const res = await api.delete(`/plazos-fijos/${pf.id}`)
+      await load()
+      if (res?.devuelto) onChange && onChange()   // el cash del broker cambió → refrescar posiciones
+    }
     catch (e) { toast.push('Ocurrió un error: ' + e.message, { type: 'error' }) }
   }
 

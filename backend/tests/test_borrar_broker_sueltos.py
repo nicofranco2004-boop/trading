@@ -652,10 +652,10 @@ class UnaSolaLista(unittest.TestCase):
                               f"{tabla} se borra por columna broker y no la tiene")
 
     def test_politicas_conocidas(self):
-        """Tres políticas tienen código propio atado a UNA tabla. Usarlas en otra
+        """Cuatro políticas tienen código propio atado a UNA tabla. Usarlas en otra
         no haría nada sobre esa otra tabla (y parecería cubierta)."""
         propias = {"anular": "flujos_a_mano", "revertir": "import_batches",
-                   "payload": "archived_positions"}
+                   "payload": "archived_positions", "olvidar_origen": "plazos_fijos"}
         for tabla, (al_renombrar, al_borrar) in main.BROKER_POR_NOMBRE.items():
             self.assertIn(al_renombrar, ("columna", "json"), tabla)
             self.assertIn(al_borrar, ("borrar", "conservar", *propias), tabla)

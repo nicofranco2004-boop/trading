@@ -350,3 +350,192 @@ def test_sin_nada_entre_medio_el_ajuste_de_efectivo_se_aplica():
                             pesos=900000))
     assert cu.caja() == 900000.0
     assert not j["_confirm"].get("caja_sin_ajustar")
+
+
+# ── Lo que encontró la revisión independiente del 2026-11-10 ───────────────
+
+def _wb_trade(symbol, shares, usd, date, uid_):
+    return {"uuid": uid_, "type": "TRADE", "status": "COMPLETED",
+            "source_currency": {"code": "USD"}, "dest_currency": {"code": symbol},
+            "trade_info": {"direction": "BUY", "symbol": symbol, "share_price": usd / shares},
+            "source_amount": usd, "dest_amount": shares,
+            "created_at": date + "T12:00:00.000000Z", "comment": None}
+
+
+class _Wallbit:
+    """Una cuenta con Wallbit conectado; las tres llamadas a la red, reemplazadas."""
+
+    def __init__(self, trades, balances, precios):
+        import wallbit as W
+        self.W = W
+        self.c = TestClient(main.app)
+        conn = main.get_db()
+        self.uid = conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified) VALUES (?, 'x', 1, 1)",
+            (f"errores-prod-wb-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+        conn.execute("INSERT INTO user_broker_credentials (user_id, broker, api_key_enc, scope) "
+                     "VALUES (?, 'wallbit', ?, 'read')", (self.uid, main._wallbit_encrypt("k")))
+        conn.commit()
+        conn.close()
+        self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+        self._orig = (W.fetch_trades, W.fetch_stock_balances, W.fetch_asset_price)
+        W.fetch_trades = lambda api_key, from_date=None: list(trades)
+        W.fetch_stock_balances = lambda api_key: list(balances)
+        W.fetch_asset_price = lambda api_key, symbol: precios.get(symbol, 0.0)
+
+    def cerrar(self):
+        self.W.fetch_trades, self.W.fetch_stock_balances, self.W.fetch_asset_price = self._orig
+
+    def sync(self):
+        main._rate_store.clear()
+        r = self.c.post("/api/wallbit/sync", headers=self.h)
+        assert r.status_code == 200, r.text
+
+    def qty(self, asset):
+        conn = main.get_db()
+        try:
+            return round(float(conn.execute(
+                "SELECT COALESCE(SUM(quantity),0) s FROM positions WHERE user_id=? "
+                "AND broker='Wallbit' AND is_cash=0 AND asset=?", (self.uid, asset)).fetchone()["s"]), 6)
+        finally:
+            conn.close()
+
+
+def test_wallbit_no_junta_spyd_con_spy_y_no_lo_recompra_en_cada_sincronizacion():
+    """Juntar la pata dólar es una regla de la Bolsa argentina: en Nueva York SPYD
+    (un ETF) no es SPY. Con la traducción argentina en la cartera de Wallbit, cada
+    sincronización volvía a comprar SPYD (5 → 10 → 15)."""
+    wb = _Wallbit([_wb_trade("SPY", 10, 5000.0, "2026-09-10", "s1"),
+                   _wb_trade("SPYD", 5, 200.0, "2026-09-10", "s2")],
+                  [{"symbol": "SPY", "shares": 10}, {"symbol": "SPYD", "shares": 5},
+                   {"symbol": "USD", "shares": 100}],
+                  {"SPY": 500.0, "SPYD": 40.0})
+    try:
+        wb.sync()
+        wb.sync()
+        assert (wb.qty("SPY"), wb.qty("SPYD")) == (10, 5)
+    finally:
+        wb.cerrar()
+
+
+def test_plazo_fijo_de_un_broker_borrado_y_recreado_no_le_acredita_al_nuevo():
+    movs = [_cobro(1, 9, 100000, 100000)]
+    cu = _Cuenta(pesos=movs)
+    pid = _plazo_fijo(cu, 50000, source_broker=BM)
+    bid = cu.q("SELECT id FROM brokers WHERE user_id=? AND name=?", cu.uid, BM)[0]["id"]
+    assert cu.c.delete(f"/api/brokers/{bid}?force=true", headers=cu.h).status_code == 200
+    cu.importar(movs, [])                        # vuelve a crear «Bull Market»
+    caja_nueva = cu.caja()
+    r = cu.c.delete(f"/api/plazos-fijos/{pid}", headers=cu.h)
+    assert r.status_code == 200, r.text
+    assert cu.caja() == caja_nueva               # antes del arreglo: + $50.000 de la nada
+
+
+def test_plazo_fijo_vencido_borrado_no_devuelve_la_plata():
+    """Vencido, la plata pudo volver por el import del broker: devolverla otra vez
+    la contaría dos veces (para eso está «Cobrar»)."""
+    cu = _Cuenta(pesos=[_cobro(1, 9, 1000000, 1000000)])
+    pid = _plazo_fijo(cu, 300000, fecha_inicio="2026-09-02", source_broker=BM)
+    cu.importar([_cobro(3, 10, 307397.26, 1007397.26, 40)], [])   # la vuelta, importada
+    caja1 = cu.caja()
+    r = cu.c.delete(f"/api/plazos-fijos/{pid}", headers=cu.h)
+    assert r.status_code == 200, r.text
+    assert cu.caja() == caja1 and r.json()["devuelto"] is None
+
+
+def test_si_la_cartera_cambia_entre_la_vista_previa_y_confirmar_la_foto_se_frena():
+    """23 AVGO, foto 28 → «completar 5». Antes de confirmar entra un archivo con esa
+    compra (fechada antes de la foto). Aplicar el «completar 5» viejo dejaba 33."""
+    cu = _Cuenta(pesos=[_cobro(1, 9, 326495.16, 326495.16), _compra(3, 9, "AVGO", 23, 14173.7, 500)])
+    j = cu.subir_foto(_foto("20/10/2026", [("Cedears", "ARS", [("AVGO", 28, 12650)])],
+                            pesos=500), confirmar=False)
+    assert [s["qty"] for s in j["to_seed"]] == [5.0]
+    cu.importar([_cobro(9, 10, 70868.5, 71368.5, 20), _compra(10, 10, "AVGO", 5, 14173.7, 500, 21)], [])
+    c = cu.c.post("/api/imports/confirm", headers=cu.h, json={"session_id": j["session_id"]})
+    assert c.status_code == 409, c.text
+    assert cu.qty("AVGO") == 28
+
+
+def test_renombrar_el_broker_entre_la_vista_previa_y_confirmar_no_frena_nada():
+    cu = _Cuenta(pesos=[_cobro(1, 9, 326495.16, 326495.16), _compra(3, 9, "AVGO", 23, 14173.7, 500),
+                        _cobro(20, 10, 1000000, 1000500, 3)])
+    j = cu.subir_foto(_foto("01/11/2026", [("Cedears", "ARS", [("AVGO", 23, 12650)])],
+                            pesos=900000), confirmar=False)
+    bid = cu.q("SELECT id FROM brokers WHERE user_id=? AND name=?", cu.uid, BM)[0]["id"]
+    r = cu.c.put(f"/api/brokers/{bid}", headers=cu.h, json={"name": "Bull Market 2", "currency": "ARS"})
+    assert r.status_code == 200, r.text
+    c = cu.c.post("/api/imports/confirm", headers=cu.h, json={"session_id": j["session_id"]})
+    assert c.status_code == 200, c.text
+    assert cu.caja("Bull Market 2") == 900000.0 and not c.json().get("caja_sin_ajustar")
+
+
+def test_la_cuenta_en_dolares_que_la_foto_adopta_cuenta_en_el_par():
+    """«Bull Market · USD» creada a mano, sin padre, con AVGO 5; la foto la adopta.
+    Sin releer el par después de adoptarla, esos 5 eran «no los tenías»."""
+    cu = _Cuenta(pesos=[_cobro(1, 9, 500, 500)])
+    conn = main.get_db()
+    with conn:
+        conn.execute("UPDATE users SET tier='pro' WHERE id=?", (cu.uid,))
+    conn.close()
+    r = cu.c.post("/api/brokers", headers=cu.h, json={"name": BMU, "currency": "USD"})
+    assert r.status_code == 200, r.text
+    cu.posicion_a_mano(broker=BMU, asset="AVGO", quantity=5, buy_price=200,
+                       entry_date="2026-09-10", asset_type="CEDEAR", currency="USD")
+    cu.subir_foto(_foto("20/10/2026", [("Cedears", "U$S", [("AVGOD", 5, 200)])],
+                        pesos=cu.caja(), dolares=cu.caja(BMU)))
+    assert cu.qty("AVGO") == 5
+
+
+def test_lo_guardado_con_otro_nombre_no_se_vende_solo():
+    """Importado antes de que existiera el renombre GOLD→B: la cartera dice GOLD,
+    la comparación B. La venta se escribiría como B, que no tiene lotes. Sin datos a
+    mano, ni otra cuenta, ni el freno del 50%: sólo esta guarda lo para."""
+    otros = [("KO", 10, 6000), ("MSFT", 10, 40000), ("NVDA", 10, 15000)]
+    cu = _Cuenta(pesos=[_cobro(1, 9, 3000000, 3000000), _compra(3, 9, "GOLD", 10, 30000, 2700000, 2)]
+                 + [_compra(3, 9, tk, q, p, 0, 10 + i) for i, (tk, q, p) in enumerate(otros)])
+    conn = main.get_db()
+    with conn:                                   # así quedó lo importado antes del renombre
+        conn.execute("UPDATE positions SET asset='GOLD' WHERE user_id=? AND asset='B'", (cu.uid,))
+        conn.execute("UPDATE import_normalized_tx SET asset_symbol='GOLD' WHERE asset_symbol='B' "
+                     "AND batch_id IN (SELECT id FROM import_batches WHERE user_id=?)", (cu.uid,))
+    conn.close()
+    assert cu.qty("GOLD") == 10
+    j = cu.subir_foto(_foto("20/10/2026", [("Cedears", "ARS", [("GOLD", 6, 30000)] + otros)],
+                            pesos=cu.caja()))
+    assert cu.ventas_de_ajuste() == 0 and cu.qty("GOLD") == 10
+    assert j["todo_coincide"] is False and "B" in j["message"]   # queda a la vista
+
+
+def test_lo_que_sobra_en_dolares_si_la_foto_lo_lista_en_pesos_se_pregunta():
+    """28 AVGO sólo en «· USD»; la foto no trae sección en dólares y dice 23 en pesos.
+    En el par sobran 5, pero sacarlos de la cuenta en dólares cruza de moneda (puede
+    que el resumen no traiga esa cuenta): se arma la venta y se pregunta."""
+    cu = _Cuenta(pesos=[_cobro(1, 9, 500, 500)], dolares=_cedears_en_dolares())
+    j = cu.subir_foto(_foto("20/10/2026",
+                            [("Cedears", "ARS", [("AVGO", 23, 12650), ("KO", 10, 6000),
+                                                 ("MSFT", 10, 40000), ("NVDA", 10, 15000)])],
+                            pesos=cu.caja(), dolares=cu.caja(BMU)), confirmar=False)
+    a_decidir = [d for d in j["no_reconciliable"] if d.get("requiere_aprobacion")]
+    assert [d["ticker"] for d in a_decidir] == ["AVGO"]
+    c = cu.c.post("/api/imports/confirm", headers=cu.h, json={"session_id": j["session_id"]})
+    assert c.status_code == 200, c.text
+    assert cu.qty("AVGO", BMU) == 28             # sin aprobar, no se vende
+    assert c.json()["skipped_pending_approval"] == 1
+
+
+def test_lo_archivado_sin_fecha_tampoco_se_recompra_y_al_restaurar_coincide():
+    cu = _Cuenta(pesos=[_cobro(1, 9, 100500, 100500), _compra(3, 9, "AL30", 1000, 80, 20500)])
+    q0 = cu.qty("AL30")
+    assert cu.c.post("/api/sections/archive", headers=cu.h,
+                     json={"section": "BONO|ARS"}).status_code == 200
+    texto = _foto("20/10/2026", [("Titulos Publicos", "ARS", [("AL30", q0, 80)])],
+                  pesos=cu.caja()).replace("Tenencias al 20/10/2026", "Tenencias al día")
+    aporte0 = cu.aportes_sinteticos()
+    j = cu.subir_foto(texto)
+    assert j["fecha_origen"] == "fallback_hoy"
+    assert cu.qty("AL30") == 0 and cu.aportes_sinteticos() == aporte0
+    arch = cu.c.get("/api/sections/archived", headers=cu.h).json()["archived"]
+    assert cu.c.post("/api/sections/restore", headers=cu.h,
+                     json={"archive_id": arch[0]["id"]}).status_code == 200
+    cu.subir_foto(texto)
+    assert cu.qty("AL30") == q0

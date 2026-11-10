@@ -74,14 +74,15 @@ def _norm(s) -> str:
     return (s or "").strip().upper()
 
 
-def _comparable(asset, asset_type=None) -> str:
+def _comparable(asset, asset_type=None, pata_dolar: bool = True) -> str:
     """El nombre con el que la cartera se compara contra la foto: la MISMA
     traducción que pasa la foto (`tenencia.ticker_comparable`). Ver ahí por qué."""
     from .tenencia import ticker_comparable
-    return ticker_comparable(asset, asset_type)
+    return ticker_comparable(asset, asset_type, pata_dolar=pata_dolar)
 
 
-def posiciones_por_ticker(conn, uid: int, brokers: List[str]) -> Dict[str, dict]:
+def posiciones_por_ticker(conn, uid: int, brokers: List[str], *,
+                          pata_dolar: bool = True) -> Dict[str, dict]:
     """Lo que la cartera tiene HOY en esos brokers, con el nombre de la comparación:
     `{ticker: {"q": cantidad, "inv": invertido, "nombres": {como está guardado},
     "tipo": asset_type}}`.
@@ -91,7 +92,8 @@ def posiciones_por_ticker(conn, uid: int, brokers: List[str]) -> Dict[str, dict]
     que pisa leen todos de acá, así que la traducción no puede faltar en uno.
     `nombres` sirve para lo contrario: un ajuste se escribe con el nombre de la
     comparación, así que si la cartera lo guarda con OTRO (GOLD, AL30D), la venta
-    no encontraría esos lotes — el modo que pisa no lo toca solo."""
+    no encontraría esos lotes — el modo que pisa no lo toca solo.
+    `pata_dolar=False` para un broker de afuera (ver `tenencia.ticker_comparable`)."""
     out: Dict[str, dict] = {}
     if not brokers:
         return out
@@ -100,7 +102,7 @@ def posiciones_por_ticker(conn, uid: int, brokers: List[str]) -> Dict[str, dict]
             f"SELECT asset, asset_type, SUM(quantity) q, SUM(invested) inv FROM positions "
             f"WHERE user_id=? AND COALESCE(is_cash,0)=0 AND broker IN ({ph}) "
             f"GROUP BY asset, asset_type", (uid, *brokers)):
-        k = _comparable(r["asset"], r["asset_type"])
+        k = _comparable(r["asset"], r["asset_type"], pata_dolar)
         if not k:
             continue
         d = out.setdefault(k, {"q": 0.0, "inv": 0.0, "nombres": set(), "tipo": r["asset_type"]})

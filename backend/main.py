@@ -7102,6 +7102,8 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
 #                'revertir'  → import_batches: status='reverted' (auditoría)
 #                'payload'   → archived_positions: se sacan del JSON las
 #                              posiciones de ese broker (ver _archivadas_de_brokers)
+#                'olvidar_origen' → plazos_fijos: la receta del alta pierde el
+#                              nombre del broker (_olvidar_origen_de_plazos_fijos)
 #                'conservar' → lo que no mueve ningún número si el broker no está:
 #                              · import_normalized_tx cuelga de un batch revertido
 #                              · deleted_ops_journal y dividendos_reemplazados
@@ -7134,9 +7136,10 @@ BROKER_POR_NOMBRE = {
     # sus imports quedan revertidos, así que ya no hay quién lo devuelva.
     "dividendos_reemplazados": ("json",   "conservar"),
     # El broker de donde salió la plata de un plazo fijo (receta del alta). Si el
-    # broker se borra el plazo fijo sigue (está en un banco): borrarlo después ya
-    # no tiene adónde devolver la plata, y no la devuelve.
-    "plazos_fijos":         ("json",      "conservar"),
+    # broker se borra el plazo fijo sigue (está en un banco), pero su receta
+    # olvida el nombre: borrarlo después no tiene adónde devolver la plata, y un
+    # broker nuevo con el mismo nombre no es esa cuenta.
+    "plazos_fijos":         ("json",      "olvidar_origen"),
     # La plantilla de columnas del importador (`mapping_json.defaults.broker`: el
     # broker fijo al que va todo el archivo). Es una PREFERENCIA del usuario, no un
     # dato de cartera (el reset del usuario tampoco la borra). Si el broker se borra
@@ -7290,6 +7293,8 @@ def _borrar_datos_de_brokers(conn, uid: int, nombres, motivo: str) -> dict:
                         "DELETE FROM archived_positions WHERE id=? AND user_id=?", (aid, uid))
                 se_fueron += se_van
             hechas[tabla] = se_fueron
+        elif al_borrar == "olvidar_origen":
+            hechas[tabla] = _olvidar_origen_de_plazos_fijos(conn, uid, nombres)
         elif al_borrar != "conservar":
             raise RuntimeError(f"BROKER_POR_NOMBRE: política de borrado desconocida "
                                f"{al_borrar!r} para {tabla}")
@@ -15927,9 +15932,15 @@ def _devolver_plata_del_plazo_fijo(conn, uid: int, row) -> Optional[dict]:
 
     Devuelve lo que movió, o None si no hay qué devolver: plata de afuera de
     Rendi, un plazo fijo de antes de que se guardara el origen (no se sabe de
-    dónde salió: no se adivina), uno ya cobrado (el cobro ya acreditó) o un
-    broker de origen que ya no existe."""
+    dónde salió: no se adivina), uno ya cobrado (el cobro ya acreditó), uno ya
+    VENCIDO (la plata puede haber vuelto por otro lado —el import de movimientos
+    del broker la trae— y devolverla otra vez la contaría dos veces: revisión del
+    2026-11-10; para eso está «Cobrar») o un broker de origen que ya no existe
+    (al borrarse, `_olvidar_origen_de_plazos_fijos` le saca el nombre a la
+    receta: uno nuevo con el mismo nombre no es esa cuenta)."""
     if row["closed_at"] is not None:
+        return None
+    if str(row["fecha_vencimiento"] or "")[:10] <= _iso_today():
         return None
     conocido, broker = _import_proyeccion.origen_plazo_fijo(row["undo_meta_json"])
     if not (conocido and broker and _broker_existe(conn, uid, broker)):
@@ -15961,6 +15972,29 @@ def _devolver_plata_del_plazo_fijo(conn, uid: int, row) -> Optional[dict]:
         _repair_monthly_chain(conn, uid, 'global')
     return {"broker": broker, "devuelto": credito,
             "autodeposito_anulado": autodep_native if sacado else 0.0}
+
+
+def _olvidar_origen_de_plazos_fijos(conn, uid: int, nombres) -> int:
+    """Al borrar (o vaciar) un broker, los plazos fijos que salieron de él dejan de
+    saber adónde devolver la plata: la receta pasa a «de una cuenta que ya no
+    está» (`broker` vacío, el nombre en `origen_borrado`). Sin esto, borrar el
+    broker, volver a importarlo con el mismo nombre y borrar el plazo fijo le
+    acreditaba al broker NUEVO una plata que nunca le debitaron (revisión del
+    2026-11-10: $50.000 de la nada). Devuelve cuántos tocó."""
+    nombres = set(nombres or ())
+    n = 0
+    for r in conn.execute("SELECT id, undo_meta_json FROM plazos_fijos "
+                          "WHERE user_id=? AND undo_meta_json IS NOT NULL", (uid,)).fetchall():
+        try:
+            meta = json.loads(r["undo_meta_json"]) or {}
+        except (TypeError, ValueError):
+            continue
+        if isinstance(meta, dict) and meta.get("broker") in nombres:
+            meta["origen_borrado"], meta["broker"] = meta["broker"], None
+            conn.execute("UPDATE plazos_fijos SET undo_meta_json=? WHERE id=? AND user_id=?",
+                         (json.dumps(meta), r["id"], uid))
+            n += 1
+    return n
 
 
 @app.delete("/api/plazos-fijos/{pid}")
@@ -46137,7 +46171,8 @@ def _marcar_cambios_de_ratio(conn, uid: int, pair, rec, seed_date: str) -> None:
 
 
 def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, current,
-                            seed_date, *, complete, currency="ARS", gate_over=False):
+                            seed_date, *, complete, currency="ARS", gate_over=False,
+                            pata_dolar=True):
     """Modo OVERRIDE (la foto PISA): sobre `rec`, reduce lo que Rendi tiene de MÁS
     (over) y —si `complete`— elimina lo que la foto NO lista (not_in_snapshot), con
     ventas transfer_out que cierran a costo (P&L 0, sin cash). Guardas duras (el
@@ -46156,8 +46191,9 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
     sibs = [b for b in pair_l if b != broker]
     # Con el nombre de la comparación (el mismo que trae `rec`): ver
     # `proyeccion.posiciones_por_ticker`.
-    sibling_assets = set(_import_proyeccion.posiciones_por_ticker(conn, uid, sibs))
-    _guardados = _import_proyeccion.posiciones_por_ticker(conn, uid, pair_l)
+    sibling_assets = set(_import_proyeccion.posiciones_por_ticker(
+        conn, uid, sibs, pata_dolar=pata_dolar))
+    _guardados = _import_proyeccion.posiciones_por_ticker(conn, uid, pair_l, pata_dolar=pata_dolar)
 
     # 🔴 SE SEPARAN LOS MOTIVOS DE FRENO, y no es cosmético: "tiene datos a
     # mano" y "el activo vive en la otra partición del par" son hipótesis
@@ -46238,6 +46274,10 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
     # safe-to-rebuild ya sacaron es una decisión que no puede aplicarse.
     if gate_over:
         _import_tenencia.marcar_over(rec)
+    elif rec.over_otra_moneda:
+        # Fuera del asesor, lo que sobra en una moneda que la foto no lista: la
+        # reducción cruza de moneda (puede que el resumen no traiga esa cuenta).
+        _import_tenencia.marcar_over(rec, solo=rec.over_otra_moneda)
     mx = conn.execute(
         f"SELECT MAX(n.date) d FROM {TX_VIVAS} "
         f"WHERE b.user_id=? "
@@ -46822,6 +46862,14 @@ def import_tenencia_preview(
             override_info["caja"] = {
                 "fecha": seed_date, "brokers": list(_par_caja),
                 "caja_por_broker": {_b: round(_cur, 6) for _b, _c, _cur, _t, _d in _cash_applied}}
+        if override_info is not None:
+            # Y contra qué cartera se calcularon las compras y ventas de la foto: son
+            # diferencias, y confirmar se frena si la cartera cambió
+            # (`_cartera_de_la_foto_cambio`).
+            override_info["tenencia"] = {
+                "brokers": list(pair), "cantidades": {
+                    a: round(d["q"], 6) for a, d in
+                    _import_proyeccion.posiciones_por_ticker(conn, uid, list(pair)).items()}}
         # row_index único en TODO el batch (holdings + ajustes de cash) → no rompe
         # el mapa raw_id↔row_index del confirm/revert.
         for _i, _t in enumerate(seed_txs):
@@ -47719,14 +47767,45 @@ def _caja_de_la_foto_cambio(conn, uid: int, session_id: str) -> Optional[dict]:
             "cuentas": cambiaron, "movimientos": len(posterior)}
 
 
-def _saltear_ajuste_de_caja_viejo(conn, uid: int, b_meta, data, txs, skip_set: set):
-    """En el confirm de una FOTO: si la caja cambió desde la vista previa
-    (`_caja_de_la_foto_cambio`), suma a `skip_set` las filas del ajuste de
-    efectivo y devuelve el motivo; si no, None. Va adentro del turno del confirm:
-    entre esta mirada y la escritura nadie más mueve la caja. Afuera del bloque
-    para que la transacción atómica siga corta (test_import_confirm_lock)."""
+def _cartera_de_la_foto_cambio(conn, uid: int, session_id: str) -> bool:
+    """¿Cambió lo que hay en las cuentas de la foto desde su vista previa?
+
+    Las compras y ventas que arma la foto son DIFERENCIAS contra la cartera de ese
+    momento («faltan 5 AVGO»), igual que el ajuste de efectivo. Si entre la vista
+    previa y confirmar entró otro archivo con esa compra, o se cargó o borró algo
+    a mano, aplicarlas la duplica: medido en la revisión del 2026-11-10, 23 AVGO,
+    foto 28, entra un archivo con los 5 → quedaban 33. Lo revertido ya se frenaba
+    aparte; esto cubre todo lo demás. Sin dato guardado (borradores de antes):
+    False, como hasta ahora."""
+    r = conn.execute("SELECT override_info FROM import_batches WHERE id=? AND user_id=?",
+                     (session_id, uid)).fetchone()
+    try:
+        ten = (json.loads((r["override_info"] if r else None) or "{}") or {}).get("tenencia")
+    except (TypeError, ValueError, AttributeError):
+        ten = None
+    if not ten:
+        return False
+    antes = {a: float(q or 0) for a, q in (ten.get("cantidades") or {}).items()}
+    ahora = {a: d["q"] for a, d in _import_proyeccion.posiciones_por_ticker(
+        conn, uid, list(ten.get("brokers") or [])).items()}
+    return any(abs(ahora.get(a, 0.0) - antes.get(a, 0.0)) > 1e-6 for a in set(antes) | set(ahora))
+
+
+def _revisar_foto_al_confirmar(conn, uid: int, b_meta, data, txs, skip_set: set):
+    """En el confirm de una FOTO, lo que pudo cambiar desde la vista previa:
+      · la cartera (`_cartera_de_la_foto_cambio`) → se frena entero: las compras
+        y ventas de la foto ya no llevan a la foto, hay que volver a subirla;
+      · la caja (`_caja_de_la_foto_cambio`) → sólo el ajuste de efectivo no entra
+        (suma sus filas a `skip_set`) y se devuelve el motivo; si no, None.
+    Va adentro del turno del confirm: entre esta mirada y la escritura nadie más
+    mueve nada. Afuera del bloque para que la transacción atómica siga corta
+    (test_import_confirm_lock)."""
     if not (b_meta and "tenencia" in str(b_meta["parser_format"] or "")):
         return None
+    if _cartera_de_la_foto_cambio(conn, uid, data.session_id):
+        raise HTTPException(409, "Tu cartera cambió desde que subiste la foto (entró otro "
+                                 "archivo o cargaste algo a mano): volvé a subirla para "
+                                 "compararla de nuevo.")
     motivo = _caja_de_la_foto_cambio(conn, uid, data.session_id)
     if motivo:
         skip_set |= {t.row_index for t in txs
@@ -47791,7 +47870,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
 
             # Filtrar filas que el usuario decidió omitir (y el ajuste de caja viejo)
             skip_set = set(data.skip_row_indices or [])
-            caja_sin_ajustar = _saltear_ajuste_de_caja_viejo(conn, uid, _b_meta, data, txs, skip_set)
+            caja_sin_ajustar = _revisar_foto_al_confirmar(conn, uid, _b_meta, data, txs, skip_set)
             # Y las que requieren aprobación EXPLÍCITA (opt-in): se omiten salvo
             # que vengan nombradas. Ver `tenencia.MARCA_APROBACION`.
             _aprobados = {str(x).strip().upper()
@@ -48455,15 +48534,17 @@ def _wallbit_reconcile_positions(conn, uid: int, holdings, cash_usd):
     snap = _import_tenencia.TenenciaSnapshot(holdings=holdings, date=seed_date, cash_usd=cash_usd)
     with conn:
         pair = broker_pair(conn, uid, "Wallbit")
-        # La cartera con el nombre de la comparación: la misma traducción que la
-        # foto (`proyeccion.posiciones_por_ticker`).
-        _pos = _import_proyeccion.posiciones_por_ticker(conn, uid, list(pair))
+        # La cartera con la misma traducción que la foto de Wallbit (`Holding`):
+        # los renombres de código, SIN juntar la pata dólar — es una regla de la
+        # Bolsa argentina y en Nueva York SPYD no es SPY (ver
+        # `tenencia.ticker_comparable`).
+        _pos = _import_proyeccion.posiciones_por_ticker(conn, uid, list(pair), pata_dolar=False)
         current = {a: d["q"] for a, d in _pos.items()}
         invested_by_asset = {a: d["inv"] for a, d in _pos.items()}
         rec = _import_tenencia.compute_reconcile(current, snap)
         seed_txs, ov = _tenencia_apply_override(
             conn, uid, "Wallbit", pair, rec, invested_by_asset, current,
-            seed_date, complete=True, currency="USD")
+            seed_date, complete=True, currency="USD", pata_dolar=False)
         # Cash true-up: Wallbit ES USD → el efectivo vive en el broker Wallbit (no en
         # un sibling '· USD' como los brokers ARS). Lleva el cash al de la foto.
         cur_cash = 0.0

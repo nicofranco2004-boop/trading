@@ -174,6 +174,9 @@ class ReconcileResult:
     # 05/12/2025), $558.000 de un aporte que nunca existió y -6% en vez de +77%.
     # Lo llena el caller (main._marcar_cambios_de_ratio), que tiene la base.
     por_ratio: dict = field(default_factory=dict)
+    # Lo que sobra en ESTA cuenta pero la foto lista sólo en la OTRA moneda
+    # (`compute_reconcile_par`): la reducción cruza de moneda y no se aplica sola.
+    over_otra_moneda: set = field(default_factory=set)
 
 
 _FECHA_EN_NOMBRE = re.compile(r"(20\d{2})[-_]?(\d{2})[-_]?(\d{2})")
@@ -211,7 +214,8 @@ def fecha_de_nombre_archivo(nombre: str) -> Optional[str]:
     return f"{y:04d}-{mo:02d}-{d:02d}"
 
 
-def ticker_comparable(ticker: Optional[str], asset_type: Optional[str] = None) -> str:
+def ticker_comparable(ticker: Optional[str], asset_type: Optional[str] = None, *,
+                      pata_dolar: bool = True) -> str:
     """El nombre con el que se COMPARAN la foto y la cartera. Una sola traducción
     para los dos lados: la foto pasa por acá (`normalizar_tickers`) y la cartera
     también (`proyeccion.posiciones_por_ticker`, `proyectar`).
@@ -225,13 +229,21 @@ def ticker_comparable(ticker: Optional[str], asset_type: Optional[str] = None) -
     porque «de AL30 no tenías nada»).
 
     Un fondo, una cripto o una moneda no cambian de código (misma regla que
-    `Holding`)."""
+    `Holding`).
+
+    `pata_dolar=False` para un broker de afuera (Wallbit): juntar la pata dólar
+    es una regla de la Bolsa argentina. En Nueva York SPYD y SPY son dos fondos
+    distintos, y juntarlos hacía que cada sincronización de Wallbit volviera a
+    comprar SPYD (revisión del 2026-11-10). Ahí la foto tampoco pasa por esa
+    regla: los dos lados quedan con la misma traducción."""
     t = (ticker or "").strip().upper()
     if not t:
         return t
     if (asset_type or "").upper() not in ("CRYPTO", "FIAT", "FUND"):
         from tickers_renombrados import ticker_importado
         t = ticker_importado(t) or t
+    if not pata_dolar:
+        return t
     from .tickers_cd import consolidate_cd
     return consolidate_cd(t, asset_type) or t
 
@@ -552,6 +564,11 @@ def compute_reconcile_par(por_moneda: Dict[str, Dict[str, float]],
     for tk, rq, sq in par.over:
         for c, (rc, parte) in _sacar(tk, rq - sq).items():
             partes[c].over.append((tk, rc, round(rc - parte, 6)))
+            # La foto no lista el activo en esta moneda pero sí en la otra: Rendi
+            # tiene de más en el par, pero sacarlo de acá cruza de moneda (puede
+            # ser que el resumen no traiga esta cuenta). Se arma y se pregunta.
+            if _foto(c, tk) <= EPS_QTY_ABS:
+                partes[c].over_otra_moneda.add(tk)
     for tk, rq in par.not_in_snapshot:
         for c, (rc, _parte) in _sacar(tk, rq).items():
             partes[c].not_in_snapshot.append((tk, rc))
@@ -715,7 +732,7 @@ def marcar_ausentes(rec: ReconcileResult) -> int:
 MOTIVO_OVER = "mas_que_la_foto"
 
 
-def marcar_over(rec: ReconcileResult) -> int:
+def marcar_over(rec: ReconcileResult, solo=None) -> int:
     """`over` pasa a decisión: la reducción queda ARMADA pero no se aplica sola.
 
     🔴 SÓLO EN CONTEXTO ASESOR, y el criterio es el mismo que ya se usó para
@@ -745,10 +762,13 @@ def marcar_over(rec: ReconcileResult) -> int:
     La venta se ARMA igual, así que aprobarla conserva todo lo que el override
     hace bien (fecha de ajuste, cierre a costo, P&L 0, `transfer_out`). Cambia
     quién decide, no qué pasa cuando se decide.
+
+    `solo`: marca sólo esos tickers (fuera del contexto asesor, lo que sobra en
+    una moneda que la foto no lista: `ReconcileResult.over_otra_moneda`).
     """
     marcados = 0
     for tk, rq, sq in rec.over:
-        if rq - sq <= 1e-9:
+        if rq - sq <= 1e-9 or (solo is not None and tk not in solo):
             continue
         rec.requieren_aprobacion.add(tk)
         rec.no_reconciliable.append({
