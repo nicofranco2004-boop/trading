@@ -800,6 +800,12 @@
   "symbol",
   "user_id"
  ],
+ "watchlist_banderas": [
+  "bandera",
+  "id",
+  "nombre",
+  "user_id"
+ ],
  "yfinance_cache": [
   "fetched_at",
   "kind",
