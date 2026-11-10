@@ -202,6 +202,91 @@ class ListaDelGraficoTest(unittest.TestCase):
         self.assertFalse(it["KO"]["is_today"])
 
 
+class CarteraDelGraficoTest(unittest.TestCase):
+    """La opción «Cartera» de la lista (Nico, 10/11): GET /api/watchlist/cartera.
+    La cartera se carga por HTTP, como la carga la persona; la cotización, por
+    el mismo `_fetch_batch_quotes` que la lista (simulado en el borde)."""
+
+    COTIZA = {
+        "NVDA": {"price": 167.51, "prev_close": 178.67, "change_pct": -6.25, "mercado": "us", "as_of": "2026-11-10", "is_today": True},
+        "TSLA.BA": {"price": 39960.0, "prev_close": 38500.0, "change_pct": 3.79, "mercado": "byma", "as_of": "2026-11-10", "is_today": True},
+        "GGAL.BA": {"price": 4900.0, "prev_close": 5005.0, "change_pct": -2.1, "mercado": "byma", "as_of": "2026-11-10", "is_today": True},
+        # El ADR de Nueva York: si apareciera, la cartera estaría cotizando lo que no es.
+        "GGAL": {"price": 30.0, "prev_close": 31.0, "change_pct": -3.2, "mercado": "us", "as_of": "2026-11-10", "is_today": True},
+        "TSLA": {"price": 375.89, "prev_close": 378.05, "change_pct": -0.57, "mercado": "us", "as_of": "2026-11-10", "is_today": True},
+    }
+
+    def setUp(self):
+        self.client = TestClient(main.app)
+        with main.db_abierta() as conn:
+            self.uid = _usuario(conn, "cartera")
+            self.otro = _usuario(conn, "otra-cartera")
+            # Pro: el plan gratis deja un solo broker.
+            conn.execute("UPDATE users SET tier='pro' WHERE id=?", (self.uid,))
+            conn.commit()
+        self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+        self.h_otro = {"Authorization": f"Bearer {main.create_token(self.otro)}"}
+        self.pedidos = []
+
+        def cotizar(syms, *a, **k):
+            self.pedidos.append(list(syms))
+            return {s: {"symbol": s, **self.COTIZA[s]} for s in syms if s in self.COTIZA}
+        self._p = [mock.patch.object(main, "_fetch_batch_quotes", cotizar), mock.patch("main._check_rate_limit")]
+        for p in self._p:
+            p.start()
+        for nombre, moneda in (("Schwab", "USD"), ("IOL", "ARS")):
+            r = self.client.post("/api/brokers", json={"name": nombre, "currency": moneda}, headers=self.h)
+            self.assertEqual(r.status_code, 200, r.text)
+
+    def tearDown(self):
+        for p in self._p:
+            p.stop()
+
+    def posicion(self, broker, asset, asset_type, h=None, **extra):
+        r = self.client.post("/api/positions", json={"broker": broker, "asset": asset, "quantity": 10,
+                                                     "buy_price": 100, "asset_type": asset_type, **extra},
+                             headers=h or self.h)
+        self.assertIn(r.status_code, (200, 201), r.text)
+
+    def cartera(self, h=None):
+        r = self.client.get("/api/watchlist/cartera", headers=h or self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def test_cada_activo_se_cotiza_con_la_regla_de_la_valuacion(self):
+        self.posicion("Schwab", "NVDA", "STOCK")
+        self.posicion("IOL", "TSLA", "CEDEAR")          # el CEDEAR cargado como «TSLA»
+        self.posicion("IOL", "GGAL", "ACCION")          # la acción argentina, en BYMA
+        it = {x["symbol"]: x for x in self.cartera()["items"]}
+        self.assertEqual({s: (x["cotiza"], x["local"]) for s, x in it.items()},
+                         {"NVDA": ("NVDA", False), "TSLA": ("TSLA.BA", False), "GGAL": ("GGAL.BA", True)})
+        # El precio y la variación son los del símbolo con que se cotiza: el
+        # CEDEAR en pesos, no la TSLA de Nueva York; GGAL de BYMA, no el ADR.
+        self.assertEqual(it["TSLA"]["price"], 39960.0)
+        self.assertAlmostEqual(it["TSLA"]["change"], 1460.0, places=6)
+        self.assertEqual(it["GGAL"]["change_pct"], -2.1)
+        self.assertEqual((it["TSLA"]["mercado"], it["NVDA"]["mercado"]), ("byma", "us"))
+        self.assertEqual(it["GGAL"]["cierra"], "17:00")
+        self.assertNotIn("GGAL", self.pedidos[-1])
+        self.assertNotIn("TSLA", self.pedidos[-1])
+
+    def test_uno_por_ticker_sin_efectivo_ni_fondos_y_solo_lo_tuyo(self):
+        self.posicion("Schwab", "NVDA", "STOCK")
+        self.posicion("Schwab", "NVDA", "STOCK")       # dos lotes, un renglón
+        self.posicion("IOL", "FCI:Balanz Ahorro", "FCI")
+        with main.db_abierta() as conn:
+            conn.execute("INSERT INTO positions (user_id, broker, asset, is_cash, invested) VALUES (?, 'Schwab', 'USD', 1, 500)",
+                         (self.uid,))
+            conn.commit()
+        self.assertEqual([x["symbol"] for x in self.cartera()["items"]], ["NVDA"])
+        # La de otra persona no aparece (ni siquiera tiene brokers).
+        self.assertEqual(self.cartera(self.h_otro)["items"], [])
+
+    def test_sin_cartera_vacia_y_sin_pedir_cotizaciones(self):
+        self.assertEqual(self.cartera()["items"], [])
+        self.assertEqual(self.pedidos, [])
+
+
 class CierreEnHoraArgentinaTest(unittest.TestCase):
     """Nueva York cierra a las 16 de allá: 18 de acá en noviembre (sin horario de
     verano allá) y 17 en julio (con)."""

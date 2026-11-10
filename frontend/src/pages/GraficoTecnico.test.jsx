@@ -472,6 +472,48 @@ describe('la lista al costado del gráfico', () => {
     expect(porEtiqueta(montado.contenedor, 'Agregar AAPL (Acción de EE.UU.)')).toBeNull()
   })
 
+  it('«Cartera»: lo que tenés, por tipo y por lo que más pesa; la bandera es la de tu lista; tocar lo abre', async () => {
+    const pedidosCartera = []
+    const anterior = delServidor['/watchlist']
+    delServidor = {
+      '/watchlist': anterior,
+      '/watchlist/cartera': async () => {
+        pedidosCartera.push(1)
+        return { items: [
+          { symbol: 'NVDA', cotiza: 'NVDA', asset_type: 'STOCK', local: false, price: 167.51, change: -11.16, change_pct: -6.25, mercado: 'us', en_horario: true, cierra: '18:00' },
+          { symbol: 'TSLA', cotiza: 'TSLA.BA', asset_type: 'CEDEAR', local: false, price: 39960, change: 1460, change_pct: 3.79, mercado: 'byma', en_horario: true, cierra: '17:00' },
+          { symbol: 'GGAL', cotiza: 'GGAL.BA', asset_type: 'ACCION', local: true, price: 4900, change: -105, change_pct: -2.1, mercado: 'byma', en_horario: false },
+        ] }
+      },
+    }
+    api.post.mockImplementation(async (url) => {
+      if (url === '/tecnico/lista') return { tenencias: [
+        { asset: 'GGAL', local: true, peso: 0.1, tipo: 'ACCION' }, { asset: 'NVDA', local: false, peso: 0.5, tipo: 'STOCK' },
+        { asset: 'TSLA', local: false, peso: 0.2, tipo: 'CEDEAR' },
+      ], lecturas: [] }
+      throw new Error(`POST inesperado ${url}`)
+    })
+    montado = await abrir('/analisis-tecnico?tab=grafico&activo=NVDA')
+    // No se pide hasta elegirla.
+    expect(pedidosCartera).toEqual([])
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Cartera'))
+    await esperar()
+    expect(pedidosCartera).toHaveLength(1)
+    expect(secciones(montado.contenedor)).toEqual(['Acciones de EE.UU.: NVDA', 'CEDEARs: TSLA', 'Acciones argentinas: GGAL'])
+    // El CEDEAR de tu cartera es el TSLA.BA de tu lista: lleva su bandera.
+    expect(porEtiqueta(montado.contenedor, 'Bandera de TSLA (CEDEAR)').atributos['aria-label']).toContain('CEDEARs')
+    // GGAL de BYMA es el GGAL.BA de tu lista (sin bandera); NVDA no la seguís: sin banderita.
+    expect(porEtiqueta(montado.contenedor, 'Bandera de NVDA')).toBeNull()
+    expect(porEtiqueta(montado.contenedor, 'TSLA, Tesla, CEDEAR: $ 39.960')).not.toBeNull()
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'GGAL,'))
+    await esperar()
+    expect(activoDe(montado.donde)).toBe('GGAL')
+    // Se acuerda de qué estabas viendo.
+    expect(JSON.parse(almacen.get('rendi_grafico_lista')).fuente).toBe('cartera')
+    // Sin «+» en tu cartera: se agrega desde la lista.
+    expect(porEtiqueta(montado.contenedor, 'Buscar y agregar un activo')).toBeNull()
+  })
+
   it('cerrada, el gráfico queda solo; se acuerda al volver a entrar', async () => {
     montado = await abrir('/analisis-tecnico?tab=grafico&activo=NVDA')
     await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Cerrar tu lista'))

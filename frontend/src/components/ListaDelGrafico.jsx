@@ -22,6 +22,10 @@
 //     dólares y el CEDEAR en pesos.
 //   · Abajo, la ficha corta del que estás mirando (sólo en la compu: en el
 //     celular el menú de cada renglón hace lo mismo).
+//   · Arriba, «Lista» o «Cartera» (Nico, 10/11): con «Cartera», lo que tenés,
+//     con los mismos renglones, agrupado por tipo y ordenado por lo que más
+//     pesa (GET /api/watchlist/cartera). La bandera de un activo de tu cartera
+//     es la que tiene en tu lista, si lo seguís.
 // Pendiente: en la pantalla completa del gráfico (vive en LecturaTecnica) la
 // lista no está.
 
@@ -38,7 +42,7 @@ import { opcionesDelBuscador, mismoGrafico } from '../utils/graficoTecnico'
 import { lecturaDeSeguido, nombreDeActivo } from '../utils/listaTecnica'
 import { clave } from '../utils/radiografia'
 import {
-  AGRUPAR, BANDERAS, ORDENAR, armarLista, banderaAlAgregar, colorDeBandera, enSuLugar, filaDelActivo, tipoDelLote,
+  AGRUPAR, BANDERAS, ORDENAR, ORDENAR_CARTERA, armarCartera, armarLista, banderaAlAgregar, colorDeBandera, enSuLugar, filaDelActivo, tipoDelLote,
   guardarVista, lecturaCorta, loTenes, mover, nombreDeBandera, numerosDe, textoDeLaRueda, textoLoTenes,
   tipoDeSimbolo, tipoInfo, vistaGuardada,
 } from '../utils/listaDelGrafico'
@@ -160,16 +164,32 @@ export default function ListaDelGrafico({ datos, activo, onElegir, deLaFicha = n
   const caja = useRef(null)
   useAltoHastaAbajo(caja, abierta)
   const titulo = cliente ? `Lista de ${cliente}` : 'Tu lista'
+  const tituloCartera = cliente ? `Cartera de ${cliente}` : 'Tu cartera'
+  // «Lista» (tu watchlist) o «Cartera» (lo que tenés).
+  const enCartera = vista.fuente === 'cartera'
+  const cartera = datos.cartera
+  useEffect(() => { if (enCartera && abierta && !cartera.pedida) cartera.cargar() }, [enCartera, abierta]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const { filtro, chips, secciones } = useMemo(
+  const lista = useMemo(
     () => armarLista({ filas: datos.filas, agrupar: vista.agrupar, filtro: vista.filtro, orden: vista.orden, nombres: datos.nombres }),
     [datos.filas, datos.nombres, vista.agrupar, vista.filtro, vista.orden])
+  const deTuCartera = useMemo(
+    () => armarCartera({ filas: cartera.filas, orden: vista.orden, oculto: hidden, pesos: cartera.pesos }),
+    [cartera.filas, cartera.pesos, vista.orden, hidden])
+  const { filtro, chips } = lista
+  const secciones = enCartera ? deTuCartera.secciones : lista.secciones
   // Lo que tenés del activo abierto (tus lotes, la cuenta de la ficha): el
   // gráfico es el de tu lote, y el renglón y la ficha corta lo siguen.
   const tipoTenido = deLaFicha?.activo === activo && deLaFicha.agg?.lots?.length ? tipoDelLote(deLaFicha.agg.lots[0]) : null
   const actual = filaDelActivo(datos.filas, activo, tipoTenido)
+  const actualCartera = filaDelActivo(cartera.filas, activo, tipoTenido)
   const plegadas = new Set(vista.plegadas)
-  const puedeMover = vista.orden === 'tuyo'
+  const puedeMover = !enCartera && vista.orden === 'tuyo'
+  // El renglón de tu lista que abre lo mismo que uno de tu cartera (su bandera).
+  const enTuLista = (f) => (f.deLaCartera ? filaDelActivo(datos.filas, f.simbolo, f.tipo) : f)
+  const cargando = enCartera ? cartera.cargando || (abierta && !cartera.pedida) : datos.cargando
+  const fallo = enCartera ? cartera.error : datos.error
+  const filasVisibles = enCartera ? cartera.filas : datos.filas
 
   // Esc cierra lo que haya abierto adentro (el menú, «Cómo se ve», el buscador)
   // y, en el celular, la hoja.
@@ -207,7 +227,7 @@ export default function ListaDelGrafico({ datos, activo, onElegir, deLaFicha = n
   return (
     <>
       <div ref={caja} style={PEGADA_ARRIBA} className={abierta ? 'contents lg:sticky lg:block lg:w-[336px] lg:shrink-0 lg:self-start' : 'hidden'}>
-        <section id="lista-del-grafico" ref={seccion} aria-label={titulo}
+        <section id="lista-del-grafico" ref={seccion} aria-label={enCartera ? tituloCartera : titulo}
           className="fixed inset-x-0 bottom-0 z-[60] flex h-[55vh] flex-col overflow-hidden rounded-t-xl border-t border-line-3 bg-bg-1 text-ink-0 shadow-2xl lg:absolute lg:inset-0 lg:z-auto lg:h-auto lg:rounded-xl lg:border lg:border-line lg:shadow-none">
           {/* La manija de la hoja, en el celular. */}
           <div aria-hidden="true" className="flex justify-center pb-0.5 pt-2 lg:hidden"><span className="h-1 w-10 rounded-full bg-line-3" /></div>
@@ -218,12 +238,24 @@ export default function ListaDelGrafico({ datos, activo, onElegir, deLaFicha = n
           ) : (
             <>
               <div className="flex h-12 shrink-0 items-center gap-1 pl-4 pr-1 lg:h-[46px] lg:pl-3.5 lg:pr-1.5">
-                <h2 className="text-[17px] font-semibold lg:text-[15px]">{titulo}</h2>
-                <span className="tabular ml-1 text-[14px] text-ink-2 lg:text-[13px]">{datos.filas.length}</span>
+                <h2 className="sr-only">{enCartera ? tituloCartera : titulo}</h2>
+                <div role="group" aria-label="Qué ver" className="inline-flex shrink-0 rounded-lg border border-line bg-bg-2 p-0.5">
+                  {[['lista', 'Lista', datos.filas.length], ['cartera', 'Cartera', cartera.pedida && !cartera.cargando ? cartera.filas.length : null]].map(([id, texto, n]) => (
+                    <button key={id} type="button" aria-pressed={vista.fuente === id}
+                      onClick={() => { cambiar({ fuente: id }); setMenu(null); setOpciones(false) }}
+                      className={`inline-flex min-h-9 items-center gap-1.5 rounded px-3 text-[14px] font-semibold transition-colors lg:min-h-[30px] lg:px-2.5 lg:text-[13px] ${
+                        vista.fuente === id ? 'bg-bg-3 text-ink-0' : 'text-ink-2 hover:text-ink-0'}`}>
+                      {texto}
+                      {n != null && <span className="tabular font-normal text-ink-2">{n}</span>}
+                    </button>
+                  ))}
+                </div>
                 <span className="flex-1" />
-                <BotonIcono etiqueta="Buscar y agregar un activo" onClick={() => { setBuscando(true); setOpciones(false); setMenu(null) }}>
-                  <Plus size={19} aria-hidden="true" />
-                </BotonIcono>
+                {!enCartera && (
+                  <BotonIcono etiqueta="Buscar y agregar un activo" onClick={() => { setBuscando(true); setOpciones(false); setMenu(null) }}>
+                    <Plus size={19} aria-hidden="true" />
+                  </BotonIcono>
+                )}
                 <BotonIcono etiqueta="Cómo se ve la lista" expandido={opciones} activo={opciones}
                   onClick={() => { setOpciones(o => !o); setMenu(null) }}>
                   <SlidersHorizontal size={18} aria-hidden="true" />
@@ -234,7 +266,7 @@ export default function ListaDelGrafico({ datos, activo, onElegir, deLaFicha = n
                 </BotonIcono>
               </div>
 
-              {chips.length > 1 && (
+              {!enCartera && chips.length > 1 && (
                 <div role="group" aria-label="Qué mostrar" className="flex shrink-0 gap-1.5 overflow-x-auto px-3 pb-2.5 scrollbar-none">
                   {chips.map(c => (
                     <button key={c.id} type="button" aria-pressed={filtro === c.id} onClick={() => cambiar({ filtro: c.id })}
@@ -260,13 +292,17 @@ export default function ListaDelGrafico({ datos, activo, onElegir, deLaFicha = n
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain border-t border-line lg:border-t-0">
-                {datos.cargando ? <CargandoLista />
-                  : datos.error ? (
+                {cargando ? <CargandoLista />
+                  : fallo ? (
                     <p className="px-4 py-4 text-[13px] text-ink-1">
-                      No pudimos traer tu lista.{' '}
-                      <button type="button" onClick={datos.reintentar} className="font-medium text-data-violet hover:underline">Probar de nuevo</button>
+                      {enCartera ? `No pudimos traer ${tituloCartera.toLowerCase()}.` : 'No pudimos traer tu lista.'}{' '}
+                      <button type="button" onClick={enCartera ? cartera.cargar : datos.reintentar} className="font-medium text-data-violet hover:underline">Probar de nuevo</button>
                     </p>
-                  ) : !datos.filas.length ? (
+                  ) : enCartera && !cartera.filas.length ? (
+                    <p className="px-4 py-5 text-[13px] text-ink-1">
+                      {cliente ? `La cartera de ${cliente}` : 'Tu cartera'} no tiene activos con gráfico todavía: el efectivo y los fondos no tienen.
+                    </p>
+                  ) : !enCartera && !datos.filas.length ? (
                     <div className="px-4 py-5 text-[13px] text-ink-1">
                       <p>Tu lista está vacía. Sumá los activos que querés seguir de cerca: los ves acá al lado del gráfico, con su precio y cuánto se movieron hoy.</p>
                       <button type="button" onClick={() => setBuscando(true)}
@@ -290,23 +326,32 @@ export default function ListaDelGrafico({ datos, activo, onElegir, deLaFicha = n
                             <span className="tabular font-medium text-ink-2">{sec.n}</span>
                           </button>
                         )}
-                        {!plegada && sec.filas.map(f => (
-                          <Renglon key={f.simbolo} f={f} sec={sec} actual={actual?.simbolo === f.simbolo} verVar={vista.verVar}
-                            tenes={loTenes(f, datos.tenencias)} nombres={datos.nombres}
-                            puedeMover={puedeMover} arrastrar={puedeMover && compu} arrastrando={arrastrando} soltar={soltar}
-                            onElegir={() => elegir(f.simbolo)}
-                            onBandera={() => { setMenu(m => (m?.simbolo === f.simbolo && !m.conAcciones ? null : { simbolo: f.simbolo, conAcciones: false })); setOpciones(false) }}
-                            onMenu={() => { setMenu({ simbolo: f.simbolo, conAcciones: true }); setOpciones(false) }}
-                            onMoverUno={(paso) => moverUno(f.simbolo, paso)}
-                            onArrastrar={setArrastrando} onSoltarSobre={setSoltar}
-                            onSoltar={(destino, despues) => { moverA(arrastrando, destino, despues); setArrastrando(null); setSoltar(null) }} />
-                        ))}
+                        {!plegada && sec.filas.map(f => {
+                          // En tu cartera, la bandera y el menú son los del renglón de tu
+                          // lista que abre lo mismo (si lo seguís); si no, no hay.
+                          const deLaLista = enTuLista(f)
+                          return (
+                            <Renglon key={f.simbolo} f={f} sec={sec} verVar={vista.verVar}
+                              actual={(enCartera ? actualCartera : actual)?.simbolo === f.simbolo}
+                              tenes={!enCartera && loTenes(f, datos.tenencias)} nombres={datos.nombres}
+                              bandera={deLaLista ? deLaLista.bandera : undefined} conBandera={!!deLaLista}
+                              puedeMover={puedeMover} arrastrar={puedeMover && compu} arrastrando={arrastrando} soltar={soltar}
+                              onElegir={() => elegir(f.simbolo)}
+                              onBandera={() => { if (!deLaLista) return; setMenu(m => (m?.simbolo === deLaLista.simbolo && !m.conAcciones ? null : { simbolo: deLaLista.simbolo, conAcciones: false })); setOpciones(false) }}
+                              onMenu={() => { if (!deLaLista) return; setMenu({ simbolo: deLaLista.simbolo, conAcciones: true }); setOpciones(false) }}
+                              onMoverUno={(paso) => moverUno(f.simbolo, paso)}
+                              onArrastrar={setArrastrando} onSoltarSobre={setSoltar}
+                              onSoltar={(destino, despues) => { moverA(arrastrando, destino, despues); setArrastrando(null); setSoltar(null) }} />
+                          )
+                        })}
                       </div>
                     )
                   })}
-                {!datos.cargando && !datos.error && datos.filas.length > 0 && (
+                {!cargando && !fallo && filasVisibles.length > 0 && (
                   <p className="px-4 pb-6 pt-3.5 text-[12.5px] leading-snug text-ink-2 lg:hidden">
-                    Tocá un activo para verlo en el gráfico. Mantenelo apretado para ponerle bandera, crear una alerta o sacarlo.
+                    {enCartera
+                      ? 'Tocá un activo para verlo en el gráfico. Lo que también está en tu lista muestra su bandera.'
+                      : 'Tocá un activo para verlo en el gráfico. Mantenelo apretado para ponerle bandera, crear una alerta o sacarlo.'}
                   </p>
                 )}
               </div>
@@ -319,7 +364,7 @@ export default function ListaDelGrafico({ datos, activo, onElegir, deLaFicha = n
               )}
 
               {vista.verFicha && !datos.cargando && !datos.error && (
-                <FichaCorta activo={activo} fila={actual} datos={datos} deLaFicha={deLaFicha} oculto={hidden} tipoTenido={tipoTenido}
+                <FichaCorta activo={activo} fila={actual} filaCartera={actualCartera} datos={datos} deLaFicha={deLaFicha} oculto={hidden} tipoTenido={tipoTenido}
                   destino={banderaAlAgregar({ agrupar: vista.agrupar, filtro })}
                   onBandera={() => actual && setMenu({ simbolo: actual.simbolo, conAcciones: false })} />
               )}
@@ -337,7 +382,7 @@ export default function ListaDelGrafico({ datos, activo, onElegir, deLaFicha = n
           )}
 
           {opciones && !buscando && (
-            <ComoSeVe vista={vista} onCambiar={(c) => cambiar(c)} onCerrar={() => setOpciones(false)} />
+            <ComoSeVe vista={vista} enCartera={enCartera} oculto={hidden} onCambiar={(c) => cambiar(c)} onCerrar={() => setOpciones(false)} />
           )}
         </section>
       </div>
@@ -375,10 +420,12 @@ function CargandoLista() {
 
 // ─── Un renglón ─────────────────────────────────────────────────────────────
 
-function Renglon({ f, sec, actual, verVar, tenes, nombres, puedeMover, arrastrar, arrastrando, soltar, onElegir, onBandera, onMenu, onMoverUno, onArrastrar, onSoltarSobre, onSoltar }) {
+// `bandera` / `conBandera`: en tu cartera, la del renglón de tu lista (sin él,
+// no hay banderita ni menú).
+function Renglon({ f, sec, actual, verVar, tenes, nombres, bandera = f.bandera, conBandera = true, puedeMover, arrastrar, arrastrando, soltar, onElegir, onBandera, onMenu, onMoverUno, onArrastrar, onSoltarSobre, onSoltar }) {
   const n = numerosDe(f)
   const t = tipoInfo(f.tipo)
-  const nb = nombreDeBandera(f.bandera, nombres)
+  const nb = nombreDeBandera(bandera, nombres)
   const { local } = lecturaDeSeguido(f.simbolo, f.assetType)
   const nombre = nombreDeActivo(f.ticker, local)
   const moneda = f.pesos ? '$' : 'US$'
@@ -406,17 +453,19 @@ function Renglon({ f, sec, actual, verVar, tenes, nombres, puedeMover, arrastrar
         actual ? 'bg-bg-2' : 'hover:bg-bg-2/60'} ${arrastrando === f.simbolo ? 'opacity-50' : ''}`}
       style={actual ? { boxShadow: 'inset 2px 0 0 rgb(var(--data-violet))' } : undefined}>
       {soltarAca && <span aria-hidden="true" className={`pointer-events-none absolute inset-x-0 h-0.5 bg-data-violet ${soltar.despues ? 'bottom-0' : 'top-0'}`} />}
-      <button type="button" onClick={onBandera} aria-haspopup="menu"
-        aria-label={`Bandera de ${f.ticker}${t.tag ? ` (${t.corto})` : ''}: ${f.bandera ? nb.texto : 'ninguna'}`}
-        className="hidden h-9 w-7 items-center justify-center lg:inline-flex">
-        <IconoBandera id={f.bandera} />
-      </button>
+      {conBandera ? (
+        <button type="button" onClick={onBandera} aria-haspopup="menu"
+          aria-label={`Bandera de ${f.ticker}${t.tag ? ` (${t.corto})` : ''}: ${bandera ? nb.texto : 'ninguna'}`}
+          className="hidden h-9 w-7 items-center justify-center lg:inline-flex">
+          <IconoBandera id={bandera} />
+        </button>
+      ) : <span aria-hidden="true" className="hidden h-9 w-7 lg:block" />}
       <button type="button" aria-current={actual ? 'true' : undefined}
         aria-label={`${f.ticker}${nombre ? `, ${nombre}` : ''}, ${t.corto}: ${f.precio == null ? 'sin precio' : `${moneda} ${n.precio}, ${n.pct} hoy`}${tenes ? ', lo tenés' : ''}. Ver en el gráfico`}
         onClick={() => { if (abrioElMenu.current) { abrioElMenu.current = false; return } onElegir() }}
         onContextMenu={(e) => { e.preventDefault(); cortar(); onMenu() }}
         onPointerDown={(e) => {
-          if (e.pointerType !== 'touch') return
+          if (e.pointerType !== 'touch' || !conBandera) return
           abrioElMenu.current = false
           cortar()
           reloj.current = setTimeout(() => { abrioElMenu.current = true; onMenu() }, MANTENER_MS)
@@ -560,7 +609,9 @@ function MenuDeBandera({ fila, conAcciones, nombres, puedeMover, onCerrar, onEle
 
 // ─── «Cómo se ve» ───────────────────────────────────────────────────────────
 
-function ComoSeVe({ vista, onCambiar, onCerrar }) {
+// En tu cartera no se agrupa por bandera (las banderas son de la lista): va por
+// tipo de activo, y «como los acomodás» es lo que más pesa.
+function ComoSeVe({ vista, enCartera = false, oculto = false, onCambiar, onCerrar }) {
   // Funciones y no componentes: un componente definido acá adentro se arma de
   // nuevo en cada cambio y el botón tocado pierde el foco.
   const opcion = (grupo, o) => {
@@ -571,7 +622,7 @@ function ComoSeVe({ vista, onCambiar, onCerrar }) {
         className={`flex min-h-[44px] w-full items-center gap-2.5 px-3.5 py-1 text-left ${elegida ? 'bg-bg-3' : ''}`}>
         <span className="min-w-0 flex-1">
           <span className="block text-[13px] font-medium text-ink-0">{o.titulo}</span>
-          <span className="block text-[11.5px] text-ink-2">{o.detalle}</span>
+          <span className="block text-[11.5px] text-ink-2">{oculto && o.conOjito ? o.conOjito : o.detalle}</span>
         </span>
         <Check size={15} aria-hidden="true" className={elegida ? 'text-data-violet' : 'invisible'} />
       </button>
@@ -590,16 +641,18 @@ function ComoSeVe({ vista, onCambiar, onCerrar }) {
     <div role="dialog" aria-label="Cómo se ve la lista"
       className="absolute inset-x-2.5 bottom-3 z-10 max-h-[calc(100%-24px)] overflow-y-auto rounded-xl border border-line-3 bg-bg-raised pb-2.5 pt-1.5 shadow-2xl lg:inset-x-auto lg:bottom-auto lg:right-2 lg:top-11 lg:w-[292px]">
       <div className="flex items-center pl-3.5 pr-1.5">
-        <span className="flex-1 pt-1.5 text-[11.5px] font-semibold text-ink-2">Agrupar</span>
+        <span className="flex-1 pt-1.5 text-[11.5px] font-semibold text-ink-2">{enCartera ? 'Tu cartera' : 'Agrupar'}</span>
         <button type="button" onClick={onCerrar} aria-label="Cerrar «Cómo se ve»"
           className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-ink-2 hover:text-ink-0 lg:h-[30px] lg:w-[30px]">
           <X size={14} aria-hidden="true" />
         </button>
       </div>
-      {AGRUPAR.map(o => opcion('agrupar', o))}
+      {enCartera
+        ? <p className="px-3.5 pb-1 pt-1 text-[12.5px] text-ink-1">Va agrupada por tipo de activo: EE.UU., CEDEARs, argentinas, cripto y bonos.</p>
+        : AGRUPAR.map(o => opcion('agrupar', o))}
       <div className="my-1.5 h-px bg-line-2" />
       <div className="px-3.5 pb-1 pt-1 text-[11.5px] font-semibold text-ink-2">Ordenar adentro de cada grupo</div>
-      {ORDENAR.map(o => opcion('orden', o))}
+      {(enCartera ? ORDENAR_CARTERA : ORDENAR).map(o => opcion('orden', o))}
       <div className="my-1.5 h-px bg-line-2" />
       <div className="px-3.5 pb-1 pt-1 text-[11.5px] font-semibold text-ink-2">Mostrar</div>
       {interruptor('Variación en plata (Var.)', vista.verVar, { verVar: !vista.verVar })}
@@ -702,11 +755,14 @@ function paraGuardar(simbolo, local) {
   return { simbolo: s, assetType: tipoDeSimbolo(s) === 'arg' ? 'STOCK' : null }
 }
 
-function FichaCorta({ activo, fila, datos, deLaFicha, oculto, destino, tipoTenido, onBandera }) {
+// `fila`: el renglón de tu lista (bandera, sacar); `filaCartera`: el de tu
+// cartera, si ya se trajo: da el precio de lo que tenés y no seguís.
+function FichaCorta({ activo, fila, filaCartera = null, datos, deLaFicha, oculto, destino, tipoTenido, onBandera }) {
   const sym = fila?.simbolo || String(activo || '').toUpperCase()
   const { asset, local: localDeLaLista } = lecturaDeSeguido(sym, fila?.assetType)
   const ticker = fila?.ticker || asset || sym
-  const tipo = fila?.tipo || tipoTenido || tipoDeSimbolo(sym)
+  const conPrecio = fila || filaCartera
+  const tipo = fila?.tipo || filaCartera?.tipo || tipoTenido || tipoDeSimbolo(sym)
   const t = tipoInfo(tipo)
   // Si es de BYMA lo dice la ficha del activo abierto (tus lotes); si no, la regla de lo que no tenés.
   const local = deLaFicha && deLaFicha.activo === activo ? !!deLaFicha.accionLocal : localDeLaLista
@@ -715,9 +771,9 @@ function FichaCorta({ activo, fila, datos, deLaFicha, oculto, destino, tipoTenid
   const tenes = agg?.lots?.length ? textoLoTenes({ qty: agg.qty, pnlPct: agg.pnlPct, tipo, ticker, oculto }) : null
   const nombre = nombreDeActivo(ticker, local)
   const nb = fila ? nombreDeBandera(fila.bandera, datos.nombres) : null
-  const n = fila ? numerosDe(fila) : null
-  const rueda = textoDeLaRueda(fila)
-  const pesos = fila ? fila.pesos : sym.endsWith('.BA')
+  const n = conPrecio ? numerosDe(conPrecio) : null
+  const rueda = textoDeLaRueda(conPrecio)
+  const pesos = conPrecio ? conPrecio.pesos : sym.endsWith('.BA')
   const alerta = `/alertas?new=${encodeURIComponent(fila ? miradaSinTenencia(sym, fila.assetType).simboloPrecio : paraGuardar(sym, local).simbolo)}`
 
   return (
@@ -739,7 +795,7 @@ function FichaCorta({ activo, fila, datos, deLaFicha, oculto, destino, tipoTenid
           </button>
         )}
       </div>
-      {n && fila.precio != null && (
+      {n && conPrecio.precio != null && (
         <div className="flex items-baseline gap-2">
           <span className="tabular text-[22px] font-semibold tracking-tight">{pesos ? '$' : 'US$'} {n.precio}</span>
           <span className={`tabular text-[13.5px] font-medium ${TONO[n.tono]}`}>{n.cambio}</span>

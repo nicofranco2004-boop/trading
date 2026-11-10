@@ -18,6 +18,12 @@
 // Separar EE.UU. de CEDEARs no necesita banderas: «Por tipo de activo» se arma
 // solo, con la regla de toda la app para saber qué es cada símbolo
 // (tickers.inferType, accionLocal.esLocalSinTenencia).
+//
+// La opción «Cartera» (Nico, 10/11): el mismo panel muestra lo que tenés, con
+// los mismos renglones, agrupado por tipo y ordenado por lo que más pesa. Sale
+// de GET /api/watchlist/cartera: cada activo con el nombre con que se abre en
+// el gráfico (el de tus lotes) y cotizado con la regla de la valuación (tu
+// CEDEAR en pesos, tu acción argentina en BYMA).
 
 import { inferType, isBondPosition } from './tickers'
 import { esLocalSinTenencia, esLoteLocal } from './accionLocal'
@@ -27,6 +33,7 @@ import { lecturaDeSeguido } from './listaTecnica'
 import { clave, tendencia, fuerza } from './radiografia'
 import { mismoGrafico } from './graficoTecnico'
 import { nfmt, pctVar, pctVarSign, pctSigned } from './format'
+import { ordenConElOjito } from './parteDeTuPlata'
 import { leer, guardar } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
 
@@ -103,16 +110,36 @@ export function tipoDeSimbolo(simbolo, assetType = null) {
 // que termina en `.BA` cotiza en BYMA, en pesos.
 const enPesos = (simbolo) => String(simbolo || '').toUpperCase().endsWith('.BA')
 
-/** Un activo de la watchlist (lo que manda GET /api/watchlist) como renglón. */
+/** Qué es un activo de tu cartera (GET /api/watchlist/cartera): lo dice tu
+ *  lote, no el nombre. `cotiza` es el símbolo con que se valúa: tu TSLA
+ *  cargado como CEDEAR cotiza «TSLA.BA» y es el CEDEAR; tu GGAL de Schwab
+ *  cotiza «GGAL» y es la de Nueva York; `local`, la acción argentina en BYMA. */
+export function tipoEnTuCartera(it) {
+  const s = String(it?.symbol || '').toUpperCase()
+  const cotiza = String(it?.cotiza || s).toUpperCase()
+  if (isCrypto(s)) return 'cripto'
+  if (isBondPosition({ asset: s, asset_type: it?.asset_type })) return 'bono'
+  if (it?.local) return 'arg'
+  if (cotiza.endsWith('.BA')) return 'cedear'
+  const t = tipoDeSimbolo(s, it?.asset_type)
+  return t === 'arg' ? 'eeuu' : t
+}
+
+/** Un activo de la watchlist (lo que manda GET /api/watchlist) como renglón.
+ *  Uno de tu cartera (trae `cotiza`) también: su tipo y su moneda los dice el
+ *  lote (tipoEnTuCartera), y `local` si es de BYMA. */
 export function filaDe(it) {
   const simbolo = String(it?.symbol || '').toUpperCase()
   const { asset } = lecturaDeSeguido(simbolo, it?.asset_type)
+  const deLaCartera = typeof it?.cotiza === 'string'
   return {
     simbolo,
     ticker: asset || simbolo,
     assetType: it?.asset_type || null,
-    tipo: tipoDeSimbolo(simbolo, it?.asset_type),
-    pesos: enPesos(simbolo),
+    tipo: deLaCartera ? tipoEnTuCartera(it) : tipoDeSimbolo(simbolo, it?.asset_type),
+    pesos: enPesos(deLaCartera ? it.cotiza : simbolo),
+    deLaCartera,
+    local: deLaCartera ? !!it.local : null,
     precio: Number.isFinite(it?.price) ? it.price : null,
     cambio: Number.isFinite(it?.change) ? it.change : null,
     pct: Number.isFinite(it?.change_pct) ? it.change_pct : null,
@@ -204,6 +231,48 @@ export function armarLista({ filas = [], agrupar = 'bandera', filtro = 'todas', 
       mixta: agrupar === 'nada' || new Set(g.its.map(f => f.tipo)).size > 1,
     }))
   return { filtro: vale, chips, secciones }
+}
+
+// En tu cartera, «como los acomodás» es lo que más pesa (la parte de tu plata
+// que es cada uno: `tenencias` del servidor, LA valuación de «Tu lista»).
+export const ORDENAR_CARTERA = Object.freeze([
+  { id: 'tuyo', titulo: 'Lo que más pesa', detalle: 'Arriba lo que es más parte de tu plata', conOjito: 'Con «Ocultar saldos», por nombre' },
+  { id: 'ticker', titulo: 'Por ticker', detalle: 'De la A a la Z' },
+  { id: 'hoy', titulo: 'Lo que más subió hoy', detalle: 'Arriba lo que más subió' },
+])
+
+/** La parte de tu plata que es cada activo de tu cartera, por su clave
+ *  (activo + si es de BYMA): de `tenencias` (POST /api/tecnico/lista). */
+export function pesosDeTuCartera(tenencias = []) {
+  const out = new Map()
+  for (const t of tenencias || []) {
+    const k = clave(String(t.asset || '').toUpperCase(), t.local)
+    out.set(k, (out.get(k) || 0) + (t.peso || 0))
+  }
+  return out
+}
+
+/**
+ * Las secciones de tu cartera: por tipo de activo, siempre (las banderas son de
+ * la lista). `orden` 'tuyo' = lo que más pesa; con «Ocultar saldos», por nombre
+ * (cuánto pesa también es información de tu plata: parteDeTuPlata.ordenConElOjito).
+ * `pesos`: los de pesosDeTuCartera. → { secciones } con la forma de armarLista.
+ */
+export function armarCartera({ filas = [], orden = 'tuyo', oculto = false, pesos = new Map() }) {
+  const pesoDe = (f) => pesos.get(clave(f.ticker, f.local)) || 0
+  const ordenar = (its) => {
+    if (orden === 'ticker') return [...its].sort((a, b) => a.ticker.localeCompare(b.ticker) || a.simbolo.localeCompare(b.simbolo))
+    if (orden === 'hoy') return [...its].sort((a, b) => (b.pct ?? -Infinity) - (a.pct ?? -Infinity))
+    return ordenConElOjito(its, oculto, { nombre: f => f.ticker, sinOjito: (a, b) => pesoDe(b) - pesoDe(a) })
+  }
+  const secciones = TIPOS
+    .map(t => ({ t, its: filas.filter(f => f.tipo === t.id) }))
+    .filter(x => x.its.length)
+    .map(({ t, its }) => ({
+      id: `cartera:${t.id}`, titulo: t.titulo, conNombre: true, bandera: null,
+      sub: monedasDe(its), n: its.length, filas: ordenar(its), mixta: false,
+    }))
+  return { secciones }
 }
 
 /** Con qué bandera entra lo que agregás: la que estás mirando (agrupado por
@@ -341,8 +410,9 @@ export function textoLoTenes({ qty, pnlPct, tipo, ticker, oculto = false }) {
 
 // ─── «Cómo se ve» y si está abierta: en este navegador ─────────────────────
 
+// `fuente`: 'lista' (tu watchlist) o 'cartera' (lo que tenés).
 export const VISTA_DE_ENTRADA = Object.freeze({
-  abierta: null, agrupar: 'bandera', orden: 'tuyo', filtro: 'todas', verVar: true, verFicha: true, plegadas: [],
+  abierta: null, fuente: 'lista', agrupar: 'bandera', orden: 'tuyo', filtro: 'todas', verVar: true, verFicha: true, plegadas: [],
 })
 
 /** Lo guardado (o lo de entrada). `abierta` null = nunca se tocó: la pantalla
@@ -353,6 +423,7 @@ export function vistaGuardada() {
     if (!g || typeof g !== 'object') return { ...VISTA_DE_ENTRADA }
     return {
       abierta: typeof g.abierta === 'boolean' ? g.abierta : null,
+      fuente: g.fuente === 'cartera' ? 'cartera' : 'lista',
       agrupar: AGRUPAR.some(a => a.id === g.agrupar) ? g.agrupar : VISTA_DE_ENTRADA.agrupar,
       orden: ORDENAR.some(o => o.id === g.orden) ? g.orden : VISTA_DE_ENTRADA.orden,
       filtro: typeof g.filtro === 'string' && g.filtro.length < 20 ? g.filtro : 'todas',

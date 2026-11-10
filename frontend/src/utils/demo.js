@@ -1,6 +1,6 @@
 // demo — modo "probá Rendi sin login" con portfolio simulado.
 // ═══════════════════════════════════════════════════════════════════════════
-import { isBondTicker } from './tickers'
+import { isBondTicker, inferType } from './tickers'
 import { claveSemanaISO } from './semanas'
 import { hoyISO, fechaISO } from './fecha'
 import { pctTxt } from './format'
@@ -1899,6 +1899,34 @@ const DEMO_CAGR = (() => {
   return { cagr: +(cagr * 100).toFixed(2), months: monthsCount }
 })()
 
+// La cartera para la lista del gráfico (GET /watchlist/cartera del demo).
+function _carteraDelGrafico(posiciones) {
+  const ars = new Set(BROKERS.filter(b => b.currency === 'ARS').map(b => b.name))
+  const vistos = new Set()
+  const out = []
+  for (const p of posiciones) {
+    const asset = String(p.asset || '').toUpperCase()
+    if (p.is_cash || !asset || asset === 'USD' || asset === 'USDT' || asset.startsWith('FCI:') || vistos.has(asset)) continue
+    vistos.add(asset)
+    const enPesos = ars.has(p.broker) && !esCriptoDelDemo(asset)
+    const cotiza = enPesos ? `${asset}.BA` : asset
+    const precio = PRICES[cotiza] ?? null
+    const antes = PREV_CLOSE[cotiza] ?? null
+    out.push({
+      symbol: asset, cotiza, asset_type: p.asset_type || null,
+      local: enPesos && inferType(asset) === 'stock_ar',
+      price: precio,
+      change: precio != null && antes != null ? +(precio - antes).toFixed(6) : null,
+      change_pct: precio != null && antes ? +((precio / antes - 1) * 100).toFixed(2) : null,
+      mercado: esCriptoDelDemo(asset) ? 'cripto' : enPesos ? 'byma' : 'us',
+      en_horario: false, cierra: esCriptoDelDemo(asset) ? null : enPesos ? '17:00' : '18:00',
+    })
+  }
+  return out
+}
+// Qué es cada activo: la regla de la app (tickers.inferType).
+const esCriptoDelDemo = (s) => inferType(s) === 'crypto'
+
 // Las banderas de la lista al costado del gráfico, en el orden del servidor
 // (main.BANDERAS_DE_LA_LISTA; utils/listaDelGrafico.BANDERAS).
 const _BANDERAS_DEMO = ['azul', 'naranja', 'verde', 'violeta', 'rosa', 'cian', 'rojo']
@@ -2992,6 +3020,14 @@ export function handleDemoRequest(method, path, body) {
       // banderas en orden, con el nombre que les puso el visitante.
       const banderas = _BANDERAS_DEMO.map(id => ({ id, nombre: overlay.banderas?.[id] || null }))
       return { items, banderas, ..._ruedaDemo(new Date(), items.length) }
+    }
+    if (basePath === '/watchlist/cartera') {
+      // La opción «Cartera» de la lista del gráfico, con la forma del servidor
+      // (main.watchlist_cartera): uno por ticker, en el orden de los lotes, con el
+      // símbolo con que se cotiza (la regla de la valuación) y su variación del
+      // día (la de Posiciones del demo: PRICES y PREV_CLOSE).
+      const items = _carteraDelGrafico([...POSITIONS, ...overlay.positions])
+      return { items, ..._ruedaDemo(new Date(), items.length) }
     }
     if (basePath === '/dolar')       return DOLAR
     if (basePath === '/benchmarks')  return BENCHMARKS

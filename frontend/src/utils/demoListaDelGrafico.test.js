@@ -42,6 +42,19 @@ describe('el demo guarda las banderas del visitante', () => {
     expect(simbolos.map(s => lugar[s])).toEqual(simbolos.map((_, i) => i))
   })
 
+  it('«Cartera»: lo del demo, uno por ticker, cotizado como lo valúa Posiciones', () => {
+    const { items } = handleDemoRequest('GET', '/watchlist/cartera')
+    const de = Object.fromEntries(items.map(x => [x.symbol, x]))
+    // Sin el efectivo; AAPL una vez (el primer lote, el de Schwab).
+    expect(Object.keys(de)).toEqual(['NVDA', 'AAPL', 'MSFT', 'TSLA', 'SPY', 'GGAL', 'YPFD', 'AL30', 'BTC', 'ETH', 'SOL'])
+    expect([de.GGAL.cotiza, de.GGAL.local]).toEqual(['GGAL.BA', true])
+    expect([de.AL30.cotiza, de.AL30.local]).toEqual(['AL30.BA', false])
+    expect([de.NVDA.cotiza, de.BTC.cotiza, de.BTC.mercado]).toEqual(['NVDA', 'BTC', 'cripto'])
+    // La variación es la de Posiciones del demo (+4,4 % NVDA, la del mapa de calor).
+    expect(de.NVDA.change_pct).toBeCloseTo(4.4, 1)
+    expect(de.NVDA.change).toBeGreaterThan(0)
+  })
+
   it('una bandera que no existe no se nombra', () => {
     const r = handleDemoRequest('PUT', '/watchlist/banderas/dorada', { nombre: 'x' })
     expect(r.__demoBlocked).toBe(true)

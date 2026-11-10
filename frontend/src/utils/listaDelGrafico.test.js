@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, it, expect, beforeEach } from 'vitest'
 import { instalarNavegadorMinimo } from '../testing/navegadorMinimo'
 import {
-  BANDERAS, armarLista, banderaAlAgregar, colorDeBandera, enSuLugar, filaDe, filaDelActivo, guardarVista,
+  BANDERAS, armarCartera, armarLista, banderaAlAgregar, pesosDeTuCartera, tipoEnTuCartera, colorDeBandera, enSuLugar, filaDe, filaDelActivo, guardarVista,
   lecturaCorta, loTenes, mover, nombreDeBandera, nombresDeBanderas, numerosDe, textoDeLaRueda, textoLoTenes,
   tipoDeSimbolo, tipoDelLote, vistaGuardada, VISTA_DE_ENTRADA,
 } from './listaDelGrafico'
@@ -189,6 +189,57 @@ describe('los números y la ficha corta', () => {
     expect(textoLoTenes({ qty: 0.05, pnlPct: -0.1, tipo: 'cripto', ticker: 'BTC' })).toBe('0,05 BTC · −10,0% desde que compraste')
     expect(textoLoTenes({ qty: 8, pnlPct: 0.224, tipo: 'eeuu', ticker: 'NVDA', oculto: true })).toBe('+22,4% desde que compraste')
     expect(textoLoTenes({ qty: 0 })).toBeNull()
+  })
+})
+
+describe('la opción «Cartera»: lo que tenés', () => {
+  // Como lo manda GET /api/watchlist/cartera: el nombre de tus lotes y con qué
+  // se cotiza (la regla de la valuación del servidor).
+  const items = [
+    { symbol: 'NVDA', cotiza: 'NVDA', asset_type: 'STOCK', local: false, price: 167.51, change: -11.16, change_pct: -6.25 },
+    { symbol: 'TSLA', cotiza: 'TSLA.BA', asset_type: 'CEDEAR', local: false, price: 39960, change: 1460, change_pct: 3.79 },
+    { symbol: 'GGAL', cotiza: 'GGAL.BA', asset_type: 'ACCION', local: true, price: 4900, change: -105, change_pct: -2.1 },
+    { symbol: 'AGRO', cotiza: 'AGRO', asset_type: 'STOCK', local: false, price: 9.1, change: 0.1, change_pct: 1.1 },
+    { symbol: 'AL30', cotiza: 'AL30.BA', asset_type: 'BONO', local: true, price: 78500, change: 200, change_pct: 0.26 },
+    { symbol: 'BTC', cotiza: 'BTC', asset_type: 'CRYPTO', local: false, price: 81595, change: 2190, change_pct: 2.76 },
+  ]
+  const filas = items.map(filaDe)
+  it('qué es cada uno lo dice tu lote: tu «TSLA» cargado como CEDEAR es el CEDEAR, en pesos', () => {
+    expect(filas.map(f => [f.simbolo, f.tipo, f.pesos])).toEqual([
+      ['NVDA', 'eeuu', false], ['TSLA', 'cedear', true], ['GGAL', 'arg', true],
+      // Un ticker argentino que tenés afuera de BYMA es el de Nueva York.
+      ['AGRO', 'eeuu', false], ['AL30', 'bono', true], ['BTC', 'cripto', false],
+    ])
+    expect(tipoEnTuCartera({ symbol: 'GGAL', cotiza: 'GGAL', local: false })).toBe('eeuu')
+    expect(filas.every(f => f.deLaCartera)).toBe(true)
+    expect(filaDe({ symbol: 'TSLA' }).deLaCartera).toBe(false)
+  })
+  it('por tipo de activo, y adentro lo que más pesa; con «Ocultar saldos», por nombre', () => {
+    const pesos = pesosDeTuCartera([
+      { asset: 'NVDA', local: false, peso: 0.3 }, { asset: 'AGRO', local: false, peso: 0.1 },
+      { asset: 'TSLA', local: false, peso: 0.2 }, { asset: 'GGAL', local: true, peso: 0.05 },
+    ])
+    const { secciones } = armarCartera({ filas, pesos })
+    expect(secciones.map(s => [s.titulo, s.filas.map(f => f.simbolo)])).toEqual([
+      ['Acciones de EE.UU.', ['NVDA', 'AGRO']],
+      ['CEDEARs', ['TSLA']],
+      ['Acciones argentinas', ['GGAL']],
+      ['Cripto', ['BTC']],
+      ['Bonos', ['AL30']],
+    ])
+    expect(secciones[0].id).toBe('cartera:eeuu')
+    const oculto = armarCartera({ filas, pesos, oculto: true }).secciones[0].filas.map(f => f.simbolo)
+    // Por nombre: el orden por peso dice cuál es más plata tuya.
+    expect(oculto).toEqual(['AGRO', 'NVDA'])
+    expect(armarCartera({ filas, pesos, orden: 'hoy' }).secciones[0].filas.map(f => f.simbolo)).toEqual(['AGRO', 'NVDA'])
+  })
+  it('qué se ve se recuerda: lista o cartera', () => {
+    instalarNavegadorMinimo()
+    expect(vistaGuardada().fuente).toBe('lista')
+    guardarVista({ ...VISTA_DE_ENTRADA, fuente: 'cartera' })
+    expect(vistaGuardada().fuente).toBe('cartera')
+    localStorage.setItem('rendi_grafico_lista', JSON.stringify({ fuente: 'otra' }))
+    expect(vistaGuardada().fuente).toBe('lista')
   })
 })
 

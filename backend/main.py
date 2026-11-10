@@ -51761,8 +51761,6 @@ def watchlist_list(uid: int = Depends(get_effective_user)):
     nombre que les puso la persona (None = sin nombre). El orden de `items`
     sigue siendo el de siempre (lo último agregado primero): el inicio lo usa
     así; la lista del gráfico se ordena con `orden`."""
-    from alerts_engine import rueda_en_horario
-    from home.market import mercado_de, cierre_en_hora_argentina
     conn = get_db()
     try:
         rows = conn.execute(
@@ -51775,27 +51773,79 @@ def watchlist_list(uid: int = Depends(get_effective_user)):
         items = [dict(r) for r in rows]
         nombres = {r["bandera"]: r["nombre"] for r in conn.execute(
             "SELECT bandera, nombre FROM watchlist_banderas WHERE user_id = ?", (uid,)).fetchall()}
-        # Enrich con quotes (batch)
-        symbols = [it["symbol"] for it in items]
-        quotes = _fetch_batch_quotes(symbols) if symbols else {}
-        ahora = datetime.now(timezone.utc)
-        for it in items:
-            q = quotes.get(it["symbol"])
-            it["price"] = q["price"] if q else None
-            it["change_pct"] = q["change_pct"] if q else None
-            it["change"] = (round(q["price"] - q["prev_close"], 6)
-                            if q and q.get("price") is not None and q.get("prev_close") is not None else None)
-            it["as_of"] = q.get("as_of") if q else None
-            it["is_today"] = bool(q.get("is_today")) if q else False
-            it["mercado"] = mercado_de(it["symbol"])
-            it["en_horario"] = rueda_en_horario(it["mercado"], ahora)
-            it["cierra"] = cierre_en_hora_argentina(it["mercado"], ahora)
-        # Cada cotización vive 60 s en el cache de _fetch_batch_quotes: "ahora"
-        # es la hora del dato con ese margen.
-        return {"items": items, **estado_de_rueda(items), "actualizado": _ahora_iso(),
-                "banderas": [{"id": b, "nombre": nombres.get(b)} for b in BANDERAS_DE_LA_LISTA]}
     finally:
         conn.close()
+    _con_cotizacion(items)
+    # Cada cotización vive 60 s en el cache de _fetch_batch_quotes: "ahora"
+    # es la hora del dato con ese margen.
+    return {"items": items, **estado_de_rueda(items), "actualizado": _ahora_iso(),
+            "banderas": [{"id": b, "nombre": nombres.get(b)} for b in BANDERAS_DE_LA_LISTA]}
+
+
+def _con_cotizacion(items: list, cotiza=lambda it: it["symbol"]) -> list:
+    """Le pone a cada renglón de la lista del gráfico su cotización: precio,
+    variación del día en % y en plata (precio − cierre anterior, de la MISMA
+    lectura: `_fetch_batch_quotes` → `_variacion_del_dia`, la de «Var. día» de
+    Posiciones), de qué rueda es (`as_of`, `is_today`), en qué mercado cotiza,
+    si está en horario y a qué hora cierra en hora argentina. `cotiza`: con qué
+    símbolo se cotiza cada uno (en tu lista, el suyo; en tu cartera, el de la
+    valuación del lote). Una sola cuenta para la lista y para la cartera."""
+    from alerts_engine import rueda_en_horario
+    from home.market import mercado_de, cierre_en_hora_argentina
+    symbols = list(dict.fromkeys(cotiza(it) for it in items))
+    quotes = _fetch_batch_quotes(symbols) if symbols else {}
+    ahora = datetime.now(timezone.utc)
+    for it in items:
+        s = cotiza(it)
+        q = quotes.get(s)
+        it["price"] = q["price"] if q else None
+        it["change_pct"] = q["change_pct"] if q else None
+        it["change"] = (round(q["price"] - q["prev_close"], 6)
+                        if q and q.get("price") is not None and q.get("prev_close") is not None else None)
+        it["as_of"] = q.get("as_of") if q else None
+        it["is_today"] = bool(q.get("is_today")) if q else False
+        it["mercado"] = mercado_de(s)
+        it["en_horario"] = rueda_en_horario(it["mercado"], ahora)
+        it["cierra"] = cierre_en_hora_argentina(it["mercado"], ahora)
+    return items
+
+
+@app.get("/api/watchlist/cartera")
+def watchlist_cartera(uid: int = Depends(get_effective_user)):
+    """Tu cartera para la lista al costado del gráfico (la opción «Cartera»;
+    Nico, 10/11): lo que tenés, un renglón por activo, con la misma forma que
+    los de GET /api/watchlist (sin bandera ni orden: son de la lista).
+
+    · `symbol`: el nombre con que se abre en el gráfico, el de tus lotes (el
+      mismo de «Tu cartera» en el buscador del gráfico, `tuyos` de
+      utils/graficoTecnico.js): uno por ticker, en el orden de tus lotes.
+    · `cotiza`: con qué símbolo se cotiza, LA regla de la valuación
+      (`snapshots_job.position_price_key`): tu TSLA de IOL cargado como CEDEAR
+      cotiza «TSLA.BA», en pesos; tu GGAL de Schwab, el de Nueva York.
+    · `local`: si es una acción argentina en BYMA (`accion_local.es_lote_local`).
+    Sin el efectivo, el USDT ni los fondos (FCI): no tienen gráfico. Sólo lee."""
+    import accion_local
+    from snapshots_job import _broker_name_sets, leer_cartera, position_price_key
+    with db_abierta() as conn:
+        brokers, positions = leer_cartera(conn, uid)
+    ars, ar_usd = _broker_name_sets(brokers)
+    items, vistos = [], set()
+    for p in sorted(positions, key=lambda x: x.get("id") or 0):
+        asset = (p.get("asset") or "").strip().upper()
+        if p.get("is_cash") or not asset or asset in ("USD", "USDT") or asset.startswith("FCI:"):
+            continue
+        if not _SYMBOL_RE.match(asset) or asset in vistos:
+            continue
+        vistos.add(asset)
+        items.append({
+            "symbol": asset,
+            "cotiza": str(position_price_key(p, ars, ar_usd)).upper(),
+            "asset_type": p.get("asset_type"),
+            "local": bool(accion_local.es_lote_local(p, ars, ar_usd)),
+        })
+    _con_cotizacion(items, cotiza=lambda it: it["cotiza"])
+    rueda = estado_de_rueda([{**it, "symbol": it["cotiza"]} for it in items])
+    return {"items": items, **rueda, "actualizado": _ahora_iso()}
 
 
 # Cuántos activos puede seguir una persona. Sin tope, una sola cuenta podía

@@ -15,13 +15,17 @@
 // horario y, con todas cerradas, a la próxima media hora (la misma regla del
 // inicio, utils/relojVisible.refrescoSegunRueda). Si la lectura técnica de la
 // página no se pudo traer, la lista no se queda vacía: pide sólo tu watchlist.
+//
+// La opción «Cartera» (lo que tenés) se pide recién cuando se elige
+// (GET /api/watchlist/cartera, `cargarCartera`) y desde ahí se refresca con el
+// mismo reloj. Lo que pesa cada activo sale de la página (`tenencias`).
 
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../utils/api'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 import { refrescoSegunRueda } from '../utils/relojVisible'
 import { useRelojVisible } from './useRelojVisible'
-import { filaDe, nombresDeBanderas } from '../utils/listaDelGrafico'
+import { filaDe, nombresDeBanderas, pesosDeTuCartera } from '../utils/listaDelGrafico'
 
 const mismo = (a, b) => String(a || '').toUpperCase() === String(b || '').toUpperCase()
 
@@ -60,10 +64,23 @@ export function useListaDelGrafico(lista) {
   const filas = useMemo(() => (fuente.seguidos || []).map(filaDe).filter(f => f.simbolo), [fuente.seguidos])
   const nombres = useMemo(() => nombresDeBanderas(fuente.banderas), [fuente.banderas])
 
+  // Tu cartera: 'nada' (no se pidió) | 'cargando' | 'listo' | 'error'. Un
+  // refresco que falla deja lo que había.
+  const [cartera, setCartera] = useState({ estado: 'nada', items: [] })
+  const cargarCartera = () => {
+    setCartera(c => (c.items.length ? c : { estado: 'cargando', items: [] }))
+    api.get('/watchlist/cartera')
+      .then(r => setCartera({ estado: 'listo', items: Array.isArray(r?.items) ? r.items : [] }))
+      .catch(() => setCartera(c => (c.items.length ? c : { estado: 'error', items: [] })))
+  }
+  const filasCartera = useMemo(() => cartera.items.map(filaDe).filter(f => f.simbolo), [cartera.items])
+  const pesos = useMemo(() => pesosDeTuCartera(fuente.tenencias), [fuente.tenencias])
+
   // Los precios, solos. Un refresco que falla no toca lo que se ve.
-  const algunaEnHorario = filas.some(f => f.enHorario)
+  const algunaEnHorario = filas.some(f => f.enHorario) || filasCartera.some(f => f.enHorario)
   const plazo = useMemo(() => refrescoSegunRueda({ en_horario: algunaEnHorario }), [algunaEnHorario])
   useRelojVisible(() => {
+    if (cartera.estado === 'listo') cargarCartera()
     if (fuente.cargando || fuente.error) return
     api.get('/watchlist')
       .then(r => { if (Array.isArray(r?.items)) cambiar(() => ({ seguidos: r.items, banderas: r.banderas || [] })) })
@@ -150,6 +167,14 @@ export function useListaDelGrafico(lista) {
     nombres,
     tenencias: fuente.tenencias || [],
     indice: fuente.indice || null,
+    cartera: {
+      pedida: cartera.estado !== 'nada',
+      cargando: cartera.estado === 'cargando',
+      error: cartera.estado === 'error',
+      filas: filasCartera,
+      pesos,
+      cargar: cargarCartera,
+    },
     aviso,
     cerrarAviso: () => setAviso(null),
     ponerBandera, nombrarBandera, ordenar, agregar, sacar,
