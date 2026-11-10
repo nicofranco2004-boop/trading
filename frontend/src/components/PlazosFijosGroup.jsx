@@ -71,14 +71,16 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
   const cobrar = (pf, broker) => enVuelo.correr(() => cobrarPf(pf, broker), pf.id)
 
   // Borrar deshace el alta: si la plata salió de un broker (lo guarda el servidor
-  // desde 2026-11-10 en la receta del alta), vuelve ahí — salvo que ya haya
-  // vencido, porque entonces pudo volver por otro lado (para eso está «Cobrar»).
-  // Se dice ANTES de confirmar, no después.
+  // desde 2026-11-10 en la receta del alta), vuelve ahí — salvo que haya vencido
+  // después de cargarlo, porque entonces pudo volver por otro lado (la trae el
+  // archivo de movimientos). Misma regla que el servidor
+  // (`_devolver_plata_del_plazo_fijo`). Se dice ANTES de confirmar, no después.
   async function borrar(pf) {
     const origen = origenDelPlazoFijo(pf)
-    const vencido = (pf.fecha_vencimiento || '') <= todayStr()
+    const venc = pf.fecha_vencimiento || ''
+    const vencioDespues = (pf.created_at || '').slice(0, 10) < venc && venc <= todayStr()
     const plata = !origen ? ''
-      : vencido ? ` Ya venció: borrarlo no le devuelve la plata a ${origen} (si ya la cobraste, usá «Cobrar»).`
+      : vencioDespues ? ` Ya venció, así que borrarlo no le devuelve la plata a ${origen}. Si la plata ya volvió (por ejemplo, la trajo el archivo de movimientos), borralo; si todavía no la registraste, usá «Cobrar».`
       : ` La plata vuelve a ${origen}, como si no lo hubieras armado.`
     if (!await confirmar(`¿Eliminar el plazo fijo en ${pf.banco}?${plata} Esta acción no se puede deshacer.`)) return
     try {

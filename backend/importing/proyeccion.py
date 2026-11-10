@@ -131,6 +131,17 @@ def archivados(conn, uid: int, brokers: List[str]) -> set:
     return out
 
 
+def tenencia_para_comparar(conn, uid: int, *, pair: List[str], fecha: Optional[str] = None,
+                           tickers_foto=None) -> Tuple[Dict[str, float], List[dict]]:
+    """Lo que la foto compara del lado de Rendi: la cartera del par a la fecha de la
+    foto (`proyectar`), o la de hoy si la foto no tiene fecha (`tenencia_sin_rodar`).
+    Lo usan la vista previa y, con los mismos datos, el confirm para saber si eso
+    cambió en el medio: una sola definición para las dos preguntas."""
+    if fecha:
+        return proyectar(conn, uid, pair=list(pair), fecha=fecha, tickers_foto=tickers_foto)
+    return tenencia_sin_rodar(conn, uid, pair=list(pair))
+
+
 def tenencia_sin_rodar(conn, uid: int, *, pair: List[str]) -> Tuple[Dict[str, float], List[dict]]:
     """Lo mismo que `proyectar` cuando la foto no tiene fecha: la cartera de hoy,
     sin rodar nada hacia atrás (no hay a qué fecha), con la misma traducción de

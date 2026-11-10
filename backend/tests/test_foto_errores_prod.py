@@ -436,11 +436,39 @@ def test_plazo_fijo_vencido_borrado_no_devuelve_la_plata():
     la contaría dos veces (para eso está «Cobrar»)."""
     cu = _Cuenta(pesos=[_cobro(1, 9, 1000000, 1000000)])
     pid = _plazo_fijo(cu, 300000, fecha_inicio="2026-09-02", source_broker=BM)
+    conn = main.get_db()
+    with conn:                                   # cargado el día que se armó, vivo hasta el 02/10
+        conn.execute("UPDATE plazos_fijos SET created_at='2026-09-02 15:00:00' WHERE id=?", (pid,))
+    conn.close()
     cu.importar([_cobro(3, 10, 307397.26, 1007397.26, 40)], [])   # la vuelta, importada
     caja1 = cu.caja()
     r = cu.c.delete(f"/api/plazos-fijos/{pid}", headers=cu.h)
     assert r.status_code == 200, r.text
     assert cu.caja() == caja1 and r.json()["devuelto"] is None
+
+
+def test_plazo_fijo_cargado_ya_vencido_por_error_si_devuelve():
+    """Cargado con fechas del pasado y borrado enseguida: nunca estuvo vivo en
+    Rendi, así que su plata no pudo volver por otro lado. Borrarlo corrige la carga."""
+    cu = _Cuenta(pesos=[_cobro(1, 9, 1000000, 1000000)])
+    caja0 = cu.caja()
+    pid = _plazo_fijo(cu, 200000, fecha_inicio="2026-08-01", source_broker=BM)
+    assert cu.caja() == caja0 - 200000
+    r = cu.c.delete(f"/api/plazos-fijos/{pid}", headers=cu.h)
+    assert r.status_code == 200, r.text
+    assert cu.caja() == caja0
+
+
+def test_una_compra_de_otro_activo_posterior_a_la_foto_no_frena_el_confirmar():
+    """La tanda del asesor con dos archivos del mismo cliente: el segundo trae una
+    compra de KO POSTERIOR a la foto, que no cambia ninguna diferencia de la foto."""
+    cu = _Cuenta(pesos=[_cobro(1, 9, 326495.16, 326495.16), _compra(3, 9, "AVGO", 23, 14173.7, 500)])
+    j = cu.subir_foto(_foto("20/10/2026", [("Cedears", "ARS", [("AVGO", 28, 12650)])],
+                            pesos=500), confirmar=False)
+    cu.importar([_cobro(1, 11, 60000, 60500, 20), _compra(2, 11, "KO", 10, 6000, 500, 21)], [])
+    c = cu.c.post("/api/imports/confirm", headers=cu.h, json={"session_id": j["session_id"]})
+    assert c.status_code == 200, c.text
+    assert cu.qty("AVGO") == 28
 
 
 def test_si_la_cartera_cambia_entre_la_vista_previa_y_confirmar_la_foto_se_frena():

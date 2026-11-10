@@ -15932,15 +15932,20 @@ def _devolver_plata_del_plazo_fijo(conn, uid: int, row) -> Optional[dict]:
 
     Devuelve lo que movió, o None si no hay qué devolver: plata de afuera de
     Rendi, un plazo fijo de antes de que se guardara el origen (no se sabe de
-    dónde salió: no se adivina), uno ya cobrado (el cobro ya acreditó), uno ya
-    VENCIDO (la plata puede haber vuelto por otro lado —el import de movimientos
-    del broker la trae— y devolverla otra vez la contaría dos veces: revisión del
-    2026-11-10; para eso está «Cobrar») o un broker de origen que ya no existe
+    dónde salió: no se adivina), uno ya cobrado (el cobro ya acreditó), uno que
+    VENCIÓ DESPUÉS DE CARGARLO (la plata puede haber vuelto por otro lado —el
+    import de movimientos del broker la trae— y devolverla otra vez la contaría
+    dos veces: revisión del 2026-11-10; para eso está «Cobrar») o un broker de
+    origen que ya no existe
     (al borrarse, `_olvidar_origen_de_plazos_fijos` le saca el nombre a la
     receta: uno nuevo con el mismo nombre no es esa cuenta)."""
     if row["closed_at"] is not None:
         return None
-    if str(row["fecha_vencimiento"] or "")[:10] <= _iso_today():
+    # Cargado YA vencido (una fecha del pasado, o una equivocada) no cuenta: no
+    # estuvo vivo nunca en Rendi, así que su plata no pudo volver por otro lado, y
+    # borrarlo es corregir la carga (segunda revisión del 2026-11-10).
+    venc = str(row["fecha_vencimiento"] or "")[:10]
+    if str(row["created_at"] or "")[:10] < venc <= _iso_today():
         return None
     conocido, broker = _import_proyeccion.origen_plazo_fijo(row["undo_meta_json"])
     if not (conocido and broker and _broker_existe(conn, uid, broker)):
@@ -46558,12 +46563,10 @@ def import_tenencia_preview(
             cartera con la misma traducción de tickers que la foto y dejan
             afuera lo archivado.
             """
-            if fecha_origen == "fallback_hoy":
-                q_, nr_ = _import_proyeccion.tenencia_sin_rodar(conn, uid, pair=list(brokers))
-            else:
-                q_, nr_ = _import_proyeccion.proyectar(
-                    conn, uid, pair=list(brokers), fecha=seed_date,
-                    tickers_foto=[h.ticker for h in snap.holdings])
+            q_, nr_ = _import_proyeccion.tenencia_para_comparar(
+                conn, uid, pair=list(brokers),
+                fecha=(None if fecha_origen == "fallback_hoy" else seed_date),
+                tickers_foto=[h.ticker for h in snap.holdings])
             _proy_no_rec.extend(nr_)
             return q_
 
@@ -46863,13 +46866,14 @@ def import_tenencia_preview(
                 "fecha": seed_date, "brokers": list(_par_caja),
                 "caja_por_broker": {_b: round(_cur, 6) for _b, _c, _cur, _t, _d in _cash_applied}}
         if override_info is not None:
-            # Y contra qué cartera se calcularon las compras y ventas de la foto: son
-            # diferencias, y confirmar se frena si la cartera cambió
-            # (`_cartera_de_la_foto_cambio`).
+            # Y contra qué cartera se calcularon las compras y ventas de la foto (la
+            # del par A LA FECHA DE LA FOTO, `current`): son diferencias, y confirmar
+            # se frena si esa cartera cambió (`_cartera_de_la_foto_cambio`).
             override_info["tenencia"] = {
-                "brokers": list(pair), "cantidades": {
-                    a: round(d["q"], 6) for a, d in
-                    _import_proyeccion.posiciones_por_ticker(conn, uid, list(pair)).items()}}
+                "brokers": list(pair),
+                "fecha": (None if fecha_origen == "fallback_hoy" else seed_date),
+                "tickers_foto": [h.ticker for h in snap.holdings],
+                "cantidades": {a: round(float(q or 0), 6) for a, q in current.items()}}
         # row_index único en TODO el batch (holdings + ajustes de cash) → no rompe
         # el mapa raw_id↔row_index del confirm/revert.
         for _i, _t in enumerate(seed_txs):
@@ -47776,7 +47780,12 @@ def _cartera_de_la_foto_cambio(conn, uid: int, session_id: str) -> bool:
     a mano, aplicarlas la duplica: medido en la revisión del 2026-11-10, 23 AVGO,
     foto 28, entra un archivo con los 5 → quedaban 33. Lo revertido ya se frenaba
     aparte; esto cubre todo lo demás. Sin dato guardado (borradores de antes):
-    False, como hasta ahora."""
+    False, como hasta ahora.
+
+    Se compara lo mismo que se usó para comparar: la cartera del par A LA FECHA
+    DE LA FOTO (`proyeccion.tenencia_para_comparar`), no la de hoy. Una compra de
+    otro activo posterior a la foto no cambia ninguna diferencia y no frena nada
+    (segunda revisión: la tanda del asesor con dos archivos del mismo cliente)."""
     r = conn.execute("SELECT override_info FROM import_batches WHERE id=? AND user_id=?",
                      (session_id, uid)).fetchone()
     try:
@@ -47786,9 +47795,11 @@ def _cartera_de_la_foto_cambio(conn, uid: int, session_id: str) -> bool:
     if not ten:
         return False
     antes = {a: float(q or 0) for a, q in (ten.get("cantidades") or {}).items()}
-    ahora = {a: d["q"] for a, d in _import_proyeccion.posiciones_por_ticker(
-        conn, uid, list(ten.get("brokers") or [])).items()}
-    return any(abs(ahora.get(a, 0.0) - antes.get(a, 0.0)) > 1e-6 for a in set(antes) | set(ahora))
+    ahora, _nr = _import_proyeccion.tenencia_para_comparar(
+        conn, uid, pair=list(ten.get("brokers") or []), fecha=ten.get("fecha"),
+        tickers_foto=ten.get("tickers_foto") or [])
+    return any(abs(float(ahora.get(a, 0.0)) - antes.get(a, 0.0)) > 1e-6
+               for a in set(antes) | set(ahora))
 
 
 def _revisar_foto_al_confirmar(conn, uid: int, b_meta, data, txs, skip_set: set):
