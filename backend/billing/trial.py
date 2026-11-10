@@ -140,6 +140,50 @@ def credit_is_trial(credit_active_until, trial_ends_at) -> bool:
                 and str(credit_active_until) == str(trial_ends_at))
 
 
+def extender(conn, user_id: int, dias: int, nota: str) -> Optional[str]:
+    """Suma `dias` a la prueba que está corriendo.
+
+    Mueve JUNTOS trial_ends_at y credit_active_until: que sigan iguales es lo
+    que marca al crédito como el de la prueba (`credit_is_trial`), y los avisos
+    de la prueba se cuentan desde trial_ends_at. Mover sólo uno convertía la
+    prueba en un "regalo" a ojos de todo el billing. El paso de Pro a Plus sale
+    de trial_started_at y no se toca: los días de más quedan al final, en Plus.
+
+    El renglón de credit_ledger va como 'comp' y no como 'trial': las filas
+    'trial' cuentan como pruebas ACTIVADAS para el tope del mes.
+
+    Devuelve el vencimiento nuevo, o None si ya no está en prueba o si la fecha
+    cambió desde que se leyó (otro pedido llegó primero: no se suma dos veces).
+    """
+    row = conn.execute(
+        "SELECT tier, credit_active_until, trial_ends_at FROM users WHERE id=?",
+        (user_id,)).fetchone()
+    if not row or not credit_is_trial(row["credit_active_until"], row["trial_ends_at"]):
+        return None
+    antes = row["credit_active_until"]
+    try:
+        fin = datetime.fromisoformat(str(antes).replace("Z", ""))
+    except (TypeError, ValueError):
+        return None
+    if fin <= datetime.utcnow():
+        return None
+    nuevo = (fin + timedelta(days=dias)).isoformat()
+    with conn:
+        cur = conn.execute(
+            """UPDATE users SET credit_active_until=?, trial_ends_at=?
+                WHERE id=? AND credit_active_until=? AND trial_ends_at=?""",
+            (nuevo, nuevo, user_id, antes, antes))
+        if cur.rowcount == 0:
+            return None
+        conn.execute(
+            """INSERT INTO credit_ledger
+                   (user_id, kind, amount_usd, days_delta, from_plan, to_plan,
+                    active_until_before, active_until_after, note)
+               VALUES (?, 'comp', 0, ?, ?, ?, ?, ?, ?)""",
+            (user_id, float(dias), row["tier"], row["tier"], antes, nuevo, nota))
+    return nuevo
+
+
 def stage_by_calendar(started_at, now=None):
     """Qué etapa le TOCA por calendario: 'pro' la primera semana, 'plus' después.
     None si no hay fecha de arranque legible.

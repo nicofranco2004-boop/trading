@@ -33026,6 +33026,52 @@ def _grant_base(state: dict, plan: str, now):
     return base
 
 
+def _otorgar_cortesia(conn, target_uid, plan, days, before_tier, state, now, note,
+                      solo_si_vence=False):
+    """Escribe un regalo (comp): el plan, el vencimiento nuevo y su renglón en
+    credit_ledger, en una sola transacción. Es el ÚNICO lugar que escribe un
+    regalo: lo usan grant-comp (de a una cuenta) y el regalo masivo, así las dos
+    puertas no pueden terminar con reglas distintas. Desde cuándo se cuentan los
+    días lo decide `_grant_base`.
+
+    `solo_si_vence`: escribe sólo si el vencimiento sigue siendo el que se leyó
+    en `state`. El regalo masivo lo usa para que dos pedidos a la vez no sumen
+    dos veces: el segundo encuentra otra fecha y devuelve None."""
+    from datetime import timedelta as _td
+    from ai import quota as _q
+    after_iso = (_grant_base(state, plan, now) + _td(days=days)).isoformat()
+    before_iso = state["active_until"]
+    cond, extra = "", ()
+    if solo_si_vence:
+        cond, extra = " AND COALESCE(credit_active_until, '') = ?", (before_iso or "",)
+    with conn:
+        cur = conn.execute(
+            f"""UPDATE users
+               SET tier = ?,
+                   quota_window_from = ?,
+                   credit_active_until = ?,
+                   credit_anchor_plan = ?,
+                   credit_anchor_period = 'monthly',
+                   credit_anchor_amount_usd = 0,
+                   credit_anchor_at = ?
+               WHERE id = ?{cond}""",
+            (plan, _q.dia_de_la_cuota(), after_iso, plan,
+             now.isoformat(), target_uid) + extra,
+        )
+        if solo_si_vence and cur.rowcount == 0:
+            return None
+        conn.execute(
+            """INSERT INTO credit_ledger
+                   (user_id, kind, amount_usd, days_delta,
+                    from_plan, from_period, to_plan, to_period,
+                    active_until_before, active_until_after, note)
+               VALUES (?, 'comp', 0, ?, ?, ?, ?, 'monthly', ?, ?, ?)""",
+            (target_uid, float(days), before_tier, state["anchor_period"], plan,
+             before_iso, after_iso, note),
+        )
+    return after_iso
+
+
 @app.post("/api/admin/billing/grant-comp")
 def admin_billing_grant_comp(
     email: str,
@@ -33103,38 +33149,9 @@ def admin_billing_grant_comp(
                 "would_be_active_until": _would,           # vencimiento tras el force
             }
 
-        new_active_until = _grant_base(state, plan, now) + _td(days=days)
-        after_iso = new_active_until.isoformat()
-        before_iso = state["active_until"]
-
-        with conn:
-            from ai import quota as _q
-            conn.execute(
-                """UPDATE users
-                   SET tier = ?,
-                       quota_window_from = ?,
-                       credit_active_until = ?,
-                       credit_anchor_plan = ?,
-                       credit_anchor_period = 'monthly',
-                       credit_anchor_amount_usd = 0,
-                       credit_anchor_at = ?
-                   WHERE id = ?""",
-                (plan, _q.dia_de_la_cuota(), after_iso, plan,
-                 now.isoformat(), target_uid),
-            )
-            conn.execute(
-                """INSERT INTO credit_ledger
-                       (user_id, kind, amount_usd, days_delta,
-                        from_plan, from_period, to_plan, to_period,
-                        active_until_before, active_until_after, note)
-                   VALUES (?, 'comp', 0, ?, ?, ?, ?, 'monthly', ?, ?, ?)""",
-                (
-                    target_uid, float(days),
-                    before_tier, state["anchor_period"], plan,
-                    before_iso, after_iso,
-                    note.strip() or f"Comp {days}d {plan} otorgado por admin uid={uid}",
-                ),
-            )
+        after_iso = _otorgar_cortesia(
+            conn, target_uid, plan, days, before_tier, state, now,
+            note.strip() or f"Comp {days}d {plan} otorgado por admin uid={uid}")
         log.info(
             "Admin %s granted COMP to user %s (%s): %s for %s days (until %s)",
             uid, target_uid, urow["email"], plan, days, after_iso,
@@ -33176,6 +33193,145 @@ def admin_billing_grant_comp(
                    f"Vence {after_iso[:10]} y vuelve a Free solo (cron diario).")
             ),
         }
+    finally:
+        conn.close()
+
+
+# ─── Regalo masivo: N días de plan a todas las cuentas que no pagan ─────────
+# Pedido de Nico (10/11): «5 días de plan más a todos los usuarios; los que ya
+# pagan, que no tengan más días». Cada cuenta recibe los días según dónde está:
+#   • en su prueba gratis  → la prueba se alarga (trial.extender)
+#   • con un regalo vigente → el regalo se alarga, en el MISMO plan que tiene
+#   • sin plan vigente      → N días de Pro desde hoy (Free viejo o en pausa)
+# Quedan afuera, y la vista previa dice por qué:
+#   • paga        → suscripción activa, o días PAGOS que todavía le quedan
+#   • prueba_sin_usar → todavía puede activar sus 20 días: un regalo ahora se
+#                   los taparía (la prueba no arranca con un plan vigente, y a
+#                   quien nació sin plan gratis se le activa sola al verificar
+#                   el mail: con el regalo puesto, esa activación automática
+#                   falla sin avisar — `_start_tx` exige que no haya un plan
+#                   vigente)
+#   • admin / asesor → no son cuentas que estén probando Rendi
+#   • ya_recibio  → hoy ya le tocó (un segundo click no suma otra vez)
+#   • revisar     → plan vigente sin pago, prueba ni regalo detrás: a mano
+# No manda mails: el aviso va en el mail de la campaña. El recordatorio
+# automático "tu plan vence en 3 días" sí sale, como con cualquier regalo.
+REGALO_MASIVO_LOTE = 50
+_REGALO_MASIVO_NOTA = "Regalo masivo"
+
+
+class RegaloMasivoIn(BaseModel):
+    days: int = Field(5, ge=1, le=30)
+    confirm: bool = False      # False = vista previa: dice a quién y qué, no toca nada
+    ids: Optional[List[int]] = Field(None, max_length=REGALO_MASIVO_LOTE)
+
+
+def _regalo_masivo_ya_recibieron(conn, hoy: str) -> set:
+    return {r["user_id"] for r in conn.execute(
+        "SELECT DISTINCT user_id FROM credit_ledger WHERE kind='comp' AND note LIKE ?",
+        (f"{_REGALO_MASIVO_NOTA} {hoy}%",)).fetchall()}
+
+
+def _regalo_masivo_clasificar(conn, u, ya_recibieron) -> tuple:
+    """(grupo, motivo): grupo ∈ prueba|regalo|sin_plan si le toca, None si no.
+    Usa las MISMAS reglas que el resto del billing: `_has_paid_sub` para la
+    suscripción, `credit_is_trial` para la prueba, `eligibility` para saber si
+    todavía puede activarla."""
+    from billing import trial as _trial
+    from billing import credits as _credits
+    if u["is_admin"]:
+        return None, "admin"
+    if (u["tier"] or "").strip().lower() == "advisor" or u["managed_by"] is not None:
+        return None, "asesor"
+    if u["id"] in ya_recibieron:
+        return None, "ya_recibio"
+    if _trial._has_paid_sub(conn, u["id"]):
+        return None, "paga"
+    state = _credits.get_credit_state(conn, u["id"])
+    if state["is_active"]:
+        if _trial.credit_is_trial(u["credit_active_until"], u["trial_ends_at"]):
+            return "prueba", None
+        if float(state["anchor_amount_usd"] or 0) > 0:
+            return None, "paga"
+        if (state["anchor_plan"] or "") in ("plus", "pro"):
+            return "regalo", None
+        return None, "revisar"
+    el = _trial.eligibility(conn, u["id"])
+    if el.get("can_start") or el.get("reason") == "email_not_verified":
+        return None, "prueba_sin_usar"
+    return "sin_plan", None
+
+
+def _regalo_masivo_cuentas(conn, ids=None):
+    filtro, params = _filtro_ids("id", ids)
+    return conn.execute(
+        f"""SELECT id, email, name, tier, is_admin, managed_by,
+                   credit_active_until, trial_ends_at
+              FROM users WHERE 1=1{filtro} ORDER BY id""", params).fetchall()
+
+
+@app.post("/api/admin/billing/regalo-masivo")
+def admin_billing_regalo_masivo(data: RegaloMasivoIn, uid: int = Depends(get_admin_user)):
+    """Vista previa (confirm=False): a quién le toca, qué recibe cada uno y
+    quién queda afuera con su motivo. Nada se escribe.
+
+    Regalo (confirm=True + ids): sólo a las cuentas que vio el admin, de a
+    REGALO_MASIVO_LOTE, y volviendo a clasificar cada una en el momento (si
+    entre la vista previa y el click alguien pagó, ya no recibe). Cada cuenta va
+    en su propia transacción: una que falla no arrastra a las demás."""
+    from fechas import hoy_art
+    from billing import trial as _trial
+    from billing import credits as _credits
+    hoy = hoy_art()
+    nota = f"{_REGALO_MASIVO_NOTA} {hoy} (+{data.days} días, admin uid={uid})"
+    conn = get_db()
+    try:
+        if not data.confirm:
+            ya = _regalo_masivo_ya_recibieron(conn, hoy)
+            cuentas, excluidas = [], []
+            for u in _regalo_masivo_cuentas(conn):
+                grupo, motivo = _regalo_masivo_clasificar(conn, u, ya)
+                fila = {"id": u["id"], "email": u["email"], "name": u["name"],
+                        "vence": u["credit_active_until"]}
+                if grupo:
+                    cuentas.append({**fila, "grupo": grupo})
+                else:
+                    excluidas.append({**fila, "motivo": motivo})
+            por = lambda filas, k: {v: sum(1 for f in filas if f[k] == v)
+                                    for v in sorted({f[k] for f in filas})}
+            return {"dry_run": True, "days": data.days, "lote": REGALO_MASIVO_LOTE,
+                    "por_grupo": por(cuentas, "grupo"),
+                    "por_motivo": por(excluidas, "motivo"),
+                    "cuentas": cuentas, "excluidas": excluidas}
+
+        if not data.ids:
+            raise HTTPException(422, "Para regalar hace falta la lista que viste (ids).")
+        regaladas, salteadas, errores = [], [], 0
+        for u in _regalo_masivo_cuentas(conn, data.ids):
+            try:
+                grupo, motivo = _regalo_masivo_clasificar(
+                    conn, u, _regalo_masivo_ya_recibieron(conn, hoy))
+                vence = None
+                if grupo == "prueba":
+                    vence = _trial.extender(conn, u["id"], data.days, nota)
+                elif grupo in ("regalo", "sin_plan"):
+                    state = _credits.get_credit_state(conn, u["id"])
+                    plan = state["anchor_plan"] if grupo == "regalo" else "pro"
+                    vence = _otorgar_cortesia(
+                        conn, u["id"], plan, data.days, u["tier"], state,
+                        datetime.utcnow(), nota, solo_si_vence=True)
+                if vence:
+                    regaladas.append({"id": u["id"], "grupo": grupo, "vence": vence})
+                else:
+                    salteadas.append({"id": u["id"], "motivo": motivo or "cambio"})
+            except Exception as ex:
+                errores += 1
+                log.warning("regalo masivo: falló uid=%s: %s", u["id"], ex)
+                _deshacer_transaccion(conn)
+        log.info("Admin %s: regalo masivo de %s días → %s cuentas (%s salteadas, %s errores)",
+                 uid, data.days, len(regaladas), len(salteadas), errores)
+        return {"ok": True, "days": data.days, "regaladas": regaladas,
+                "salteadas": salteadas, "errores": errores}
     finally:
         conn.close()
 

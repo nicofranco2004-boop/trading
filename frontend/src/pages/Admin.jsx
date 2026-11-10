@@ -413,6 +413,9 @@ export default function Admin() {
       <TrialInvitePanel toast={toast} />
       <GiftPlanPanel toast={toast} />
 
+      {/* ── Regalo masivo: N días de plan a todas las cuentas que no pagan ── */}
+      <RegaloMasivoPanel toast={toast} />
+
       {/* ── Backup manual (S3) — hacelo ANTES de cualquier recompute/repair ── */}
       <BackupPanel toast={toast} />
 
@@ -1866,6 +1869,170 @@ function TrialInvitePanel({ toast }) {
       <ResultadoEnvio envio={envio} sinLista={!preview}
         descartados="ya no se podían mandar (activaron la prueba o dejaron de poder activarla)"
         trabadas="No vuelve a salir en el sorteo: el aviso hay que mandárselo por otro lado." />
+    </div>
+  )
+}
+
+
+// ─── RegaloMasivoPanel — N días de plan a todas las cuentas que no pagan ─────
+// La vista previa no toca nada: dice a quién le toca, qué recibe cada uno y
+// quién queda afuera con su motivo (las reglas viven en el backend,
+// `_regalo_masivo_clasificar`). "Regalar" manda de a tandas SÓLO las cuentas
+// que se ven, y el backend vuelve a clasificar cada una en el momento: si
+// alguien pagó entre la vista previa y el click, ya no recibe. Un segundo click
+// el mismo día no suma otra vez. No manda mails.
+const REGALO_GRUPOS = {
+  prueba:   { label: 'En su prueba gratis', hint: 'la prueba se alarga' },
+  regalo:   { label: 'Con un regalo vigente', hint: 'suma en el mismo plan' },
+  sin_plan: { label: 'Sin plan vigente', hint: 'días de Pro desde hoy' },
+}
+const REGALO_MOTIVOS = {
+  paga: 'Pagan',
+  prueba_sin_usar: 'Tienen la prueba gratis sin usar',
+  admin: 'Admin',
+  asesor: 'Asesor o cliente de un asesor',
+  ya_recibio: 'Ya lo recibieron hoy',
+  revisar: 'Plan vigente sin pago ni regalo: revisar a mano',
+}
+
+// Manda las cuentas que se ven de a `lote`. Si un pedido falla, para ahí y
+// devuelve lo hecho hasta entonces con `corte`: el backend no repite a quien ya
+// recibió hoy, así que volver a apretar completa lo que faltó.
+export async function regalarEnTandas({ cuentas, dias, lote, pedir, alAvanzar }) {
+  const total = { regaladas: 0, salteadas: 0, errores: 0, corte: null }
+  for (let i = 0; i < cuentas.length; i += lote) {
+    alAvanzar?.(i)
+    try {
+      const r = await pedir({ days: dias, confirm: true, ids: cuentas.slice(i, i + lote).map(c => c.id) })
+      total.regaladas += r.regaladas.length
+      total.salteadas += r.salteadas.length
+      total.errores += r.errores
+    } catch (e) {
+      total.corte = e.message || 'error'
+      break
+    }
+  }
+  return total
+}
+
+export function VistaPreviaRegalo({ preview }) {
+  const afuera = Object.values(preview.por_motivo).reduce((a, b) => a + b, 0)
+  return (
+    <>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {Object.entries(REGALO_GRUPOS).map(([k, g]) => (
+          <ConvCell key={k} label={g.label} value={preview.por_grupo[k] || 0} hint={g.hint} />
+        ))}
+      </div>
+      {afuera > 0 && (
+        <details className="text-xs text-ink-3">
+          <summary className="cursor-pointer select-none">Quedan afuera: {afuera}</summary>
+          <ul className="mt-2 space-y-1">
+            {Object.entries(preview.por_motivo).map(([m, n]) => {
+              const quienes = preview.excluidas.filter(x => x.motivo === m)
+              return (
+                <li key={m}>
+                  <span className="text-ink-2">{REGALO_MOTIVOS[m] || m}</span>: <span className="tabular">{n}</span>
+                  {' · '}{quienes.slice(0, 8).map(x => x.email).join(', ')}{quienes.length > 8 && ' …'}
+                </li>
+              )
+            })}
+          </ul>
+        </details>
+      )}
+    </>
+  )
+}
+
+function RegaloMasivoPanel({ toast }) {
+  const [dias, setDias] = useState(5)
+  const { preview, loading, recargar, invalidar } = useVistaPrevia(
+    () => api.post('/admin/billing/regalo-masivo', { days: dias }), toast)
+  const [regalando, setRegalando] = useState(null)   // { hechas, total } mientras corre
+  const [resultado, setResultado] = useState(null)
+
+  const cuentas = preview?.cuentas || []
+
+  async function regalar() {
+    const n = cuentas.length
+    if (n === 0) return
+    const ok = await confirmar(
+      `¿Regalar ${preview.days} días a ${n} cuenta${n > 1 ? 's' : ''}? ` +
+      'Quien paga no recibe nada. No se puede deshacer desde el panel.',
+      { si: `Regalar ${preview.days} días` })
+    if (!ok) return
+    setResultado(null)
+    const total = await regalarEnTandas({
+      cuentas, dias: preview.days, lote: preview.lote || 50,
+      pedir: (cuerpo) => api.post('/admin/billing/regalo-masivo', cuerpo),
+      alAvanzar: (hechas) => setRegalando({ hechas, total: n }),
+    })
+    if (total.corte) {
+      toast.push('Se cortó a mitad del regalo: ' + total.corte + '. Volvé a mirar la lista: lo hecho no se repite.', { type: 'error' })
+    }
+    setRegalando(null)
+    setResultado(total)
+    recargar()
+  }
+
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Gift size={16} className="text-emerald-500" />
+          <h2 className="font-semibold text-ink-0">Regalar días a todos</h2>
+        </div>
+        <button
+          onClick={recargar}
+          disabled={loading || regalando !== null}
+          className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> {preview ? 'Recalcular' : 'Ver a quiénes'}
+        </button>
+      </div>
+
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Suma días a todas las cuentas que <b>no pagan</b>: a quien está en su prueba gratis se la alarga, a quien tiene
+        un regalo se lo alarga en el mismo plan, y a quien no tiene plan vigente le da esos días de Pro desde hoy.
+        Quedan afuera quienes pagan y quienes todavía tienen la prueba gratis sin usar (un regalo se la taparía).
+        No manda mails.
+      </p>
+
+      <label className="flex items-center gap-2 text-xs text-ink-2">
+        Días
+        <input
+          type="number" min={1} max={30} value={dias} disabled={regalando !== null}
+          onChange={e => { setDias(Math.max(1, Math.min(30, Number(e.target.value) || 1))); invalidar() }}
+          className="w-16 rounded border border-line bg-bg-1 px-2 py-1 text-ink-0 tabular"
+        />
+      </label>
+
+      {preview && (
+        <>
+          <VistaPreviaRegalo preview={preview} />
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={regalar}
+              disabled={cuentas.length === 0 || regalando !== null}
+              className="flex items-center gap-1.5 text-xs px-3 py-2 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-50"
+            >
+              <Gift size={12} />
+              {regalando
+                ? `Regalando… ${regalando.hechas} de ${regalando.total}`
+                : `Regalar ${preview.days} días a ${cuentas.length} cuenta${cuentas.length === 1 ? '' : 's'}`}
+            </button>
+          </div>
+        </>
+      )}
+
+      {resultado && (
+        <p className="text-xs text-ink-2">
+          Listo: <span className="tabular">{resultado.regaladas}</span> cuentas recibieron los días
+          {resultado.salteadas > 0 && <>, <span className="tabular">{resultado.salteadas}</span> se saltearon (cambiaron desde la vista previa)</>}
+          {resultado.errores > 0 && <>, <span className="tabular">{resultado.errores}</span> fallaron (volvé a apretar: lo hecho no se repite)</>}.
+        </p>
+      )}
     </div>
   )
 }
