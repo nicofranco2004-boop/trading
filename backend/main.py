@@ -15824,11 +15824,16 @@ def list_plazos_fijos(uid: int = Depends(get_effective_user)):
                ORDER BY fecha_vencimiento ASC, id ASC""",
             (uid,),
         ).fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["renovacion_auto"] = bool(d["renovacion_auto"])
-        out.append(d)
+        out = []
+        # Lo que pasaría con la plata si se borra: la pantalla lo dice ANTES de
+        # confirmar, con la misma regla que el borrado (`_pf_devuelve_al_borrar`).
+        for r in rows:
+            d = dict(r)
+            d["renovacion_auto"] = bool(d["renovacion_auto"])
+            d["plata_al_borrar"] = {
+                "broker": _import_proyeccion.origen_plazo_fijo(r["undo_meta_json"])[1],
+                "vuelve": bool(_pf_devuelve_al_borrar(conn, uid, r))}
+            out.append(d)
     return out
 
 
@@ -15866,9 +15871,13 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
         # para devolverla (`_devolver_plata_del_plazo_fijo`) y lo que el control de
         # la foto lee para saber de qué cuenta salió (`proyeccion.origen_plazo_fijo`).
         # Sin broker de origen también se guarda: «plata de afuera» no es «no se sabe».
+        # `vivo_al_cargar`: si todavía no había vencido el día (argentino) en que se
+        # cargó. Decide si borrarlo devuelve la plata (`_pf_devuelve_al_borrar`);
+        # se guarda acá y no se deduce después porque las fechas se pueden editar.
         receta = json.dumps({"src": "pf_alta", "broker": p.source_broker or None,
                              "debito": float(p.capital) if p.source_broker else 0.0,
-                             "autodep": _pf_adm or None})
+                             "autodep": _pf_adm or None,
+                             "vivo_al_cargar": venc > _iso_today()})
         cur = conn.execute(
             """INSERT INTO plazos_fijos
                    (user_id, banco, capital, moneda, tasa, rate_type,
@@ -15919,6 +15928,31 @@ def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_effective
         conn.close()
 
 
+def _pf_devuelve_al_borrar(conn, uid: int, row) -> Optional[str]:
+    """A qué broker le devuelve la plata borrar este plazo fijo, o None. LA regla:
+    la usan el borrado y la lista (la pantalla avisa con esto ANTES de confirmar).
+
+    No devuelve si: no se sabe de dónde salió o salió de afuera, ya se cobró, el
+    broker ya no existe, o venció DESPUÉS de cargarlo (estuvo vivo en Rendi y su
+    plata pudo volver por el import: devolverla otra vez la contaría dos veces).
+    Uno cargado YA vencido sí devuelve: nunca estuvo vivo, borrarlo corrige la
+    carga (segunda revisión del 2026-11-10). «Vivo al cargarlo» lo guarda la
+    receta del alta con el día argentino: las fechas se pueden editar después, y
+    `created_at` está en UTC (de 21 a 24 h ya es el día siguiente)."""
+    if row["closed_at"] is not None:
+        return None
+    conocido, broker = _import_proyeccion.origen_plazo_fijo(row["undo_meta_json"])
+    if not (conocido and broker and _broker_existe(conn, uid, broker)):
+        return None
+    try:
+        vivo = bool((json.loads(row["undo_meta_json"]) or {}).get("vivo_al_cargar", True))
+    except (TypeError, ValueError):
+        return None
+    if vivo and str(row["fecha_vencimiento"] or "")[:10] <= _iso_today():
+        return None
+    return broker
+
+
 def _devolver_plata_del_plazo_fijo(conn, uid: int, row) -> Optional[dict]:
     """Borrar un plazo fijo ABIERTO deshace su alta: la plata vuelve al broker de
     donde salió y el autodepósito que la completó deja de contar como aporte.
@@ -15939,16 +15973,8 @@ def _devolver_plata_del_plazo_fijo(conn, uid: int, row) -> Optional[dict]:
     origen que ya no existe
     (al borrarse, `_olvidar_origen_de_plazos_fijos` le saca el nombre a la
     receta: uno nuevo con el mismo nombre no es esa cuenta)."""
-    if row["closed_at"] is not None:
-        return None
-    # Cargado YA vencido (una fecha del pasado, o una equivocada) no cuenta: no
-    # estuvo vivo nunca en Rendi, así que su plata no pudo volver por otro lado, y
-    # borrarlo es corregir la carga (segunda revisión del 2026-11-10).
-    venc = str(row["fecha_vencimiento"] or "")[:10]
-    if str(row["created_at"] or "")[:10] < venc <= _iso_today():
-        return None
-    conocido, broker = _import_proyeccion.origen_plazo_fijo(row["undo_meta_json"])
-    if not (conocido and broker and _broker_existe(conn, uid, broker)):
+    broker = _pf_devuelve_al_borrar(conn, uid, row)
+    if not broker:
         return None
     meta = json.loads(row["undo_meta_json"])
     debito = float(meta.get("debito") or 0)
@@ -16085,6 +16111,18 @@ def renovar_plazo_fijo(pid: int, uid: int = Depends(get_effective_user)):
             "UPDATE plazos_fijos SET capital=?, fecha_inicio=?, fecha_vencimiento=? WHERE id=? AND user_id=?",
             (nuevo_capital, nuevo_inicio, nuevo_venc, pid, uid),
         )
+        # Renovado hacia adelante, el plazo fijo pasa a estar vivo en Rendi aunque
+        # se haya cargado vencido: cuando vuelva a vencer, su plata puede volver por
+        # el import (ver `_pf_devuelve_al_borrar`).
+        if row["undo_meta_json"] and nuevo_venc > _iso_today():
+            try:
+                _meta = json.loads(row["undo_meta_json"]) or {}
+            except (TypeError, ValueError):
+                _meta = None
+            if isinstance(_meta, dict) and _meta.get("src") == "pf_alta":
+                _meta["vivo_al_cargar"] = True
+                conn.execute("UPDATE plazos_fijos SET undo_meta_json=? WHERE id=? AND user_id=?",
+                             (json.dumps(_meta), pid, uid))
         conn.commit()
         conn.close()
         _ai_cache_invalidate(uid)

@@ -23,10 +23,12 @@ import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 const todayStr = () => hoyISO()
 const moneyOf = (m) => (n) => (m === 'USD' ? 'US$' : '$') + Math.round(n).toLocaleString('es-AR')
 
-// De qué broker salió la plata del plazo fijo, o null (plata de afuera, o uno
-// armado antes de que se guardara).
-export function origenDelPlazoFijo(pf) {
-  try { return JSON.parse(pf?.undo_meta_json || '{}')?.broker || null } catch { return null }
+// De qué broker salió la plata del plazo fijo (null: plata de afuera, o uno
+// armado antes de que se guardara) y si borrarlo se la devuelve. Lo decide el
+// servidor (`plata_al_borrar` en /plazos-fijos).
+export function plataAlBorrar(pf) {
+  const p = pf?.plata_al_borrar || {}
+  return { origen: p.broker || null, vuelve: !!p.vuelve }
 }
 
 export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers = [], onChange }) {
@@ -70,18 +72,16 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
   const renovar = (pf) => enVuelo.correr(() => renovarPf(pf), pf.id)
   const cobrar = (pf, broker) => enVuelo.correr(() => cobrarPf(pf, broker), pf.id)
 
-  // Borrar deshace el alta: si la plata salió de un broker (lo guarda el servidor
-  // desde 2026-11-10 en la receta del alta), vuelve ahí — salvo que haya vencido
-  // después de cargarlo, porque entonces pudo volver por otro lado (la trae el
-  // archivo de movimientos). Misma regla que el servidor
-  // (`_devolver_plata_del_plazo_fijo`). Se dice ANTES de confirmar, no después.
+  // Borrar deshace el alta: si la plata salió de un broker, vuelve ahí — salvo
+  // que haya vencido después de cargarlo, porque entonces pudo volver por otro
+  // lado (la trae el archivo de movimientos). La decisión la manda el servidor
+  // en la lista (`plata_al_borrar`), con la misma regla que aplica al borrar: la
+  // pantalla no la recalcula. Se dice ANTES de confirmar, no después.
   async function borrar(pf) {
-    const origen = origenDelPlazoFijo(pf)
-    const venc = pf.fecha_vencimiento || ''
-    const vencioDespues = (pf.created_at || '').slice(0, 10) < venc && venc <= todayStr()
+    const { origen, vuelve } = plataAlBorrar(pf)
     const plata = !origen ? ''
-      : vencioDespues ? ` Ya venció, así que borrarlo no le devuelve la plata a ${origen}. Si la plata ya volvió (por ejemplo, la trajo el archivo de movimientos), borralo; si todavía no la registraste, usá «Cobrar».`
-      : ` La plata vuelve a ${origen}, como si no lo hubieras armado.`
+      : vuelve ? ` La plata vuelve a ${origen}, como si no lo hubieras armado.`
+      : ` Ya venció, así que borrarlo no le devuelve la plata a ${origen}. Si la plata ya volvió (por ejemplo, la trajo el archivo de movimientos), borralo; si todavía no la registraste, usá «Cobrar».`
     if (!await confirmar(`¿Eliminar el plazo fijo en ${pf.banco}?${plata} Esta acción no se puede deshacer.`)) return
     try {
       const res = await api.delete(`/plazos-fijos/${pf.id}`)

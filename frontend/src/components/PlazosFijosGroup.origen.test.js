@@ -1,16 +1,17 @@
-// De qué broker salió la plata de un plazo fijo: lo lee el aviso de «Eliminar»
-// para decir ANTES de confirmar adónde vuelve (2026-11-10).
+// Qué pasa con la plata al borrar un plazo fijo: el aviso de «Eliminar» lo dice
+// ANTES de confirmar, con lo que decidió el servidor (2026-11-10).
 import { describe, it, expect } from 'vitest'
-import { origenDelPlazoFijo } from './PlazosFijosGroup'
+import { plataAlBorrar } from './PlazosFijosGroup'
 
-describe('origen de la plata del plazo fijo', () => {
-  it('lee el broker de la receta del alta', () => {
-    expect(origenDelPlazoFijo({ undo_meta_json: '{"src":"pf_alta","broker":"Bull Market"}' }))
-      .toBe('Bull Market')
+describe('la plata al borrar un plazo fijo', () => {
+  it('lee el broker y si vuelve de lo que manda el servidor', () => {
+    expect(plataAlBorrar({ plata_al_borrar: { broker: 'Bull Market', vuelve: true } }))
+      .toEqual({ origen: 'Bull Market', vuelve: true })
+    expect(plataAlBorrar({ plata_al_borrar: { broker: 'Bull Market', vuelve: false } }))
+      .toEqual({ origen: 'Bull Market', vuelve: false })
   })
-  it('plata de afuera, uno de antes o una receta rota: ninguno', () => {
-    expect(origenDelPlazoFijo({ undo_meta_json: '{"src":"pf_alta","broker":null}' })).toBe(null)
-    expect(origenDelPlazoFijo({ undo_meta_json: null })).toBe(null)
-    expect(origenDelPlazoFijo({ undo_meta_json: '{roto' })).toBe(null)
+  it('plata de afuera, uno de antes o sin el dato: ningún broker', () => {
+    expect(plataAlBorrar({ plata_al_borrar: { broker: null, vuelve: false } }).origen).toBe(null)
+    expect(plataAlBorrar({}).origen).toBe(null)
   })
 })

@@ -18,6 +18,7 @@ y la confirma (/api/imports/confirm). Ninguna llama al comparador directo.
      confirmar sin volver a mirar si entró plata entre medio.
 """
 import io
+import json
 import os
 import tempfile
 import uuid
@@ -437,9 +438,15 @@ def test_plazo_fijo_vencido_borrado_no_devuelve_la_plata():
     cu = _Cuenta(pesos=[_cobro(1, 9, 1000000, 1000000)])
     pid = _plazo_fijo(cu, 300000, fecha_inicio="2026-09-02", source_broker=BM)
     conn = main.get_db()
-    with conn:                                   # cargado el día que se armó, vivo hasta el 02/10
-        conn.execute("UPDATE plazos_fijos SET created_at='2026-09-02 15:00:00' WHERE id=?", (pid,))
+    with conn:                                   # así queda si se cargó el 02/09, vivo hasta el 02/10
+        meta = json.loads(conn.execute("SELECT undo_meta_json m FROM plazos_fijos WHERE id=?",
+                                       (pid,)).fetchone()["m"])
+        meta["vivo_al_cargar"] = True
+        conn.execute("UPDATE plazos_fijos SET created_at='2026-09-02 15:00:00', undo_meta_json=? "
+                     "WHERE id=?", (json.dumps(meta), pid))
     conn.close()
+    lista = cu.c.get("/api/plazos-fijos", headers=cu.h).json()
+    assert lista[0]["plata_al_borrar"] == {"broker": BM, "vuelve": False}   # la pantalla lo avisa
     cu.importar([_cobro(3, 10, 307397.26, 1007397.26, 40)], [])   # la vuelta, importada
     caja1 = cu.caja()
     r = cu.c.delete(f"/api/plazos-fijos/{pid}", headers=cu.h)
@@ -454,6 +461,8 @@ def test_plazo_fijo_cargado_ya_vencido_por_error_si_devuelve():
     caja0 = cu.caja()
     pid = _plazo_fijo(cu, 200000, fecha_inicio="2026-08-01", source_broker=BM)
     assert cu.caja() == caja0 - 200000
+    lista = cu.c.get("/api/plazos-fijos", headers=cu.h).json()
+    assert lista[0]["plata_al_borrar"] == {"broker": BM, "vuelve": True}
     r = cu.c.delete(f"/api/plazos-fijos/{pid}", headers=cu.h)
     assert r.status_code == 200, r.text
     assert cu.caja() == caja0
