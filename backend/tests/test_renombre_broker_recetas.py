@@ -169,7 +169,7 @@ def _recetas_y_registros(uid: int) -> tuple:
     try:
         for t, c in (("operations", "undo_meta_json"), ("positions", "undo_meta_json"),
                      ("archived_positions", "payload"), ("deleted_ops_journal", "payload_json"),
-                     ("dividendos_reemplazados", "op_json")):
+                     ("dividendos_reemplazados", "op_json"), ("plazos_fijos", "undo_meta_json")):
             for (v,) in conn.execute(f"SELECT {c} FROM {t} WHERE user_id=? AND {c} IS NOT NULL",
                                      (uid,)):
                 for s in _textos(v):
@@ -654,6 +654,24 @@ def _armar_borrado_de_conversion(cta):
     return {"tok": cta.ok("delete", f"/api/movements/{_fila_de_movimientos(cta, ctx['oid'])}")["undo_token"]}
 
 
+# Plazo fijo armado con plata de la cuenta → borrarlo: la plata vuelve a esa cuenta
+# (receta del alta, 2026-11-10). Con y sin autodepósito.
+def _armar_plazo_fijo(cta, deposito=1000000):
+    if deposito:
+        cta.depositar(deposito)
+    return {"pid": cta.ok("post", "/api/plazos-fijos", json={
+        "banco": "Galicia", "capital": 500000, "moneda": "ARS", "tasa": 0.36,
+        "fecha_inicio": "2026-08-05", "plazo_dias": 30, "source_broker": cta.nombre})["id"]}
+
+
+def _armar_plazo_fijo_con_autodeposito(cta):
+    return _armar_plazo_fijo(cta, deposito=100000)
+
+
+def _actuar_borrar_plazo_fijo(cta, ctx):
+    return [_codigo(cta.pedir("delete", f"/api/plazos-fijos/{ctx['pid']}"))]
+
+
 def _armar_cobro_de_plazo_fijo(cta):
     from datetime import date, timedelta
     cta.depositar(1000000)
@@ -920,6 +938,10 @@ ESCENARIOS = [
               _actuar_deshacer_op, registros={"manual_op"}, sub_usd=True),
     Escenario("cobro_de_plazo_fijo", _armar_cobro_de_plazo_fijo, _actuar_borrar_en_movimientos,
               recetas={"pf_cobro"}),
+    Escenario("borrar_plazo_fijo", _armar_plazo_fijo, _actuar_borrar_plazo_fijo,
+              recetas={"pf_alta"}),
+    Escenario("borrar_plazo_fijo_con_autodeposito", _armar_plazo_fijo_con_autodeposito,
+              _actuar_borrar_plazo_fijo, recetas={"pf_alta"}),
     Escenario("deshacer_borrado_de_cobro_de_plazo_fijo", _armar_borrado_de_cobro_de_plazo_fijo,
               _actuar_deshacer_op, registros={"manual_op"}),
     Escenario("deshacer_edicion_de_posicion", _armar_edicion_grupo, _actuar_deshacer_grupo,

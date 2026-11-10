@@ -56,6 +56,9 @@ COLUMNAS_JSON = (
     # El dividendo confirmado en la bandeja que un import reemplazó (la fila entera,
     # con su receta): vuelve si ese import se revierte — a la cuenta que diga acá.
     ("dividendos_reemplazados", "op_json"),
+    # De qué broker salió la plata de un plazo fijo (2026-11-10): borrarlo se la
+    # devuelve a ese broker. Con el nombre viejo, no la encontraría.
+    ("plazos_fijos", "undo_meta_json"),
     # La plantilla de columnas del importador ("Guardar mapeo actual"): el broker fijo
     # al que van todas las filas del archivo. Con el nombre viejo, importar con la
     # plantilla después de renombrar volvía a crear un broker con ese nombre y metía

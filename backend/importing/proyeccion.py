@@ -60,10 +60,85 @@ log = logging.getLogger(__name__)
 MOTIVO_MANUAL = "datos_manuales"
 MOTIVO_VENCIMIENTO = "vencimiento_en_ventana"
 MOTIVO_SPLIT = "split_en_ventana"
+# Lo archivado (`/api/sections/archive`): las posiciones salieron de la cartera
+# sin venta ni plata, así que Rendi no las ve y la foto las leía como «no las
+# tenías» → las volvía a comprar con un aporte sintético (y restaurarlas después
+# las duplicaba). No depende de la fecha: archivado antes o después de la foto,
+# la cartera no dice cuánto había.
+MOTIVO_ARCHIVADO = "posiciones_archivadas"
+# Los motivos de esta lista: lo que la cartera no puede decir a la fecha de la foto.
+MOTIVOS_PROYECCION = (MOTIVO_MANUAL, MOTIVO_VENCIMIENTO, MOTIVO_SPLIT, MOTIVO_ARCHIVADO)
 
 
 def _norm(s) -> str:
     return (s or "").strip().upper()
+
+
+def _comparable(asset, asset_type=None) -> str:
+    """El nombre con el que la cartera se compara contra la foto: la MISMA
+    traducción que pasa la foto (`tenencia.ticker_comparable`). Ver ahí por qué."""
+    from .tenencia import ticker_comparable
+    return ticker_comparable(asset, asset_type)
+
+
+def posiciones_por_ticker(conn, uid: int, brokers: List[str]) -> Dict[str, dict]:
+    """Lo que la cartera tiene HOY en esos brokers, con el nombre de la comparación:
+    `{ticker: {"q": cantidad, "inv": invertido, "nombres": {como está guardado},
+    "tipo": asset_type}}`.
+
+    Es el único lugar que lee `positions` para comparar contra la foto: la
+    proyección, la foto sin fecha, el reparto por cuenta y las guardas del modo
+    que pisa leen todos de acá, así que la traducción no puede faltar en uno.
+    `nombres` sirve para lo contrario: un ajuste se escribe con el nombre de la
+    comparación, así que si la cartera lo guarda con OTRO (GOLD, AL30D), la venta
+    no encontraría esos lotes — el modo que pisa no lo toca solo."""
+    out: Dict[str, dict] = {}
+    if not brokers:
+        return out
+    ph = ",".join("?" * len(brokers))
+    for r in conn.execute(
+            f"SELECT asset, asset_type, SUM(quantity) q, SUM(invested) inv FROM positions "
+            f"WHERE user_id=? AND COALESCE(is_cash,0)=0 AND broker IN ({ph}) "
+            f"GROUP BY asset, asset_type", (uid, *brokers)):
+        k = _comparable(r["asset"], r["asset_type"])
+        if not k:
+            continue
+        d = out.setdefault(k, {"q": 0.0, "inv": 0.0, "nombres": set(), "tipo": r["asset_type"]})
+        d["q"] += float(r["q"] or 0)
+        d["inv"] += float(r["inv"] or 0)
+        d["nombres"].add(_norm(r["asset"]))
+    return out
+
+
+def archivados(conn, uid: int, brokers: List[str]) -> set:
+    """Los activos de esos brokers que están en una sección archivada (con el
+    nombre de la comparación). Ver `MOTIVO_ARCHIVADO`."""
+    import json as _json
+    par = set(brokers or ())
+    out = set()
+    for r in conn.execute("SELECT payload FROM archived_positions WHERE user_id=?", (uid,)):
+        try:
+            filas = _json.loads(r["payload"] or "[]") or []
+        except (TypeError, ValueError):
+            continue
+        for f in filas:
+            if isinstance(f, dict) and f.get("broker") in par and not f.get("is_cash"):
+                k = _comparable(f.get("asset"), f.get("asset_type"))
+                if k:
+                    out.add(k)
+    return out
+
+
+def tenencia_sin_rodar(conn, uid: int, *, pair: List[str]) -> Tuple[Dict[str, float], List[dict]]:
+    """Lo mismo que `proyectar` cuando la foto no tiene fecha: la cartera de hoy,
+    sin rodar nada hacia atrás (no hay a qué fecha), con la misma traducción de
+    tickers y dejando afuera lo archivado."""
+    pos = posiciones_por_ticker(conn, uid, pair)
+    fuera = archivados(conn, uid, pair)
+    no_rec = [{"ticker": a, "motivo": MOTIVO_ARCHIVADO,
+               "rendi_qty_hoy": round(pos.get(a, {}).get("q", 0.0), 6)} for a in sorted(fuera)]
+    return ({a: round(d["q"], 6) for a, d in pos.items() if d["q"] > 1e-9 and a not in fuera},
+            no_rec)
 
 
 def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
@@ -88,21 +163,23 @@ def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
     ph = ",".join("?" * len(pair))
 
     # ── 1. El ancla: lo que el usuario ve HOY, por el par de brokers ─────────
-    qty: Dict[str, float] = {}
-    for r in conn.execute(
-            f"SELECT asset, SUM(quantity) q FROM positions "
-            f"WHERE user_id=? AND COALESCE(is_cash,0)=0 AND broker IN ({ph}) "
-            f"GROUP BY asset", (uid, *pair)):
-        qty[_norm(r["asset"])] = qty.get(_norm(r["asset"]), 0.0) + float(r["q"] or 0)
+    # Con el nombre de la comparación (`posiciones_por_ticker`): la foto ya pasó
+    # por la misma traducción. `tipos` sirve para traducir lo que no guarda el
+    # tipo de activo (las operaciones a mano).
+    pos = posiciones_por_ticker(conn, uid, pair)
+    qty: Dict[str, float] = {a: d["q"] for a, d in pos.items()}
+    tipos: Dict[str, str] = {n: d["tipo"] for d in pos.values() for n in d["nombres"]}
 
     dudosos: Dict[str, str] = {}
+    for a in archivados(conn, uid, pair):
+        dudosos[a] = MOTIVO_ARCHIVADO
 
     # ── 2. Deshacer los movimientos POSTERIORES a D ──────────────────────────
     # Una compra posterior a la foto no estaba ahí: se resta. Una venta
     # posterior sí estaba: se suma. Es la única forma de que una operación hecha
     # después del corte no aparezca como discrepancia contra el broker.
     for r in conn.execute(
-            f"""SELECT n.asset_symbol a, n.operation_type op, n.quantity q
+            f"""SELECT n.asset_symbol a, n.asset_type t, n.operation_type op, n.quantity q
                   FROM {TX_VIVAS}
                  WHERE b.user_id=? AND n.broker IN ({ph})
                    AND n.date > ? AND n.asset_symbol IS NOT NULL
@@ -110,13 +187,13 @@ def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
         v = float(r["q"] or 0)
         if v <= 0:
             continue
-        a = _norm(r["a"])
+        a = _comparable(r["a"], r["t"] or tipos.get(_norm(r["a"])))
         qty[a] = qty.get(a, 0.0) - (v if r["op"] == "BUY" else -v)
 
     # ── 3. Sumar lo que el PREVIEW agregaría hasta D ─────────────────────────
     if session_id:
         for r in conn.execute(
-                """SELECT n.asset_symbol a, n.operation_type op, n.quantity q
+                """SELECT n.asset_symbol a, n.asset_type t, n.operation_type op, n.quantity q
                      FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
                     WHERE b.user_id=? AND b.id=? AND n.excluded_at IS NULL
                       AND n.date <= ? AND n.asset_symbol IS NOT NULL
@@ -124,7 +201,7 @@ def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
             v = float(r["q"] or 0)
             if v <= 0:
                 continue
-            a = _norm(r["a"])
+            a = _comparable(r["a"], r["t"] or tipos.get(_norm(r["a"])))
             qty[a] = qty.get(a, 0.0) + (v if r["op"] == "BUY" else -v)
 
     # ── 4. Los que NO se pueden rodar hacia atrás ────────────────────────────
@@ -133,17 +210,18 @@ def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
     # sin avisar. Hasta el 2026-11-07 sólo se miraban las operaciones: una compra
     # a mano posterior salía como «ausente en la foto», con pedido de cerrarla.
     for m in _a_mano_posterior(conn, uid, pair, D):
-        if _norm(m["activo"]) and _cambia_cantidad(m):
-            dudosos[_norm(m["activo"])] = MOTIVO_MANUAL
+        a = _comparable(m["activo"], m.get("tipo_activo") or tipos.get(_norm(m["activo"])))
+        if a and _cambia_cantidad(m):
+            dudosos.setdefault(a, MOTIVO_MANUAL)
 
     # Splits ajustados dentro de la ventana: la cantidad de hoy está multiplicada
     # por un factor que no dejó movimiento.
     for r in conn.execute(
-            f"""SELECT asset a, split_adjusted_through s FROM positions
+            f"""SELECT asset a, asset_type t, split_adjusted_through s FROM positions
                  WHERE user_id=? AND COALESCE(is_cash,0)=0 AND broker IN ({ph})
                    AND split_adjusted_through IS NOT NULL""", (uid, *pair)):
         if str(r["s"] or "")[:10] > D:
-            dudosos.setdefault(_norm(r["a"]), MOTIVO_SPLIT)
+            dudosos.setdefault(_comparable(r["a"], r["t"]), MOTIVO_SPLIT)
 
     # ── 5. Correctores FECHADOS ──────────────────────────────────────────────
     # Una letra que la FOTO lista y que venció entre D y hoy: el sweep ya la
@@ -198,12 +276,13 @@ def _a_mano_posterior(conn, uid: int, pair: List[str], D: str) -> List[dict]:
              JOIN import_batches b ON b.id = l.batch_id
             WHERE b.user_id=? AND l.position_id IS NOT NULL""", (uid,))}
     for r in conn.execute(
-            f"""SELECT id, entry_date d, broker b, asset a FROM positions
+            f"""SELECT id, entry_date d, broker b, asset a, asset_type t FROM positions
                  WHERE user_id=? AND COALESCE(is_cash,0)=0 AND broker IN ({ph})
                    AND entry_date IS NOT NULL""", (uid, *pair)):
         if r["id"] not in vinculadas and str(r["d"])[:10] > D:
             out.append({"origen": "compra_a_mano", "fecha": str(r["d"])[:10],
-                        "broker": r["b"], "activo": r["a"], "tipo": "compra"})
+                        "broker": r["b"], "activo": r["a"], "tipo": "compra",
+                        "tipo_activo": r["t"]})
     return out
 
 
@@ -239,16 +318,19 @@ def plata_posterior(conn, uid: int, *, pair: List[str], fecha: str) -> List[dict
         que se cargaron (`cargado_at` es UTC);
       · lo cargado desde la pantalla: operaciones (ventas, conversiones, cierres
         de futuros, cobros de bonos) y compras (`_a_mano_posterior`);
-      · los plazos fijos armados o cobrados después: la tabla NO guarda de qué
-        broker salió o a cuál entró la plata, así que cuentan todos (la duda
-        frena el ajuste: lo que se pierde es una corrección, no plata).
+      · los plazos fijos armados después con plata de este par. Desde el
+        2026-11-10 el plazo fijo guarda de qué broker salió (`origen_plazo_fijo`);
+        el armado con plata de afuera no tocó ninguna cuenta y no cuenta. Los de
+        antes no lo guardan: cuentan siempre (la duda frena el ajuste: lo que se
+        pierde es una corrección, no plata). Los COBRADOS después cuentan todos:
+        la fila no dice a qué cuenta entró la plata.
     Los borrados y los «deshacer» de movimientos sacan el renglón y su plata
     juntos: la caja queda coherente con lo que queda y no hace falta mirarlos.
-    ⚠️ DOS EXCEPCIONES CONOCIDAS, sin arreglar (revisión del 2026-11-08):
-    borrar un plazo fijo saca el renglón pero NO le devuelve la plata al broker
-    (la tabla no sabe de cuál salió), y archivar una sección de renta fija saca
-    posiciones sin tocar la caja. En los dos casos el débito queda sin rastro y
-    este control no lo ve.
+    Borrar un plazo fijo también, desde el 2026-11-10: le devuelve la plata al
+    broker de donde salió (antes la dejaba debitada, sin rastro, y el ajuste de
+    una foto posterior la «reponía» como un aporte). Archivar una sección no
+    mueve plata (oculta las posiciones): lo archivado queda fuera de la
+    comparación de tenencias (`MOTIVO_ARCHIVADO`), y la caja no cambia.
     """
     from fechas import dia_art_de_texto
     D = str(fecha)[:10]
@@ -272,14 +354,34 @@ def plata_posterior(conn, uid: int, *, pair: List[str], fecha: str) -> List[dict
         out.append({"origen": m["origen"], "fecha": m["fecha"], "broker": m["broker"],
                     "tipo": "operacion"})
     for r in conn.execute(
-            "SELECT fecha_inicio, closed_at FROM plazos_fijos WHERE user_id=?", (uid,)):
+            "SELECT fecha_inicio, closed_at, undo_meta_json FROM plazos_fijos WHERE user_id=?",
+            (uid,)):
         ini = str(r["fecha_inicio"] or "")[:10]
-        if ini > D:
-            out.append({"origen": "plazo_fijo", "fecha": ini, "broker": None, "tipo": "armado"})
+        conocido, de_broker = origen_plazo_fijo(r["undo_meta_json"])
+        if ini > D and (not conocido or de_broker in pair):
+            out.append({"origen": "plazo_fijo", "fecha": ini, "broker": de_broker,
+                        "tipo": "armado"})
         cobro = dia_art_de_texto(r["closed_at"])
         if cobro and cobro > D:
             out.append({"origen": "plazo_fijo", "fecha": cobro, "broker": None, "tipo": "cobrado"})
     return out
+
+
+def origen_plazo_fijo(receta: Optional[str]) -> Tuple[bool, Optional[str]]:
+    """De qué broker salió la plata de un plazo fijo: `(se sabe, broker)`.
+
+    `(True, None)` = plata de afuera de Rendi (no tocó ninguna cuenta);
+    `(False, None)` = no se sabe (armado antes de que se guardara, 2026-11-10)."""
+    import json as _json
+    if not receta:
+        return False, None
+    try:
+        meta = _json.loads(receta) or {}
+    except (TypeError, ValueError):
+        return False, None
+    if not isinstance(meta, dict) or meta.get("src") != "pf_alta":
+        return False, None
+    return True, (meta.get("broker") or None)
 
 
 MOTIVO_NO_VERIFICA = "proyeccion_no_verifica"
@@ -351,9 +453,15 @@ def verificar_contra_snapshot(conn, uid: int, fecha: str,
             ORDER BY date DESC LIMIT 1""", (uid, str(fecha)[:10])).fetchone()
     if not fila:
         return _sin("no_hay_snapshot_del_cron_hasta_esa_fecha")
+    # El registro diario guarda el activo como está en la cartera (GOLD, AL30D) y la
+    # proyección viene con el nombre de la comparación (B, AL30): se traduce con la
+    # misma función. El registro no guarda el tipo de activo: sale de la cartera.
+    tipos = {_norm(r["asset"]): r["asset_type"] for r in conn.execute(
+        "SELECT DISTINCT asset, asset_type FROM positions WHERE user_id=? "
+        "AND COALESCE(is_cash,0)=0", (uid,))}
     try:
-        esperado = {_norm(h.get("asset")) for h in _json.loads(fila["holdings_json"])
-                    if h.get("asset")}
+        esperado = {_comparable(h.get("asset"), tipos.get(_norm(h.get("asset"))))
+                    for h in _json.loads(fila["holdings_json"]) if h.get("asset")}
     except (ValueError, TypeError):
         return _sin("holdings_json_ilegible")
     if not esperado:

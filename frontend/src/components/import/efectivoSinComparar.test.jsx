@@ -28,3 +28,17 @@ describe('efectivo sin comparar en la revisión de la foto', () => {
     expect(html).not.toContain('Efectivo sin comparar')
   })
 })
+
+// 2026-11-10: lo archivado salía como «no lo tenías» y la foto lo recompraba.
+// Ahora el servidor lo deja sin comparar con su motivo, y la pantalla lo nombra.
+describe('lo archivado en la revisión de la foto', () => {
+  it('dice que lo archivaste, no un código interno', () => {
+    const html = renderToStaticMarkup(
+      <ReconcileStep data={{ ...base, no_reconciliable: [
+        { ticker: 'AL30', motivo: 'posiciones_archivadas', rendi_qty_hoy: 0 }] }}
+                     decisiones={new Map()} onDecidir={() => {}} />)
+    expect(html).toContain('AL30')
+    expect(html).toContain('lo archivaste')
+    expect(html).not.toContain('posiciones_archivadas')
+  })
+})

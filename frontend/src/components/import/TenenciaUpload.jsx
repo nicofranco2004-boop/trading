@@ -3,7 +3,15 @@ import { api } from '../../utils/api'
 import { fechaCorta } from '../../utils/cuantoSeMueve'
 
 // Los motivos de `importing/proyeccion.py` (no se pudo llevar a la fecha de la foto).
+// Lo archivado va aparte: no es «algo posterior», y lo que hay que hacer es otra cosa.
 const MOTIVOS_NO_COMPARADO = new Set(['datos_manuales', 'split_en_ventana', 'vencimiento_en_ventana'])
+const MOTIVO_ARCHIVADO = 'posiciones_archivadas'
+
+// La caja cambió entre la vista previa de la foto y «Aplicar»: el ajuste de
+// efectivo que se había calculado ya no lleva a la foto y el servidor no lo aplicó.
+export const TEXTO_CAJA_AL_CONFIRMAR = ('El efectivo no lo ajustamos: cambió desde que '
+  + 'subiste la foto (entró o salió plata). El resto se aplicó. Si querés que el efectivo '
+  + 'quede como dice la foto, volvé a subirla.')
 
 // Completar la cartera con la "Tenencia valorizada" (PDF) de Bull Market — la
 // foto de posiciones. Reconcilia contra lo ya importado de la Cuenta Corriente:
@@ -27,6 +35,7 @@ export default function TenenciaUpload({
   const [error, setError] = useState(null)
   const [preview, setPreview] = useState(null)   // { session_id, to_seed[], matched, ... }
   const [done, setDone] = useState(false)
+  const [cajaAlConfirmar, setCajaAlConfirmar] = useState(null)
 
   useEffect(() => {
     api.get('/brokers').then(bs => {
@@ -54,7 +63,8 @@ export default function TenenciaUpload({
     if (!preview?.session_id) return
     setBusy(true); setError(null)
     try {
-      await api.post('/imports/confirm', { session_id: preview.session_id, skip_row_indices: [] })
+      const c = await api.post('/imports/confirm', { session_id: preview.session_id, skip_row_indices: [] })
+      setCajaAlConfirmar(c?.caja_sin_ajustar || null)
       setDone(true)
       onConfirmed && onConfirmed()
     } catch (e) { setError(e?.message || `No pudimos aplicar ${docLabel}.`) }
@@ -67,6 +77,9 @@ export default function TenenciaUpload({
   // muestra por su lado: mezclados, un ausente salía como «no comparamos».
   const noComparados = [...new Set((preview?.no_reconciliable || [])
     .filter(d => d.ticker && MOTIVOS_NO_COMPARADO.has(d.motivo))
+    .map(d => d.ticker))]
+  const archivados = [...new Set((preview?.no_reconciliable || [])
+    .filter(d => d.ticker && d.motivo === MOTIVO_ARCHIVADO)
     .map(d => d.ticker))]
   const seeded = preview?.to_seed || []
   // Total POR MONEDA (no sumamos ARS + USD en un solo número): la foto de PPI
@@ -95,6 +108,9 @@ export default function TenenciaUpload({
           <div className="text-center py-6">
             <div className="text-2xl mb-2">✅</div>
             <p className="text-ink-1 font-medium">¡Listo! Tu cartera quedó completa.</p>
+            {cajaAlConfirmar && (
+              <p className="text-xs text-rendi-warn mt-2">{TEXTO_CAJA_AL_CONFIRMAR}</p>
+            )}
             <button onClick={onClose} className="mt-4 px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold">
               Cerrar
             </button>
@@ -228,6 +244,11 @@ export default function TenenciaUpload({
             {noComparados.length > 0 && (
               <p className="text-xs text-rendi-warn mb-2">
                 No comparamos {noComparados.join(', ')}: tiene algo posterior a la fecha de {docLabel} que no podemos deshacer (una carga a mano —lo cargado sin fecha cuenta como de hoy—, un split o un vencimiento).
+              </p>
+            )}
+            {archivados.length > 0 && (
+              <p className="text-xs text-rendi-warn mb-2">
+                No comparamos {archivados.join(', ')}: lo archivaste en Rendi, así que la cartera no muestra cuánto tenés. Si lo seguís teniendo, restauralo desde «Posiciones archivadas» y volvé a subir {docLabel}.
               </p>
             )}
             <p className="text-xs text-ink-3 mb-3">

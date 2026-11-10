@@ -8,6 +8,7 @@ import { fechaCorta } from '../../utils/cuantoSeMueve'
 import { whatsappUrl } from '../../utils/support'
 import { WhatsAppIcon } from '../SupportWhatsAppFab'
 import { track } from '../../utils/track'
+import { TEXTO_CAJA_AL_CONFIRMAR } from './TenenciaUpload'
 
 // Explicaciones por campo Rendi — se muestran en un (?) al lado del label.
 const FIELD_HELP = {
@@ -865,12 +866,15 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
     if (!tenenciaPreview?.session_id) return
     setBusy(true); setError(null)
     try {
-      await api.post('/imports/confirm', {
+      const c = await api.post('/imports/confirm', {
         session_id: tenenciaPreview.session_id,
         skip_row_indices: [],
         aprobar_tickers: tickersAprobados(decisiones),
       })
-      setConfirmResult({ ...(tenenciaPreview._movimientos || {}), tenencia: tenenciaPreview })
+      // `caja_sin_ajustar` del confirm: la caja cambió desde la vista previa y el
+      // ajuste de efectivo no entró. Se dice en «Listo».
+      setConfirmResult({ ...(tenenciaPreview._movimientos || {}),
+                         tenencia: { ...tenenciaPreview, caja_al_confirmar: c?.caja_sin_ajustar || null } })
       setStep(STEP_DONE)
     } catch (ex) {
       setError(ex.message || 'No pudimos aplicar la foto.')
@@ -1993,6 +1997,7 @@ const MOTIVO_LABEL = {
   datos_manuales: 'lo editaste a mano',
   vencimiento_en_ventana: 'venció en el período',
   split_en_ventana: 'hubo un split',
+  posiciones_archivadas: 'lo archivaste',
   fecha_desconocida: 'sin fecha del resumen',
   proyeccion_no_verifica: 'no pudimos verificarlo',
 }
@@ -3170,6 +3175,9 @@ function DoneStep({ result }) {
           ) : (result.tenencia.to_seed?.length > 0) ? (
             <p className="text-xs text-rendi-pos">+ completamos <strong className="tabular">{result.tenencia.to_seed.length}</strong> posiciones que ya tenías, desde tu foto de tenencia (Tenencia / Estado de Cuenta).</p>
           ) : null
+        )}
+        {result.tenencia?.caja_al_confirmar && (
+          <p className="text-xs text-rendi-warn px-4">{TEXTO_CAJA_AL_CONFIRMAR}</p>
         )}
       </div>
 

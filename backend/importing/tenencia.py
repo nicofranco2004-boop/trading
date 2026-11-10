@@ -29,7 +29,7 @@ from __future__ import annotations
 from money_fmt import fmt_num
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Prefijo de la nota del seed BUY sintético de la foto (una fila por activo). Es un
 # CONTRATO entre el productor (build_tenencia_seed_txs, abajo) y varios consumidores
@@ -211,6 +211,31 @@ def fecha_de_nombre_archivo(nombre: str) -> Optional[str]:
     return f"{y:04d}-{mo:02d}-{d:02d}"
 
 
+def ticker_comparable(ticker: Optional[str], asset_type: Optional[str] = None) -> str:
+    """El nombre con el que se COMPARAN la foto y la cartera. Una sola traducción
+    para los dos lados: la foto pasa por acá (`normalizar_tickers`) y la cartera
+    también (`proyeccion.posiciones_por_ticker`, `proyectar`).
+
+    Junta las dos traducciones de lo que entra de un broker: el código que cambió
+    (`ticker_importado`: SQ→XYZ, GOLD→B) y la pata dólar (`consolidate_cd`:
+    AL30D→AL30). Hasta el 2026-11-10 la foto pasaba por las dos y la cartera sólo
+    por mayúsculas: una posición GOLD cargada a mano contra una foto que decía
+    GOLD comparaba «B 10» contra «GOLD 10», y la foto compraba 10 B con un aporte
+    sintético (lo mismo con AL30D, y sin pedir la aprobación del bono amortizante,
+    porque «de AL30 no tenías nada»).
+
+    Un fondo, una cripto o una moneda no cambian de código (misma regla que
+    `Holding`)."""
+    t = (ticker or "").strip().upper()
+    if not t:
+        return t
+    if (asset_type or "").upper() not in ("CRYPTO", "FIAT", "FUND"):
+        from tickers_renombrados import ticker_importado
+        t = ticker_importado(t) or t
+    from .tickers_cd import consolidate_cd
+    return consolidate_cd(t, asset_type) or t
+
+
 def normalizar_tickers(snapshot: "TenenciaSnapshot") -> List[dict]:
     """Pasa los tickers de la FOTO por la misma canonicalización que los movimientos.
 
@@ -243,11 +268,10 @@ def normalizar_tickers(snapshot: "TenenciaSnapshot") -> List[dict]:
     existe para no hacer, y el asesor tiene que poder ver que su AL30D se leyó
     como AL30 antes de confirmar.
     """
-    from .tickers_cd import consolidate_cd
     cambios: List[dict] = []
     for h in snapshot.holdings:
         antes = h.ticker
-        despues = consolidate_cd(antes, h.asset_type)
+        despues = ticker_comparable(antes, h.asset_type)
         if despues and despues != antes:
             h.ticker = despues
             cambios.append({"de": antes, "a": despues,
@@ -415,6 +439,123 @@ def compute_reconcile(current_qty_by_asset: dict, snapshot: "TenenciaSnapshot",
                 and str(asset).strip().upper() not in _fuera):
             res.not_in_snapshot.append((asset, q))
     return res
+
+
+def compute_reconcile_par(por_moneda: Dict[str, Dict[str, float]],
+                          snapshot: "TenenciaSnapshot", *,
+                          total: Optional[Dict[str, float]] = None,
+                          no_reconciliable_motivo: str = None,
+                          no_comparables=None) -> Tuple[ReconcileResult, Dict[str, ReconcileResult]]:
+    """La foto contra el PAR de cuentas (la de pesos y su «· USD»), y después cada
+    ajuste a la cuenta que le toca. Devuelve `(veredicto_del_par, {moneda: ajustes})`.
+
+    🔴 POR QUÉ EL VEREDICTO ES DEL PAR. Un mismo CEDEAR puede estar comprado en una
+    moneda y listado por el broker en la otra: Bull Market lista «Cedears ARS» AVGO
+    23 y «Cedears U$S» AVGOD 5, y Rendi puede tener los 28 en la cuenta en dólares.
+    Hasta el 2026-11-10 cada moneda se comparaba sola: la de dólares veía «28 contra
+    5, sobran 23» y el modo que pisa los vendía a costo, sin preguntar. Dos de los
+    tres baldes ya se corregían contra el par (lo que falta, lo ausente); el de lo
+    que sobra no — el propio endpoint lo tenía anotado como pendiente. Con el
+    veredicto del par:
+      · 28 contra 23 + 5 → coincide, en ninguna de las dos cuentas se toca nada;
+      · 23 + 5 en Rendi contra 23 en la foto → sobran 5 (antes: «coincide», porque
+        la cuenta en dólares ni se miraba cuando la foto no traía dólares);
+      · 23 en Rendi contra 23 + 5 en la foto → faltan 5 (antes: «coincide», porque
+        los 5 se neteaban contra los 23 del par y desaparecían).
+
+    `por_moneda` es lo que Rendi tenía en cada cuenta; `total`, lo del par entero
+    (la proyección del par netea lo que una cuenta sola no puede: comprado en
+    pesos y vendido en dólares). Sin `total`, se suma `por_moneda`.
+
+    CÓMO SE REPARTE lo que hay que ajustar: a la cuenta donde está la diferencia.
+    Lo que falta va a las cuentas donde la foto dice más que Rendi; lo que sobra,
+    a las cuentas donde Rendi tiene más que la foto. Cuando las dos cuentas
+    difieren en el mismo sentido el reparto es exacto (cada una su diferencia), y
+    cuando difieren en sentido contrario sólo una puede recibirlo: en ningún caso
+    hay que elegir. Si la proyección por cuenta no suma lo del par (raro: una
+    operación cruzada entre monedas), el resto va a la cuenta con más foto (lo que
+    falta) o con más tenencia (lo que sobra), y nunca se saca más de lo que hay.
+    """
+    monedas = list(por_moneda)
+    if total is None:
+        total = {}
+        for q in por_moneda.values():
+            for a, v in q.items():
+                total[a] = total.get(a, 0.0) + float(v or 0)
+    # La foto del par: una fila por ticker, sumando las monedas. Las filas por
+    # moneda se guardan para repartir (precio y tipo de cada cuenta).
+    foto_por: Dict[str, Dict[str, "Holding"]] = {}
+    fusion: Dict[str, "Holding"] = {}
+    for h in snapshot.holdings:
+        ccy = (h.currency or "ARS").upper()
+        foto_por.setdefault(h.ticker, {})[ccy] = h
+        if h.ticker in fusion:
+            f = fusion[h.ticker]
+            fusion[h.ticker] = Holding(ticker=f.ticker, asset_type=f.asset_type,
+                                       quantity=f.quantity + h.quantity,
+                                       value=f.value + h.value, currency=f.currency,
+                                       price_per1=f.price_per1, per100=f.per100, name=f.name)
+        else:
+            fusion[h.ticker] = Holding(ticker=h.ticker, asset_type=h.asset_type,
+                                       quantity=h.quantity, value=h.value, currency=ccy,
+                                       price_per1=h.price_per1, per100=h.per100, name=h.name)
+    par = compute_reconcile(total, TenenciaSnapshot(holdings=list(fusion.values()),
+                                                    date=snapshot.date),
+                            no_reconciliable_motivo=no_reconciliable_motivo,
+                            no_comparables=no_comparables)
+    partes = {c: ReconcileResult() for c in monedas}
+    if no_reconciliable_motivo:
+        return par, partes
+
+    def _rendi(c, tk):
+        return max(0.0, float(por_moneda.get(c, {}).get(tk, 0.0) or 0))
+
+    def _foto(c, tk):
+        h = foto_por.get(tk, {}).get(c)
+        return float(h.quantity) if h else 0.0
+
+    for hf, gap in par.to_seed:
+        tk = hf.ticker
+        cand = [c for c in foto_por.get(tk, {}) if c in partes]
+        if not cand:
+            continue
+        resto, dado = float(gap), {}
+        for c in sorted(cand, key=lambda c: _foto(c, tk) - _rendi(c, tk), reverse=True):
+            parte = min(max(0.0, _foto(c, tk) - _rendi(c, tk)), resto)
+            if parte > EPS_QTY_ABS:
+                dado[c] = parte
+                resto -= parte
+        if resto > EPS_QTY_ABS:
+            c = max(cand, key=lambda c: _foto(c, tk))
+            dado[c] = dado.get(c, 0.0) + resto
+        for c, parte in dado.items():
+            partes[c].to_seed.append((foto_por[tk][c], round(parte, 6)))
+
+    def _sacar(tk, cuanto):
+        """{moneda: (rendi, cuánto sacar)} — de donde Rendi tiene de más."""
+        cand = [c for c in monedas if _rendi(c, tk) > EPS_QTY_ABS]
+        resto, dado = float(cuanto), {}
+        for c in sorted(cand, key=lambda c: _rendi(c, tk) - _foto(c, tk), reverse=True):
+            parte = min(max(0.0, _rendi(c, tk) - _foto(c, tk)), resto)
+            if parte > EPS_QTY_ABS:
+                dado[c] = parte
+                resto -= parte
+        for c in sorted(cand, key=lambda c: _rendi(c, tk) - dado.get(c, 0.0), reverse=True):
+            if resto <= EPS_QTY_ABS:
+                break
+            parte = min(_rendi(c, tk) - dado.get(c, 0.0), resto)
+            if parte > EPS_QTY_ABS:
+                dado[c] = dado.get(c, 0.0) + parte
+                resto -= parte
+        return {c: (_rendi(c, tk), parte) for c, parte in dado.items()}
+
+    for tk, rq, sq in par.over:
+        for c, (rc, parte) in _sacar(tk, rq - sq).items():
+            partes[c].over.append((tk, rc, round(rc - parte, 6)))
+    for tk, rq in par.not_in_snapshot:
+        for c, (rc, _parte) in _sacar(tk, rq).items():
+            partes[c].not_in_snapshot.append((tk, rc))
+    return par, partes
 
 
 MOTIVO_ESCALA_BONO = "escala_bono_amortizante"
@@ -722,6 +863,11 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
     return txs
 
 
+# Comienzo de la nota del ajuste de efectivo de la foto: confirmar lo reconoce
+# por acá para no aplicarlo si la caja cambió desde la vista previa.
+NOTA_AJUSTE_DE_CAJA = "Ajuste de cash a Estado de Cuenta"
+
+
 def build_cash_trueup_txs(adjustments, seed_date, start_idx: int = -21000):
     """Ajusta el EFECTIVO al valor de la foto (la foto es la verdad de HOY). Por
     cada moneda con |target − current| ≥ eps emite un DEPOSITO (si falta plata) o
@@ -746,7 +892,7 @@ def build_cash_trueup_txs(adjustments, seed_date, start_idx: int = -21000):
             row_index=idx, date=seed_date, broker=broker,
             operation_type=(OP_DEPOSIT if diff > 0 else OP_WITHDRAW),
             gross_amount=abs(diff), currency=ccy,
-            notes=f"Ajuste de cash a Estado de Cuenta ({ccy})"))
+            notes=f"{NOTA_AJUSTE_DE_CAJA} ({ccy})"))
         applied.append((broker, ccy, cur, target, diff))
         idx -= 1
     return txs, applied

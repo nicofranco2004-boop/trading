@@ -2949,6 +2949,13 @@ def init_db():
         if _pf_cols and 'pago_frecuencia_meses' not in _pf_cols:
             conn.executescript("ALTER TABLE plazos_fijos ADD COLUMN pago_frecuencia_meses INTEGER;")
             conn.commit()
+        # La receta del alta (2026-11-10): de qué broker salió la plata, cuánto se
+        # debitó y el autodepósito que la completó. Sin esto borrar el plazo fijo
+        # sacaba el renglón y la plata quedaba debitada para siempre. Las filas de
+        # antes quedan en NULL = «no se sabe» (ver `proyeccion.origen_plazo_fijo`).
+        if _pf_cols and 'undo_meta_json' not in _pf_cols:
+            conn.executescript("ALTER TABLE plazos_fijos ADD COLUMN undo_meta_json TEXT;")
+            conn.commit()
 
         # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────
         # Tickers que el user "sigue" sin tenerlos en portfolio. Se renderiza en el
@@ -7126,6 +7133,10 @@ BROKER_POR_NOMBRE = {
     # Sólo vuelve si ese import se revierte Y la cuenta existe; al borrar el broker
     # sus imports quedan revertidos, así que ya no hay quién lo devuelva.
     "dividendos_reemplazados": ("json",   "conservar"),
+    # El broker de donde salió la plata de un plazo fijo (receta del alta). Si el
+    # broker se borra el plazo fijo sigue (está en un banco): borrarlo después ya
+    # no tiene adónde devolver la plata, y no la devuelve.
+    "plazos_fijos":         ("json",      "conservar"),
     # La plantilla de columnas del importador (`mapping_json.defaults.broker`: el
     # broker fijo al que va todo el archivo). Es una PREFERENCIA del usuario, no un
     # dato de cartera (el reset del usuario tampoco la borra). Si el broker se borra
@@ -15825,6 +15836,7 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
     # source_broker, se asume plata nueva de afuera de Rendi.
     try:
         _tomar_turno_de_la_puerta(conn, uid)
+        _pf_adm: dict = {}
         if p.source_broker:
             br = conn.execute(
                 "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
@@ -15841,19 +15853,27 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
             # El cash del broker de origen no puede quedar negativo: si el PF supera
             # el cash disponible, auto-depositamos el faltante (sube cash + capital
             # aportado) antes de debitar. Mismo criterio que en altas de posición.
-            _pf_adm: dict = {}
             _autodeposit_if_overdraw(conn, uid, p.source_broker, float(p.capital), p.fecha_inicio,
                                      meta_out=_pf_adm, origen="plazo_fijo")
             _adjust_broker_cash(conn, uid, p.source_broker, -float(p.capital))
+        # La RECETA del alta (2026-11-10): de qué broker salió la plata, cuánto se
+        # debitó y el autodepósito que la completó. Es lo que el borrado necesita
+        # para devolverla (`_devolver_plata_del_plazo_fijo`) y lo que el control de
+        # la foto lee para saber de qué cuenta salió (`proyeccion.origen_plazo_fijo`).
+        # Sin broker de origen también se guarda: «plata de afuera» no es «no se sabe».
+        receta = json.dumps({"src": "pf_alta", "broker": p.source_broker or None,
+                             "debito": float(p.capital) if p.source_broker else 0.0,
+                             "autodep": _pf_adm or None})
         cur = conn.execute(
             """INSERT INTO plazos_fijos
                    (user_id, banco, capital, moneda, tasa, rate_type,
                     fecha_inicio, plazo_dias, fecha_vencimiento, renovacion_auto, modalidad,
-                    pago_frecuencia_meses, notes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    pago_frecuencia_meses, notes, undo_meta_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (uid, p.banco, p.capital, p.moneda, p.tasa, p.rate_type,
              p.fecha_inicio, p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad,
-             (p.pago_frecuencia_meses if p.modalidad == 'periodico' else None), p.notes),
+             (p.pago_frecuencia_meses if p.modalidad == 'periodico' else None), p.notes,
+             receta),
         )
         pid = cur.lastrowid
         if p.source_broker and _pf_adm.get("flujo_id"):
@@ -15894,15 +15914,74 @@ def update_plazo_fijo(pid: int, p: PlazoFijoIn, uid: int = Depends(get_effective
         conn.close()
 
 
+def _devolver_plata_del_plazo_fijo(conn, uid: int, row) -> Optional[dict]:
+    """Borrar un plazo fijo ABIERTO deshace su alta: la plata vuelve al broker de
+    donde salió y el autodepósito que la completó deja de contar como aporte.
+
+    🔴 HASTA EL 2026-11-10 EL BORRADO SACABA EL RENGLÓN Y NADA MÁS: la plata
+    quedaba debitada del broker, sin ningún rastro de adónde fue (la tabla no
+    guardaba de qué broker salió). Una foto posterior del broker veía «falta
+    plata» y la reponía con un aporte sintético: el capital aportado subía por
+    una plata que nunca entró. Es el mismo criterio que borrar una compra
+    cargada a mano (`_delete_manual_position_cascade`): lo borrado no pasó.
+
+    Devuelve lo que movió, o None si no hay qué devolver: plata de afuera de
+    Rendi, un plazo fijo de antes de que se guardara el origen (no se sabe de
+    dónde salió: no se adivina), uno ya cobrado (el cobro ya acreditó) o un
+    broker de origen que ya no existe."""
+    if row["closed_at"] is not None:
+        return None
+    conocido, broker = _import_proyeccion.origen_plazo_fijo(row["undo_meta_json"])
+    if not (conocido and broker and _broker_existe(conn, uid, broker)):
+        return None
+    meta = json.loads(row["undo_meta_json"])
+    debito = float(meta.get("debito") or 0)
+    autodep = meta.get("autodep") or {}
+    autodep_native = float(autodep.get("native") or 0)
+    # El autodepósito sale del aporte sólo si sigue vigente (`_restar_flujo_a_mano`
+    # lo reclama): si se borró aparte, su plata ya salió de la cuenta y lo que
+    # vuelve es el débito entero.
+    sacado = False
+    if autodep_native > 0 and autodep.get("usd"):
+        _ym = str(autodep.get("ym") or "")
+        try:
+            _ay, _am = int(_ym[:4]), int(_ym[5:7])
+        except (ValueError, IndexError):
+            _ay = _am = None
+        if _ay:
+            sacado = _restar_flujo_a_mano(conn, uid, broker, _ay, _am, 'deposit',
+                                          float(autodep["usd"]), native_amount=autodep_native,
+                                          flujo_id=autodep.get("flujo_id"),
+                                          motivo="plazo_fijo_borrado")
+    credito = round(debito - (autodep_native if sacado else 0.0), 6)
+    if credito:
+        _adjust_broker_cash(conn, uid, broker, credito)
+    if sacado:
+        _repair_monthly_chain(conn, uid, broker)
+        _repair_monthly_chain(conn, uid, 'global')
+    return {"broker": broker, "devuelto": credito,
+            "autodeposito_anulado": autodep_native if sacado else 0.0}
+
+
 @app.delete("/api/plazos-fijos/{pid}")
 def delete_plazo_fijo(pid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
-        conn.execute("DELETE FROM plazos_fijos WHERE id=? AND user_id=?", (pid, uid))
+        _tomar_turno_de_la_puerta(conn, uid)
+        row = conn.execute("SELECT * FROM plazos_fijos WHERE id=? AND user_id=?",
+                           (pid, uid)).fetchone()
+        devuelto = None
+        if row is not None:
+            # El DELETE es el reclamo: con un doble click sólo uno devuelve la plata.
+            if conn.execute("DELETE FROM plazos_fijos WHERE id=? AND user_id=?",
+                            (pid, uid)).rowcount != 1:
+                conn.rollback()
+                raise HTTPException(409, "Ese plazo fijo ya se está borrando.")
+            devuelto = _devolver_plata_del_plazo_fijo(conn, uid, row)
         conn.commit()
         conn.close()
         _ai_cache_invalidate(uid)
-        return {"ok": True}
+        return {"ok": True, "devuelto": devuelto}
     finally:
         conn.close()
 
@@ -46074,23 +46153,26 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
     from importing.rebuild import _is_safe_to_rebuild
     pair_l = list(pair)
     ph = ",".join("?" * len(pair_l))
-    sibling_assets = set()
     sibs = [b for b in pair_l if b != broker]
-    if sibs:
-        sph = ",".join("?" * len(sibs))
-        for r in conn.execute(
-            f"SELECT DISTINCT asset FROM positions WHERE user_id=? AND is_cash=0 AND broker IN ({sph})",
-            (uid, *sibs)):
-            sibling_assets.add(r["asset"])
+    # Con el nombre de la comparación (el mismo que trae `rec`): ver
+    # `proyeccion.posiciones_por_ticker`.
+    sibling_assets = set(_import_proyeccion.posiciones_por_ticker(conn, uid, sibs))
+    _guardados = _import_proyeccion.posiciones_por_ticker(conn, uid, pair_l)
 
-    # 🔴 SE SEPARAN LOS DOS MOTIVOS DE FRENO, y no es cosmético: "tiene datos a
+    # 🔴 SE SEPARAN LOS MOTIVOS DE FRENO, y no es cosmético: "tiene datos a
     # mano" y "el activo vive en la otra partición del par" son hipótesis
     # DISTINTAS sobre por qué apareció el `over`, y la segunda es justo la que no
     # se puede medir hoy (ver `override_info` más abajo). Mezcladas en una sola
     # lista `unsafe`, el dato se perdía.
-    frenado_manual, frenado_sibling = [], []
+    frenado_manual, frenado_sibling, frenado_nombre = [], [], []
 
     def _reducible(tk):
+        # Guardado con OTRO nombre (GOLD, AL30D) que el de la comparación: la venta
+        # se escribe con el de la comparación y no encontraría esos lotes — el
+        # importador traduce GOLD→B al guardar. No se toca solo: queda a la vista.
+        if any(n != tk for n in (_guardados.get(tk) or {}).get("nombres", ())):
+            frenado_nombre.append(tk)
+            return False
         if tk in sibling_assets:
             frenado_sibling.append(tk)
             return False
@@ -46146,7 +46228,8 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
                      # único `over` observable es el que sobrevivió tres filtros.
                      "over_visto": over_visto,
                      "frenado": {"manual": sorted(set(frenado_manual)),
-                                 "sibling": sorted(set(frenado_sibling))},
+                                 "sibling": sorted(set(frenado_sibling)),
+                                 "nombre_distinto": sorted(set(frenado_nombre))},
                      "cap": {"cut_inv": round(cut_inv, 4), "total_inv": round(total_inv, 4),
                              "n_cut": n_cut, "n_current": n_current},
                      "broker": broker, "currency": currency}
@@ -46431,20 +46514,16 @@ def import_tenencia_preview(
             Sólo proyecta con una fecha REAL. Si cayó al reloj del servidor
             devuelve el estado actual: rodar hacia atrás hasta una fecha
             inventada es peor que no rodar. (En contexto de asesor ese caso ya
-            cortó antes con `fecha_desconocida`.)
+            cortó antes con `fecha_desconocida`.) Los dos caminos leen la
+            cartera con la misma traducción de tickers que la foto y dejan
+            afuera lo archivado.
             """
             if fecha_origen == "fallback_hoy":
-                d = {}
-                _ph = ",".join("?" * len(brokers))
-                for r in conn.execute(
-                        f"SELECT asset, SUM(quantity) q FROM positions "
-                        f"WHERE user_id=? AND is_cash=0 AND broker IN ({_ph}) "
-                        f"GROUP BY asset", (uid, *brokers)):
-                    d[r["asset"]] = (r["q"] or 0)
-                return d
-            q_, nr_ = _import_proyeccion.proyectar(
-                conn, uid, pair=list(brokers), fecha=seed_date,
-                tickers_foto=[h.ticker for h in snap.holdings])
+                q_, nr_ = _import_proyeccion.tenencia_sin_rodar(conn, uid, pair=list(brokers))
+            else:
+                q_, nr_ = _import_proyeccion.proyectar(
+                    conn, uid, pair=list(brokers), fecha=seed_date,
+                    tickers_foto=[h.ticker for h in snap.holdings])
             _proy_no_rec.extend(nr_)
             return q_
 
@@ -46526,12 +46605,8 @@ def import_tenencia_preview(
                 # qty + costo por partición del par (para ubicar el bono Y darle al seed
                 # el costo unitario correcto en la moneda destino).
                 def _qty_inv(bname):
-                    d = {}
-                    for r in conn.execute(
-                        "SELECT asset, SUM(quantity) q, SUM(invested) inv FROM positions "
-                        "WHERE user_id=? AND is_cash=0 AND broker=? GROUP BY asset", (uid, bname)):
-                        d[r["asset"]] = ((r["q"] or 0), (r["inv"] or 0))
-                    return d
+                    return {a: (d["q"], d["inv"]) for a, d in
+                            _import_proyeccion.posiciones_por_ticker(conn, uid, [bname]).items()}
                 _pt = {"ARS": _qty_inv(broker), "USD": _qty_inv(_sib_usd)}
                 # MEP (holdings→MEP) sólo como FALLBACK: si por algún motivo los lotes
                 # existentes no dan un costo unitario usable, convertimos el precio de la
@@ -46576,6 +46651,19 @@ def import_tenencia_preview(
                 parent_row = conn.execute(
                     "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
                 usd_broker = _ensure_usd_sibling(conn, uid, parent_row)["name"]
+            # Las cuentas que se comparan: la de pesos siempre; la «· USD» si la foto
+            # trae dólares O si Rendi ya la tiene. Antes la de dólares se salteaba
+            # cuando la foto no traía dólares: lo que Rendi tuviera ahí no se miraba
+            # nunca y la respuesta decía «coincide».
+            _cuentas = {"ARS": broker}
+            if usd_broker != broker:
+                _cuentas["USD"] = usd_broker
+            elif _sib_usd:
+                _cuentas["USD"] = _sib_usd
+            # El par se vuelve a leer: `_ensure_usd_sibling` pudo crear o adoptar la
+            # cuenta en dólares recién, y el total del par tiene que incluirla (si
+            # no, lo que hay en ella contaba como «no lo tenías» y se recompraba).
+            pair = list(dict.fromkeys([*_broker_pair(conn, uid, broker), *_cuentas.values()]))
 
             # `complete` (habilita BORRAR not_in_snapshot) por broker: Balanz siempre;
             # el resto (Cocos/IEB/BMB/IOL/PPI) sólo si el parser NO dejó warnings de
@@ -46594,24 +46682,34 @@ def import_tenencia_preview(
             _sec_vacia = any(str(w).startswith(_import_tenencia._BAL_WARN_SECCION_VACIA)
                              for w in (_warns_all or []))
             _complete = (not _sec_vacia) if is_balanz else (not _warns_all)
-            _all_snap_tk = {h.ticker for h in snap.holdings}   # todas las monedas
-            # Qty AGREGADA de Rendi sobre TODO el par (ambas monedas) — para no SEEDEAR
-            # de más un activo cross-currency: si la foto lo clasifica en la moneda X
-            # pero Rendi lo tiene en la Y, la partición X vería gap=qty y sembraría un
-            # BUY duplicado (padre + sibling = ×2). Descontamos lo ya tenido en el par.
+            # Lo que Rendi tenía en el PAR (las dos monedas) a la fecha de la foto: es
+            # contra esto que se decide si algo falta, sobra o coincide.
             _pair_qty = _qty_a_fecha(pair)
             current = _pair_qty
+            _qty_cuenta = {ccy: _cur_qty(sub) for ccy, sub in _cuentas.items()}
 
             def _cur_inv(bname):
-                d = {}
-                for r in conn.execute(
-                    "SELECT asset, SUM(invested) inv FROM positions "
-                    "WHERE user_id=? AND is_cash=0 AND broker=? GROUP BY asset", (uid, bname)):
-                    d[r["asset"]] = (r["inv"] or 0)
-                return d
+                return {a: d["inv"] for a, d in
+                        _import_proyeccion.posiciones_por_ticker(conn, uid, [bname]).items()}
+
+            # 🔴 EL VEREDICTO ES DEL PAR, NO DE CADA MONEDA (`compute_reconcile_par`).
+            # Antes cada moneda se comparaba sola contra su mitad de la foto, y
+            # después dos de los tres baldes se corregían contra el par (lo que
+            # falta se re-neteaba, lo ausente se filtraba) y el de lo que SOBRA no:
+            # un CEDEAR con 28 en «· USD» y una foto que lista 23 en pesos y 5 en
+            # dólares daba «sobran 23» en la cuenta en dólares, y el modo que pisa
+            # los vendía. Con una sola comparación los tres baldes salen del mismo
+            # número, y cada ajuste va a la cuenta donde está la diferencia. Lo que
+            # la proyección no pudo llevar a la fecha de la foto queda AFUERA de la
+            # comparación (si no, falta → «tenías 0» → se recompra).
+            _rec_par, _por_cuenta = _import_tenencia.compute_reconcile_par(
+                _qty_cuenta, snap, total=_pair_qty, no_reconciliable_motivo=motivo_corte,
+                no_comparables={d.get("ticker") for d in _proy_no_rec})
 
             seed_txs = []
             rec = _import_tenencia.ReconcileResult()
+            rec.matched = list(_rec_par.matched)
+            rec.no_reconciliable = list(_rec_par.no_reconciliable)
             # `particiones` guarda el `override_info` de CADA partición tal cual.
             # 🔴 Los agregados de abajo son con PÉRDIDA (concatenan listas y hacen
             # OR del cap), y el que va a medir necesita saber qué pasó en la pata
@@ -46619,71 +46717,13 @@ def import_tenencia_preview(
             # partición se responde justamente comparando las dos.
             _ov = {"reduced": [], "removed": [], "skipped_manual": [], "capped": False,
                    "particiones": []}
-            for ccy in ("ARS", "USD"):
-                hs = [h for h in snap.holdings if h.currency == ccy]
-                if not hs:
-                    continue
-                sub = broker if ccy == "ARS" else usd_broker
-                snap_ccy = _import_tenencia.TenenciaSnapshot(holdings=hs, date=snap.date)
-                cur_q = _cur_qty(sub)
-                # Lo que la proyección no pudo llevar a la fecha de la foto queda
-                # AFUERA de la comparación (si no, falta → «tenías 0» → se recompra).
-                r1 = _import_tenencia.compute_reconcile(
-                    cur_q, snap_ccy, no_reconciliable_motivo=motivo_corte,
-                    no_comparables={d.get("ticker") for d in _proy_no_rec})
-                #
-                # ⚠️ LOS TRES BALDES SALEN DE ESTA COMPARACIÓN, PERO SÓLO DOS SE
-                #    CORRIGEN CROSS-PARTICIÓN. `compute_reconcile` midió contra
-                #    UN sub-broker (`cur_q`), no contra el par. Abajo:
-                #
-                #      · `not_in_snapshot` → se le saca lo que la foto trae en la
-                #        OTRA moneda (`_all_snap_tk`);
-                #      · `to_seed`         → se re-netea contra `_pair_qty`;
-                #      · `over`            → NO SE TOCA.
-                #
-                #    O sea que un activo partido entre el padre y el sibling
-                #    puede dar un `over` que no existe: la partición donde vive
-                #    la cantidad ve "Rendi tiene de más" contra la mitad de la
-                #    foto que le tocó. Es la asimetría de "arreglar una sola
-                #    pata" que en este repo ya salió cara tres veces.
-                #
-                #    NO SE ARREGLA ACÁ A CIEGAS, y el motivo es que no está
-                #    medido. Sobre la copia de prod del 2026-08-16 sólo 1 de los
-                #    21 `over` reales era de partición — pero ese número es un
-                #    PISO, no una medición: `_reducible()` ya bloquea los activos
-                #    que viven en el sibling, así que los `over` de partición se
-                #    filtran ANTES de aplicarse y no dejan rastro en la base.
-                #    Cuando `override_info` esté persistido se puede ver la tasa
-                #    real; recién ahí se sabe si la corrección hay que hacerla y
-                #    de qué lado.
-                #
-                # No borrar por 'ausencia' un activo que la foto SÍ trae en la OTRA
-                # moneda (mismo ticker cross-currency) — lo sacamos del not_in_snapshot.
-                r1.not_in_snapshot = [(a, q) for (a, q) in r1.not_in_snapshot
-                                      if a not in _all_snap_tk]
-                # No SEEDEAR de más: el hueco real es vs lo tenido en TODO el par, no
-                # sólo en este sub-broker (un activo cross-currency ya está en el otro).
-                #
-                # 🔴 LA MISMA TOLERANCIA QUE `compute_reconcile`, Y NO ES DE
-                # ADORNO. Este re-neteo compara contra OTRO número (el par, no
-                # el sub-broker), así que puede fabricar un hueco que
-                # `compute_reconcile` ya había descartado: sub-broker en 0 y
-                # foto 90,10 entra como to_seed de 90,10, y acá netea contra
-                # 90,0963 del par → 0,0037 > 1e-6 → COMPRA sintética de
-                # redondeo, que se auto-aplica sin preguntar. Arreglar sólo
-                # `compute_reconcile` habría dejado esta puerta abierta: el
-                # medio arreglo que en este repo ya salió caro tres veces.
-                _seed = []
-                for h, _g in r1.to_seed:
-                    _pq = _pair_qty.get(h.ticker, 0)
-                    net = round(h.quantity - _pq, 6)
-                    if net > _import_tenencia.tolerancia_qty(_pq, h.quantity):
-                        _seed.append((h, net))
-                r1.to_seed = _seed
-                # Los bonos amortizantes NO se auto-siembran: Rendi guarda el
-                # residual y la foto puede traer el nominal (ver
-                # `apartar_bonos_amortizantes`).
-                _import_tenencia.marcar_bonos_amortizantes(r1, cur_q)
+            for ccy, sub in _cuentas.items():
+                r1 = _por_cuenta[ccy]
+                cur_q = _qty_cuenta[ccy]
+                # Los bonos amortizantes NO se auto-siembran si Rendi ya tenía algo
+                # del bono en el PAR: Rendi guarda el residual y la foto puede traer
+                # el nominal (ver `marcar_bonos_amortizantes`).
+                _import_tenencia.marcar_bonos_amortizantes(r1, _pair_qty)
                 # Lo ausente en la foto tampoco se cierra solo: cerrarlo
                 # registra una venta que no sabemos si paso.
                 _import_tenencia.marcar_ausentes(r1)
@@ -46691,7 +46731,6 @@ def import_tenencia_preview(
                     conn, uid, sub, pair, r1, _cur_inv(sub), cur_q, seed_date,
                     complete=_complete, currency=ccy, gate_over=es_contexto_asesor)
                 seed_txs += p_seed
-                rec.matched += r1.matched
                 rec.to_seed += r1.to_seed
                 rec.over += r1.over
                 rec.not_in_snapshot += r1.not_in_snapshot
@@ -46708,53 +46747,11 @@ def import_tenencia_preview(
             for i, t in enumerate(seed_txs):
                 t.row_index = -20000 - i
         else:
-            from importing.persister import broker_pair
-            pair = broker_pair(conn, uid, broker)
-            ph = ",".join("?" * len(pair))
-            current: dict = {}
-            invested_by_asset: dict = {}
-            for r in conn.execute(
-                f"SELECT asset, SUM(quantity) q, SUM(invested) inv FROM positions "
-                f"WHERE user_id=? AND is_cash=0 AND broker IN ({ph}) GROUP BY asset",
-                (uid, *pair),
-            ):
-                current[r["asset"]] = current.get(r["asset"], 0.0) + (r["q"] or 0)
-                invested_by_asset[r["asset"]] = invested_by_asset.get(r["asset"], 0.0) + (r["inv"] or 0)
-            # Proyectado a la fecha de la foto (ver `_qty_a_fecha`).
-            current = _qty_a_fecha(pair)  # proyectado a la fecha de la foto
-            rec = _import_tenencia.compute_reconcile(
-                current, snap, no_reconciliable_motivo=motivo_corte,
-                no_comparables={d.get("ticker") for d in _proy_no_rec})
-            _import_tenencia.marcar_bonos_amortizantes(rec, current)
-            _import_tenencia.marcar_ausentes(rec)
-
-            # `complete` = la foto es TOTAL (todas las clases + monedas) → habilita
-            # BORRAR not_in_snapshot. Balanz siempre; IEB sólo si el parser NO dejó
-            # warnings de completitud (lectura parcial → sólo reduce over + gap-fill,
-            # nunca borra por 'ausencia' algo que quizá no leímos).
-            # `complete` = la foto es TOTAL → habilita BORRAR not_in_snapshot. Balanz
-            # siempre; IEB/BMB sólo si el parser NO dejó warnings de completitud; Cocos
-            # NUNCA (su CSV plano no da señal de lectura parcial → sólo reduce, no borra).
-            _warns = getattr(snap, "warnings", None)
-            # Balanz ya NO es un "siempre completa" a mano: su parser ahora avisa
-            # cuando el PDF trae una sección y esa sección no rinde ni una fila
-            # (extracción fallida). Sólo ESA warning bloquea el override — las
-            # otras son notas por holding (aritmética del importe) y no dicen nada
-            # sobre completitud. Antes, una tabla que no extraía se convertía en
-            # posiciones cerradas como vendidas, y en silencio.
-            _sec_vacia = any(str(w).startswith(_import_tenencia._BAL_WARN_SECCION_VACIA)
-                             for w in (_warns or []))
-            _complete = (not _sec_vacia) if is_balanz else (not _warns)
-            if is_balanz or is_ieb or is_cocos or is_bullmarket or is_iol:
-                # La foto PISA (Balanz/IEB/Cocos/BMB) — mismo mecanismo (ventas
-                # transfer_out reversibles + guardas + cap 50%).
-                seed_txs, override_info = _tenencia_apply_override(
-                    conn, uid, broker, pair, rec, invested_by_asset, current,
-                    seed_date, complete=_complete, gate_over=es_contexto_asesor)
-            else:
-                override_info = None
-                _marcar_cambios_de_ratio(conn, uid, pair, rec, seed_date)
-                seed_txs = _import_tenencia.build_tenencia_seed_txs(broker, rec, seed_date)
+            # Todos los formatos de foto prenden una bandera de arriba. Acá había un
+            # SEGUNDO camino de comparación, sin particiones, al que no llegaba
+            # ninguno: se borró el 2026-11-10 para que la comparación viva en un
+            # solo lugar. Un formato nuevo sin bandera frena acá, no compara a medias.
+            raise HTTPException(500, "Formato de foto sin comparación. Escribinos y lo revisamos.")
 
         # ── Cash true-up: la foto es la verdad de HOY → ajustamos el efectivo al
         # valor de la foto (SILENCIOSO, la foto manda). ARS en el broker padre; USD
@@ -46818,6 +46815,13 @@ def import_tenencia_preview(
             log.info("tenencia cash true-up uid=%s broker=%s %s rendi=%.2f foto=%.2f diff=%.2f",
                      uid, _b, _ccy, _cur, _tgt, _diff)
         seed_txs += _cash_txs
+        if _cash_applied and override_info is not None:
+            # Contra qué se calculó el ajuste: confirmar lo vuelve a mirar
+            # (`_caja_de_la_foto_cambio`). Las claves dicen «broker» para que un
+            # renombre entre medio las reescriba (`renombre_broker.es_clave_de_broker`).
+            override_info["caja"] = {
+                "fecha": seed_date, "brokers": list(_par_caja),
+                "caja_por_broker": {_b: round(_cur, 6) for _b, _c, _cur, _t, _d in _cash_applied}}
         # row_index único en TODO el batch (holdings + ajustes de cash) → no rompe
         # el mapa raw_id↔row_index del confirm/revert.
         for _i, _t in enumerate(seed_txs):
@@ -46995,23 +46999,27 @@ def import_tenencia_preview(
             #   · diferencias sin ajustar: comparado, distinto, y no se tocó solo
             #     (frenado por datos a mano, ausente a decidir, bono a aprobar…);
             #   · el freno de seguridad (cap) y el efectivo sin comparar.
-            _proy_mot = {_import_proyeccion.MOTIVO_MANUAL, _import_proyeccion.MOTIVO_SPLIT,
-                         _import_proyeccion.MOTIVO_VENCIMIENTO}
+            _proy_mot = set(_import_proyeccion.MOTIVOS_PROYECCION)
+            _archivados = sorted({d["ticker"] for d in rec.no_reconciliable
+                                  if d.get("ticker")
+                                  and d.get("motivo") == _import_proyeccion.MOTIVO_ARCHIVADO})
             _sin_comparar = sorted({d["ticker"] for d in rec.no_reconciliable
-                                    if d.get("ticker") and d.get("motivo") in _proy_mot})
+                                    if d.get("ticker") and d.get("motivo") in _proy_mot}
+                                   - set(_archivados))
             _difs = ({x[0] for x in rec.over} | {x[0] for x in rec.not_in_snapshot}
                      | set((override_info or {}).get("skipped_manual") or [])
                      | {d["ticker"] for d in rec.no_reconciliable
                         if d.get("ticker") and d.get("motivo") not in _proy_mot})
-            _difs = sorted(t for t in _difs if t and t not in _sin_comparar)
+            _difs = sorted(t for t in _difs
+                           if t and t not in _sin_comparar and t not in _archivados)
             _cap = bool((override_info or {}).get("capped"))
             # Lo que tampoco deja decir «coincide»: la foto leída a medias (no se
             # sacó nada por ausencia ni se tocó el efectivo) y una comparación que
             # el registro diario no pudo verificar (llega sin ticker).
             _parcial = not _complete
             _sin_verificar = any(not d.get("ticker") for d in rec.no_reconciliable)
-            todo_coincide = not (_sin_comparar or _difs or _cap or caja_sin_ajustar
-                                 or _parcial or _sin_verificar)
+            todo_coincide = not (_sin_comparar or _archivados or _difs or _cap
+                                 or caja_sin_ajustar or _parcial or _sin_verificar)
             if todo_coincide:
                 _msg = "Tu cartera ya coincide con la foto — no hay nada que completar."
             else:
@@ -47027,6 +47035,11 @@ def import_tenencia_preview(
                              f"a la fecha de la foto que no podemos deshacer (una carga a mano "
                              f"—lo cargado sin fecha cuenta como de hoy—, un split o un "
                              f"vencimiento).")
+                if _archivados:
+                    _msg += (f" No comparamos {', '.join(_archivados)}: lo archivaste en Rendi, "
+                             f"así que la cartera no muestra cuánto tenés. Si lo seguís "
+                             f"teniendo, restauralo desde «Posiciones archivadas» y volvé a "
+                             f"subir la foto.")
                 if _parcial:
                     _msg += (" La foto se leyó incompleta: no sacamos nada por ausencia ni "
                              "tocamos el efectivo.")
@@ -47669,6 +47682,59 @@ def _reconstruir_en_fila(uids) -> None:
             log.exception("mtm-auto: no se pudo lanzar la fila de reconstrucción")
 
 
+def _caja_de_la_foto_cambio(conn, uid: int, session_id: str) -> Optional[dict]:
+    """¿La caja cambió desde la vista previa de la foto? None si no (o si la foto no
+    ajustaba el efectivo); si sí, el motivo, para decirlo en la respuesta.
+
+    🔴 EL AJUSTE ES UNA DIFERENCIA, NO UN SALDO. La vista previa calcula «la foto
+    dice $900.000, Rendi tiene $1.000.500 → retirar $100.500» y guarda ese
+    retiro. Hasta el 2026-11-10 confirmar lo aplicaba tal cual: si entre medio
+    entró un depósito de $50.000, el retiro se lo llevaba (quedaba $950.000, ni
+    lo que dice la foto ni lo que hay). Ahora se vuelve a mirar con la misma
+    regla de la vista previa: si la caja de alguna cuenta ya no es la que se
+    usó, o si apareció plata con fecha posterior a la foto
+    (`proyeccion.plata_posterior`), el ajuste no entra y se avisa. Volver a
+    subir la foto lo calcula de nuevo contra lo que hay."""
+    r = conn.execute("SELECT override_info FROM import_batches WHERE id=? AND user_id=?",
+                     (session_id, uid)).fetchone()
+    try:
+        caja = (json.loads((r["override_info"] if r else None) or "{}") or {}).get("caja")
+    except (TypeError, ValueError, AttributeError):
+        caja = None
+    if not caja:
+        return None
+    cambiaron = []
+    for b, antes in (caja.get("caja_por_broker") or {}).items():
+        fila = conn.execute(
+            "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+            (uid, b)).fetchone()
+        ahora = float(fila["invested"] or 0) if fila else 0.0
+        if abs(ahora - float(antes or 0)) > 0.005:
+            cambiaron.append(b)
+    posterior = _import_proyeccion.plata_posterior(
+        conn, uid, pair=list(caja.get("brokers") or []), fecha=caja.get("fecha"))
+    if not cambiaron and not posterior:
+        return None
+    return {"motivo": "la_caja_cambio_desde_la_vista_previa", "fecha_foto": caja.get("fecha"),
+            "cuentas": cambiaron, "movimientos": len(posterior)}
+
+
+def _saltear_ajuste_de_caja_viejo(conn, uid: int, b_meta, data, txs, skip_set: set):
+    """En el confirm de una FOTO: si la caja cambió desde la vista previa
+    (`_caja_de_la_foto_cambio`), suma a `skip_set` las filas del ajuste de
+    efectivo y devuelve el motivo; si no, None. Va adentro del turno del confirm:
+    entre esta mirada y la escritura nadie más mueve la caja. Afuera del bloque
+    para que la transacción atómica siga corta (test_import_confirm_lock)."""
+    if not (b_meta and "tenencia" in str(b_meta["parser_format"] or "")):
+        return None
+    motivo = _caja_de_la_foto_cambio(conn, uid, data.session_id)
+    if motivo:
+        skip_set |= {t.row_index for t in txs
+                     if str(getattr(t, "notes", "") or "").startswith(
+                         _import_tenencia.NOTA_AJUSTE_DE_CAJA)}
+    return motivo
+
+
 @app.post("/api/imports/confirm")
 @_medir_import("import_confirm")
 # `request` va ÚLTIMO y opcional: tests y callers internos llaman
@@ -47723,8 +47789,9 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
             except ValueError as ex:
                 raise HTTPException(400, str(ex))
 
-            # Filtrar filas que el usuario decidió omitir
+            # Filtrar filas que el usuario decidió omitir (y el ajuste de caja viejo)
             skip_set = set(data.skip_row_indices or [])
+            caja_sin_ajustar = _saltear_ajuste_de_caja_viejo(conn, uid, _b_meta, data, txs, skip_set)
             # Y las que requieren aprobación EXPLÍCITA (opt-in): se omiten salvo
             # que vengan nombradas. Ver `tenencia.MARCA_APROBACION`.
             _aprobados = {str(x).strip().upper()
@@ -48009,6 +48076,9 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                 "fx_migracion": fx_migracion,
                 "mtm_reconstruccion": mtm_reconstruccion,
                 "post_proceso": post_proceso,
+                # El ajuste de efectivo de una foto que NO entró porque la caja
+                # cambió desde la vista previa (None = entró, o no había).
+                "caja_sin_ajustar": caja_sin_ajustar,
                 **summary}
     except HTTPException:
         raise
@@ -48385,13 +48455,11 @@ def _wallbit_reconcile_positions(conn, uid: int, holdings, cash_usd):
     snap = _import_tenencia.TenenciaSnapshot(holdings=holdings, date=seed_date, cash_usd=cash_usd)
     with conn:
         pair = broker_pair(conn, uid, "Wallbit")
-        ph = ",".join("?" * len(pair))
-        current, invested_by_asset = {}, {}
-        for r in conn.execute(
-            f"SELECT asset, SUM(quantity) q, SUM(invested) inv FROM positions "
-            f"WHERE user_id=? AND is_cash=0 AND broker IN ({ph}) GROUP BY asset", (uid, *pair)):
-            current[r["asset"]] = (r["q"] or 0)
-            invested_by_asset[r["asset"]] = (r["inv"] or 0)
+        # La cartera con el nombre de la comparación: la misma traducción que la
+        # foto (`proyeccion.posiciones_por_ticker`).
+        _pos = _import_proyeccion.posiciones_por_ticker(conn, uid, list(pair))
+        current = {a: d["q"] for a, d in _pos.items()}
+        invested_by_asset = {a: d["inv"] for a, d in _pos.items()}
         rec = _import_tenencia.compute_reconcile(current, snap)
         seed_txs, ov = _tenencia_apply_override(
             conn, uid, "Wallbit", pair, rec, invested_by_asset, current,
