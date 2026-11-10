@@ -318,6 +318,30 @@ def estado_de_rueda(items: List[Dict[str, Any]], now=None) -> Dict[str, Any]:
     }
 
 
+def cierre_en_hora_argentina(mercado: str, now=None) -> Optional[str]:
+    """A qué hora cierra hoy la rueda de `mercado`, en hora argentina ("17:00"),
+    para la ficha corta de la lista del gráfico («Mercado abierto · cierra a las
+    18:00»). Las horas de cada rueda son LAS de `alerts_engine` (las mismas que
+    deciden si está en horario); la de Nueva York se pasa a hora argentina con la
+    base de zonas horarias del día, porque Estados Unidos cambia de hora dos
+    veces al año y la Argentina no. Cripto no cierra: None. Sin base de zonas
+    horarias, None (se dice «abierto» sin la hora antes que una hora mal)."""
+    if mercado == "cripto":
+        return None
+    from alerts_engine import _SESION_BYMA, _SESION_US
+    if mercado == "byma":
+        return f"{_SESION_BYMA[2]:02d}:{_SESION_BYMA[3]:02d}"
+    ahora = now or _dt.datetime.now(_dt.timezone.utc)
+    ahora = ahora.replace(tzinfo=_dt.timezone.utc) if ahora.tzinfo is None else ahora
+    try:
+        from zoneinfo import ZoneInfo
+        ny = ahora.astimezone(ZoneInfo("America/New_York"))
+        cierre = ny.replace(hour=_SESION_US[2], minute=_SESION_US[3], second=0, microsecond=0)
+        return cierre.astimezone(ZoneInfo("America/Argentina/Buenos_Aires")).strftime("%H:%M")
+    except Exception:
+        return None
+
+
 def _stamp_session(entry: Dict[str, Any], orig_sym: str) -> Dict[str, Any]:
     """Marca si el `change_pct` de este quote es el de la rueda de HOY.
 

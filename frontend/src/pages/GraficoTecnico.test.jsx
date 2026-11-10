@@ -345,3 +345,137 @@ describe('el buscador del gráfico → «Tu cartera»', () => {
     expect(montado.t()).toContain('En tu cartera no hay activos con gráfico: los fondos no tienen.')
   })
 })
+
+// ─── La lista al costado del gráfico (Nico, 10/11) ──────────────────────────
+// Por la página entera, como en producción: la lista sale del MISMO pedido de
+// la página (useListaTecnica: GET /watchlist + POST /tecnico/lista) y lo que se
+// toca viaja al servidor (simulado acá, con memoria, en el borde `api`).
+describe('la lista al costado del gráfico', () => {
+  let lista
+  let banderas
+  let escrito
+  const porEtiqueta = (c, parte) => {
+    const pila = [c]
+    while (pila.length) {
+      const n = pila.shift()
+      if ((n.atributos?.['aria-label'] || '').startsWith(parte)) return n
+      pila.push(...(n.childNodes || []))
+    }
+    return null
+  }
+  const opcionDelMenu = (c, parte) => {
+    const pila = [c]
+    while (pila.length) {
+      const n = pila.shift()
+      if (n.atributos?.role === 'menuitemradio' && texto(n).includes(parte)) return n
+      pila.push(...(n.childNodes || []))
+    }
+    return null
+  }
+  const secciones = (c) => {
+    const out = []
+    const pila = [c]
+    while (pila.length) {
+      const n = pila.shift()
+      if (n.atributos?.role === 'group' && n.childNodes?.some?.(h => h.nodeName === 'BUTTON' && h.atributos?.['aria-expanded'] != null)) {
+        const simbolos = n.childNodes.filter(h => h.atributos?.['data-simbolo']).map(h => h.atributos['data-simbolo'])
+        out.push(`${n.atributos['aria-label']}: ${simbolos.join(' ')}`)
+      }
+      pila.push(...(n.childNodes || []))
+    }
+    return out
+  }
+  beforeEach(() => {
+    lista = [
+      { id: 1, symbol: 'TSLA', bandera: 'azul', orden: 0, price: 375.89, change: -2.16, change_pct: -0.57, mercado: 'us', en_horario: true, cierra: '18:00' },
+      { id: 2, symbol: 'TSLA.BA', bandera: 'naranja', orden: 1, price: 39960, change: 1460, change_pct: 3.79, mercado: 'byma', en_horario: true, cierra: '17:00' },
+      { id: 3, symbol: 'GGAL.BA', bandera: null, orden: 2, price: 4900, change: -105, change_pct: -2.1, mercado: 'byma', en_horario: false, as_of: '2026-11-07' },
+    ]
+    banderas = { azul: 'EE.UU.', naranja: 'CEDEARs' }
+    escrito = []
+    const conNombres = () => ['azul', 'naranja', 'verde', 'violeta', 'rosa', 'cian', 'rojo'].map(id => ({ id, nombre: banderas[id] || null }))
+    delServidor = { '/watchlist': async () => ({ items: lista.map(x => ({ ...x })), banderas: conNombres() }) }
+    api.post.mockImplementation(async (url, body) => {
+      if (url === '/tecnico/lista') return { tenencias: [{ asset: 'TSLA', local: false, peso: 0.2, tipo: 'CEDEAR' }], lecturas: [] }
+      if (url === '/watchlist') {
+        escrito.push(['POST', url, body])
+        lista.push({ id: lista.length + 1, symbol: body.symbol, bandera: body.bandera || null, orden: lista.length, price: 268.47, change: 1.12, change_pct: 0.42 })
+        return { ok: true, symbol: body.symbol }
+      }
+      throw new Error(`POST inesperado ${url}`)
+    })
+    api.patch.mockImplementation(async (url, body) => {
+      escrito.push(['PATCH', url, body])
+      const s = decodeURIComponent(url.split('/').pop())
+      lista = lista.map(x => (x.symbol === s ? { ...x, bandera: body.bandera } : x))
+      return { ok: true }
+    })
+    api.put.mockImplementation(async (url, body) => { escrito.push(['PUT', url, body]); return { ok: true } })
+    // Abierta, como la deja la compu.
+    almacen.set('rendi_grafico_lista', JSON.stringify({ abierta: true }))
+  })
+
+  it('agrupa por bandera con el nombre de cada una, marca lo que tenés y tocar un renglón lo abre en el gráfico', async () => {
+    montado = await abrir('/analisis-tecnico?tab=grafico&activo=NVDA')
+    expect(secciones(montado.contenedor)).toEqual(['EE.UU.: TSLA', 'CEDEARs: TSLA.BA', 'Sin bandera: GGAL.BA'])
+    // Tenés TSLA en CEDEARs: el punto va en el CEDEAR, no en la de Nueva York.
+    expect(porEtiqueta(montado.contenedor, 'TSLA, Tesla, CEDEAR').atributos['aria-label']).toContain('lo tenés')
+    expect(porEtiqueta(montado.contenedor, 'TSLA, Tesla, Acción de EE.UU.').atributos['aria-label']).not.toContain('lo tenés')
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'TSLA, Tesla, CEDEAR'))
+    await esperar()
+    expect(activoDe(montado.donde)).toBe('TSLA.BA')
+    expect(recibido.at(-1).asset).toBe('TSLA.BA')
+    expect(porEtiqueta(montado.contenedor, 'TSLA, Tesla, CEDEAR').atributos['aria-current']).toBe('true')
+  })
+
+  it('la bandera se cambia en el menú, se guarda en la cuenta y el renglón cambia de grupo', async () => {
+    montado = await abrir('/analisis-tecnico?tab=grafico&activo=NVDA')
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Bandera de GGAL'))
+    await clic(montado.contenedor, opcionDelMenu(montado.contenedor, 'EE.UU.'))
+    await esperar()
+    expect(escrito).toContainEqual(['PATCH', '/watchlist/GGAL.BA', { bandera: 'azul' }])
+    expect(secciones(montado.contenedor)).toEqual(['EE.UU.: TSLA GGAL.BA', 'CEDEARs: TSLA.BA'])
+    // El nombre de una bandera, con el lápiz.
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Bandera de TSLA (CEDEAR)'))
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Cambiarle el nombre a la bandera rosa'))
+    await escribir(porEtiqueta(montado.contenedor, 'Nombre de la bandera rosa'), '  Dividendos ')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Listo'))
+    await esperar()
+    expect(escrito).toContainEqual(['PUT', '/watchlist/banderas/rosa', { nombre: 'Dividendos' }])
+  })
+
+  it('si el servidor no guarda la bandera, vuelve como estaba y lo dice', async () => {
+    api.patch.mockImplementation(async () => { throw Object.assign(new Error('HTTP 500'), { status: 500 }) })
+    montado = await abrir('/analisis-tecnico?tab=grafico&activo=NVDA')
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Bandera de GGAL'))
+    await clic(montado.contenedor, opcionDelMenu(montado.contenedor, 'EE.UU.'))
+    await esperar()
+    expect(secciones(montado.contenedor)).toEqual(['EE.UU.: TSLA', 'CEDEARs: TSLA.BA', 'Sin bandera: GGAL.BA'])
+    expect(montado.t()).toContain('No pudimos guardar la bandera.')
+  })
+
+  it('«+» busca con el buscador del gráfico: «apple» ofrece las dos, y lo que agregás entra con la bandera que mirás', async () => {
+    lista.push({ id: 9, symbol: 'AAPL.BA', bandera: 'naranja', orden: 3, price: 17850, change: 150, change_pct: 0.85 })
+    montado = await abrir('/analisis-tecnico?tab=grafico&activo=NVDA')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'CEDEARs'))
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Buscar y agregar un activo'))
+    expect(montado.t()).toContain('Lo que agregues entra con la bandera «CEDEARs», la que estás mirando.')
+    await escribir(montado.contenedor.ownerDocument.getElementById?.('lista-buscar') || porEtiqueta(montado.contenedor, 'Buscar un activo') || campo(montado.contenedor), 'apple')
+    // El CEDEAR ya está; la acción de Nueva York, para agregar.
+    expect(porEtiqueta(montado.contenedor, 'Agregar AAPL (CEDEAR)')).toBeNull()
+    expect(porEtiqueta(montado.contenedor, 'Agregar AAPL (Acción de EE.UU.)')).not.toBeNull()
+    expect(montado.t()).toContain('En tu lista')
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Agregar AAPL (Acción de EE.UU.)'))
+    await esperar()
+    expect(escrito).toContainEqual(['POST', '/watchlist', { symbol: 'AAPL', bandera: 'naranja' }])
+    // La página volvió a pedir la lista (la avisó a toda la app) y AAPL ya está.
+    expect(porEtiqueta(montado.contenedor, 'Agregar AAPL (Acción de EE.UU.)')).toBeNull()
+  })
+
+  it('cerrada, el gráfico queda solo; se acuerda al volver a entrar', async () => {
+    montado = await abrir('/analisis-tecnico?tab=grafico&activo=NVDA')
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Cerrar tu lista'))
+    expect(JSON.parse(almacen.get('rendi_grafico_lista')).abierta).toBe(false)
+    expect(porEtiqueta(montado.contenedor, 'Abrir tu lista')).not.toBeNull()
+  })
+})

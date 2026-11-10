@@ -359,7 +359,7 @@ export default function AnalisisTecnico() {
       <div role="tabpanel" id="analisis-tecnico-panel" aria-labelledby={`analisis-tecnico-tab-${activa}`}>
         {activa === 'panorama' && <Panorama lista={lista} filas={filas} semana={semana} hidden={hidden} onVer={ver} onPestana={elegir} />}
         {activa === 'lista' && <TuLista datos={lista} filas={filas} />}
-        {activa === 'grafico' && <GraficoTecnico />}
+        {activa === 'grafico' && <GraficoTecnico lista={lista} />}
         {activa === 'backtesting' && <Backtesting />}
         {activa === 'senales' && (
           <Senales semana={semana} hidden={hidden} filtro={filtro} onFiltro={setFiltro} onVer={ver} />

@@ -835,7 +835,7 @@ def _table_cols(conn, table: str) -> set:
                'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
                'import_mappings', 'news', 'subscriptions', 'ai_usage_daily', 'ai_user_facts',
                'ai_tool_usage', 'yfinance_cache', 'credit_ledger', 'plazos_fijos',
-               'user_broker_credentials', 'velas_estado'}
+               'user_broker_credentials', 'velas_estado', 'watchlist'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -2971,6 +2971,31 @@ def init_db():
                 UNIQUE(user_id, symbol)
             );
             CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
+        """)
+        # La lista al costado del gráfico (pestaña «Gráfico» de Análisis técnico,
+        # como en TradingView; Nico, 10/11): cada activo con UNA bandera (uno de
+        # los colores de BANDERAS_DE_LA_LISTA, o ninguna) y su lugar en «como los
+        # acomodás». Van en la cuenta y no en el navegador: se ven igual en la
+        # compu y en el celular. Las filas de antes quedan sin bandera y sin
+        # lugar (NULL): la pantalla las pone en el orden en que se agregaron.
+        _wl_cols = _table_cols(conn, 'watchlist')
+        if _wl_cols and 'bandera' not in _wl_cols:
+            conn.executescript("ALTER TABLE watchlist ADD COLUMN bandera TEXT;")
+            conn.commit()
+        if _wl_cols and 'orden' not in _wl_cols:
+            conn.executescript("ALTER TABLE watchlist ADD COLUMN orden INTEGER;")
+            conn.commit()
+        # El nombre que cada persona le pone a cada bandera («EE.UU.», «Para
+        # comprar»). Una fila por bandera con nombre; sin fila, la bandera no
+        # tiene nombre y la pantalla dice su color.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS watchlist_banderas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                bandera TEXT NOT NULL,
+                nombre TEXT NOT NULL,
+                UNIQUE(user_id, bandera)
+            );
         """)
 
         # ─── Push notifications (M4) ──────────────────────────────────────────────
@@ -6168,6 +6193,8 @@ _RESET_CONFIG_KEYS = ("fx_version", "tc_blue", "tc_mep")
 # pasó con `futures_positions` y con `dibujos_grafico` (auditoría C, 29/10).
 _RESET_ADMIN_EXTRA_TABLES = (
     "alerts", "alert_events", "watchlist",
+    # Los nombres de las banderas de su lista (2026-11-10): van con la lista.
+    "watchlist_banderas",
     "user_broker_credentials", "import_mappings",
     # Cómo le llega el resumen de los sábados (pieza 15): lo configuró.
     "resumen_semanal_prefs",
@@ -51676,9 +51703,36 @@ def fuera_de_horario_endpoint(request: Request, symbols: str = "", listas: bool 
 
 # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────────
 
+# Las banderas de la lista al costado del gráfico (pestaña «Gráfico» de Análisis
+# técnico, como en TradingView; Nico, 10/11): siete, UNA por activo, cada una con
+# el nombre que le ponga la persona (`watchlist_banderas`). El id es el color; lo
+# pinta la pantalla (frontend/src/utils/listaDelGrafico.js, con los colores del
+# tema) en ESTE orden, que es el de los grupos y el del menú.
+BANDERAS_DE_LA_LISTA = ("azul", "naranja", "verde", "violeta", "rosa", "cian", "rojo")
+NOMBRE_DE_BANDERA_MAX = 30
+
+
+def _bandera_valida(v):
+    """None o '' = sin bandera; si no, uno de BANDERAS_DE_LA_LISTA."""
+    if v is None or v == "":
+        return None
+    v = str(v).strip().lower()
+    if v not in BANDERAS_DE_LA_LISTA:
+        raise ValueError("Bandera inválida")
+    return v
+
+
 class WatchlistAddIn(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
     asset_type: Optional[str] = Field(None, max_length=20)
+    # La lista al costado del gráfico: lo que se agrega mirando una bandera entra
+    # con esa bandera.
+    bandera: Optional[str] = Field(None, max_length=20)
+
+    @field_validator('bandera')
+    @classmethod
+    def bandera_valida(cls, v):
+        return _bandera_valida(v)
 
     @field_validator('symbol')
     @classmethod
@@ -51696,28 +51750,50 @@ class WatchlistAddIn(BaseModel):
 
 @app.get("/api/watchlist")
 def watchlist_list(uid: int = Depends(get_effective_user)):
-    """Devuelve los tickers en watchlist + quote actual (price + change_pct)."""
+    """Devuelve los tickers en watchlist + quote actual (price + change_pct).
+
+    Para la lista al costado del gráfico, cada activo trae además su `bandera`
+    (o None), su `orden` en «como los acomodás» (None si nunca se movió), la
+    variación del día en plata (`change`: precio − cierre anterior, de la MISMA
+    lectura que `change_pct`), en qué rueda cotiza (`mercado`), si esa rueda
+    está en horario (`en_horario`) y a qué hora cierra, en hora argentina
+    (`cierra`); y la respuesta trae `banderas`: las siete, en orden, con el
+    nombre que les puso la persona (None = sin nombre). El orden de `items`
+    sigue siendo el de siempre (lo último agregado primero): el inicio lo usa
+    así; la lista del gráfico se ordena con `orden`."""
+    from alerts_engine import rueda_en_horario
+    from home.market import mercado_de, cierre_en_hora_argentina
     conn = get_db()
     try:
         rows = conn.execute(
-            """SELECT id, symbol, asset_type, added_at
+            """SELECT id, symbol, asset_type, added_at, bandera, orden
                  FROM watchlist
                 WHERE user_id = ?
                 ORDER BY added_at DESC""",
             (uid,),
         ).fetchall()
         items = [dict(r) for r in rows]
+        nombres = {r["bandera"]: r["nombre"] for r in conn.execute(
+            "SELECT bandera, nombre FROM watchlist_banderas WHERE user_id = ?", (uid,)).fetchall()}
         # Enrich con quotes (batch)
         symbols = [it["symbol"] for it in items]
         quotes = _fetch_batch_quotes(symbols) if symbols else {}
+        ahora = datetime.now(timezone.utc)
         for it in items:
             q = quotes.get(it["symbol"])
             it["price"] = q["price"] if q else None
             it["change_pct"] = q["change_pct"] if q else None
+            it["change"] = (round(q["price"] - q["prev_close"], 6)
+                            if q and q.get("price") is not None and q.get("prev_close") is not None else None)
             it["as_of"] = q.get("as_of") if q else None
+            it["is_today"] = bool(q.get("is_today")) if q else False
+            it["mercado"] = mercado_de(it["symbol"])
+            it["en_horario"] = rueda_en_horario(it["mercado"], ahora)
+            it["cierra"] = cierre_en_hora_argentina(it["mercado"], ahora)
         # Cada cotización vive 60 s en el cache de _fetch_batch_quotes: "ahora"
         # es la hora del dato con ese margen.
-        return {"items": items, **estado_de_rueda(items), "actualizado": _ahora_iso()}
+        return {"items": items, **estado_de_rueda(items), "actualizado": _ahora_iso(),
+                "banderas": [{"id": b, "nombre": nombres.get(b)} for b in BANDERAS_DE_LA_LISTA]}
     finally:
         conn.close()
 
@@ -51746,12 +51822,100 @@ def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_effective_user)):
                                        (uid,)).fetchone()[0] >= WATCHLIST_TOPE:
                 raise HTTPException(400, f"Tu lista de seguimiento llegó a {WATCHLIST_TOPE} activos. "
                                          "Sacá alguno para sumar otro.")
-            conn.execute(
-                """INSERT OR IGNORE INTO watchlist (user_id, symbol, asset_type)
-                   VALUES (?, ?, ?)""",
-                (uid, data.symbol, data.asset_type),
-            )
+            if not ya:
+                # Lo nuevo va al final de «como los acomodás» (después de lo que
+                # nunca se movió, que no tiene lugar: va primero, en el orden en
+                # que se agregó).
+                ultimo = conn.execute("SELECT MAX(orden) FROM watchlist WHERE user_id=?",
+                                      (uid,)).fetchone()[0]
+                conn.execute(
+                    """INSERT OR IGNORE INTO watchlist (user_id, symbol, asset_type, bandera, orden)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (uid, data.symbol, data.asset_type, data.bandera,
+                     (ultimo if ultimo is not None else -1) + 1),
+                )
         return {"ok": True, "symbol": data.symbol}
+    finally:
+        conn.close()
+
+
+class WatchlistBanderaIn(BaseModel):
+    # None (o "") saca la bandera.
+    bandera: Optional[str] = Field(None, max_length=20)
+
+    @field_validator('bandera')
+    @classmethod
+    def bandera_valida(cls, v):
+        return _bandera_valida(v)
+
+
+@app.patch("/api/watchlist/{symbol}")
+def watchlist_poner_bandera(symbol: str, data: WatchlistBanderaIn, uid: int = Depends(get_effective_user)):
+    """La bandera de un activo de tu lista (una por activo; None la saca)."""
+    sym = symbol.strip().upper()
+    conn = get_db()
+    try:
+        with conn:
+            _tomar_turno(conn, uid)
+            n = conn.execute("UPDATE watchlist SET bandera = ? WHERE user_id = ? AND symbol = ?",
+                             (data.bandera, uid, sym)).rowcount
+        if not n:
+            raise HTTPException(404, f"{sym} no está en tu lista.")
+        return {"ok": True, "symbol": sym, "bandera": data.bandera}
+    finally:
+        conn.close()
+
+
+class WatchlistNombreIn(BaseModel):
+    # Vacío = la bandera queda sin nombre.
+    nombre: Optional[str] = Field(None, max_length=200)
+
+
+@app.put("/api/watchlist/banderas/{bandera}")
+def watchlist_nombrar_bandera(bandera: str, data: WatchlistNombreIn, uid: int = Depends(get_effective_user)):
+    """El nombre que le ponés a una bandera («EE.UU.», «Para comprar»). Es tuyo:
+    se ve igual en la compu y en el celular. Vacío la deja sin nombre."""
+    try:
+        b = _bandera_valida(bandera)
+    except ValueError:
+        raise HTTPException(400, "Bandera inválida")
+    if b is None:
+        raise HTTPException(400, "Bandera inválida")
+    # Sin saltos de línea ni espacios de más; el tope, en letras.
+    nombre = " ".join(str(data.nombre or "").split())[:NOMBRE_DE_BANDERA_MAX] or None
+    conn = get_db()
+    try:
+        with conn:
+            _tomar_turno(conn, uid)
+            if nombre is None:
+                conn.execute("DELETE FROM watchlist_banderas WHERE user_id = ? AND bandera = ?", (uid, b))
+            else:
+                conn.execute(
+                    """INSERT INTO watchlist_banderas (user_id, bandera, nombre) VALUES (?, ?, ?)
+                       ON CONFLICT(user_id, bandera) DO UPDATE SET nombre = excluded.nombre""",
+                    (uid, b, nombre))
+        return {"ok": True, "id": b, "nombre": nombre}
+    finally:
+        conn.close()
+
+
+class WatchlistOrdenIn(BaseModel):
+    simbolos: List[str] = Field(..., max_length=WATCHLIST_TOPE)
+
+
+@app.put("/api/watchlist/orden")
+def watchlist_ordenar(data: WatchlistOrdenIn, uid: int = Depends(get_effective_user)):
+    """«Como los acomodás»: la lista entera en el orden nuevo (la pantalla la
+    manda completa al soltar un renglón). Lo que no está en tu lista se ignora;
+    lo tuyo que no vino conserva su lugar."""
+    simbolos = list(dict.fromkeys(str(x or "").strip().upper() for x in data.simbolos if x))
+    conn = get_db()
+    try:
+        with conn:
+            _tomar_turno(conn, uid)
+            for i, sym in enumerate(simbolos):
+                conn.execute("UPDATE watchlist SET orden = ? WHERE user_id = ? AND symbol = ?", (i, uid, sym))
+        return {"ok": True}
     finally:
         conn.close()
 

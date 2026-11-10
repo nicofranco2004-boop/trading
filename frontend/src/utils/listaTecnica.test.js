@@ -77,6 +77,24 @@ describe('las filas, con lo que manda el servidor', () => {
     expect(filtrarFilas(filas, 'watchlist').map(f => f.nombre).sort()).toEqual(['AL29', 'TSLA'])
   })
 
+  it('cada fila trae la bandera de tu lista al costado del gráfico; lo que tenés como CEDEAR, la del CEDEAR', () => {
+    const conBanderas = filasDeLaLista({
+      tenencias: [{ asset: 'TSLA', local: false, peso: 0.2, tipo: 'CEDEAR' }],
+      // La acción de Nueva York y su CEDEAR son una fila acá (la misma lectura,
+      // en dólares). En cualquier orden, la bandera es la del CEDEAR, como tu lote.
+      seguidos: [{ symbol: 'TSLA', bandera: 'azul' }, { symbol: 'TSLA.BA', bandera: 'naranja' }, { symbol: 'KO', bandera: 'violeta' }, { symbol: 'MSFT' }],
+      indice, hoy: HOY,
+    })
+    const b = (n) => conBanderas.find(f => f.nombre === n).bandera
+    expect([b('TSLA'), b('KO'), b('MSFT')]).toEqual(['naranja', 'violeta', null])
+    const alReves = filasDeLaLista({
+      tenencias: [{ asset: 'TSLA', local: false, peso: 0.2, tipo: 'CEDEAR' }],
+      seguidos: [{ symbol: 'TSLA.BA', bandera: 'naranja' }, { symbol: 'TSLA', bandera: 'azul' }],
+      indice, hoy: HOY,
+    })
+    expect(alReves.find(f => f.nombre === 'TSLA').bandera).toBe('naranja')
+  })
+
   it('las palabras son las de la ficha', () => {
     const ko = de('KO')
     expect(ko.fondo.palabra).toBe(tarjetas(indice.get('KO|0').lectura).find(t => t.id === 'fondo').veredicto)

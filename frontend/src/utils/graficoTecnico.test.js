@@ -131,7 +131,10 @@ describe('el buscador', () => {
     })
     it('AGRO.BA de tu lista (Agrometal, BYMA) no se esconde detrás de tu AGRO de Schwab', () => {
       const s = opcionesDelBuscador({ consulta: 'agro', posiciones: schwab, lista: [{ symbol: 'AGRO.BA' }] })
-      expect(s[0].filas.map(f => [f.simbolo, f.origen])).toEqual([['AGRO', 'cartera'], ['AGRO.BA', 'lista']])
+      // Después vienen las otras empresas con «agro» en el nombre (INAG, MOLA):
+      // el catálogo de lo que se busca es el de toda la app (10/11).
+      expect(s[0].filas.slice(0, 2).map(f => [f.simbolo, f.origen])).toEqual([['AGRO', 'cartera'], ['AGRO.BA', 'lista']])
+      expect(s[0].filas.slice(2).every(f => f.origen === 'catalogo')).toBe(true)
       // Escribiendo «AGRO.BA», primero el de BYMA.
       const e = opcionesDelBuscador({ consulta: 'AGRO.BA', posiciones: schwab, lista: [{ symbol: 'AGRO.BA' }] })
       expect(e[0].filas[0]).toMatchObject({ simbolo: 'AGRO.BA', origen: 'lista' })

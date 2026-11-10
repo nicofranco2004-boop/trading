@@ -18,6 +18,8 @@ import { olvidarLaSesionSiEsDe } from './sesionGuardada'
 // El demo soporta MODIFICACIONES limitadas para que el user pueda probar el
 // flow exploratorio:
 //   ✓ Agregar / quitar de watchlist          → persiste en overlay localStorage
+//     (y su bandera, el nombre de cada bandera y el orden: la lista al costado
+//     del gráfico, components/ListaDelGrafico.jsx)
 //   ✓ Agregar posición manual                → persiste en overlay localStorage
 //   ✗ Vender / editar / eliminar posición    → bloqueado con mensaje (signup CTA)
 //   ✗ Importar CSV / operations manual       → bloqueado con mensaje
@@ -32,11 +34,12 @@ const DEMO_OVERLAY_KEY = 'rendi_demo_overlay'
 // ─── Overlay helpers ─────────────────────────────────────────────────────────
 // Estructura del overlay:
 //   {
-//     watchlist: [{ symbol, asset_type, added_at }],
+//     watchlist: [{ symbol, asset_type, added_at, bandera, orden }],
+//     banderas: { [id]: nombre },   // los nombres de las banderas
 //     positions: [{ ...positionLike, id: number sintético >= 9000 }],
 //   }
 
-const EMPTY_OVERLAY = { watchlist: null, positions: [] }
+const EMPTY_OVERLAY = { watchlist: null, positions: [], banderas: {} }
 
 export function getDemoOverlay() {
   if (typeof window === 'undefined') return EMPTY_OVERLAY
@@ -46,6 +49,7 @@ export function getDemoOverlay() {
     const parsed = JSON.parse(raw)
     return {
       watchlist: Array.isArray(parsed.watchlist) ? parsed.watchlist : null,
+      banderas: parsed.banderas && typeof parsed.banderas === 'object' ? parsed.banderas : {},
       positions: Array.isArray(parsed.positions) ? parsed.positions : [],
     }
   } catch {
@@ -1895,6 +1899,10 @@ const DEMO_CAGR = (() => {
   return { cagr: +(cagr * 100).toFixed(2), months: monthsCount }
 })()
 
+// Las banderas de la lista al costado del gráfico, en el orden del servidor
+// (main.BANDERAS_DE_LA_LISTA; utils/listaDelGrafico.BANDERAS).
+const _BANDERAS_DEMO = ['azul', 'naranja', 'verde', 'violeta', 'rosa', 'cian', 'rojo']
+
 // Watchlist demo base (estado inicial — el overlay puede agregar/quitar)
 const WATCHLIST_BASE = [
   // Precio y variación de la MISMA fuente que el mapa de calor (antes AVGO
@@ -2980,7 +2988,10 @@ export function handleDemoRequest(method, path, body) {
       // Si el user nunca tocó la watchlist, devolvemos la base. Una vez que la
       // tocó (agregó o quitó algo), el overlay reemplaza a la base entera.
       const items = overlay.watchlist != null ? overlay.watchlist : WATCHLIST_BASE
-      return { items, ..._ruedaDemo(new Date(), items.length) }
+      // La misma forma que el servidor (main.watchlist_list): las siete
+      // banderas en orden, con el nombre que les puso el visitante.
+      const banderas = _BANDERAS_DEMO.map(id => ({ id, nombre: overlay.banderas?.[id] || null }))
+      return { items, banderas, ..._ruedaDemo(new Date(), items.length) }
     }
     if (basePath === '/dolar')       return DOLAR
     if (basePath === '/benchmarks')  return BENCHMARKS
@@ -3422,14 +3433,43 @@ export function handleDemoRequest(method, path, body) {
     if (!current.some(w => (w.symbol || '').toUpperCase() === symbol)) {
       current.push({
         symbol,
-        asset_type: 'stock',
+        asset_type: body.asset_type || 'stock',
         added_at: hoyISO(),
         price: PRICES[symbol] || null,
         change_pct: null,
+        // Como el servidor: con la bandera que mandó la lista y al final del orden.
+        bandera: _BANDERAS_DEMO.includes(body.bandera) ? body.bandera : null,
+        orden: Math.max(-1, ...current.map(w => (Number.isFinite(w.orden) ? w.orden : -1))) + 1,
       })
       saveDemoOverlay({ ...overlay, watchlist: current })
     }
     return { ok: true, symbol }
+  }
+  // La lista al costado del gráfico: la bandera de un activo, el nombre de una
+  // bandera y el orden (main.watchlist_poner_bandera / _nombrar_bandera / _ordenar).
+  if (method === 'PATCH' && basePath.startsWith('/watchlist/')) {
+    const symbol = decodeURIComponent(basePath.slice('/watchlist/'.length)).toUpperCase()
+    const bandera = _BANDERAS_DEMO.includes(body?.bandera) ? body.bandera : null
+    const current = (overlay.watchlist ?? [...WATCHLIST_BASE]).map(w => (
+      (w.symbol || '').toUpperCase() === symbol ? { ...w, bandera } : w))
+    saveDemoOverlay({ ...overlay, watchlist: current })
+    return { ok: true, symbol, bandera }
+  }
+  if (method === 'PUT' && basePath.startsWith('/watchlist/banderas/')) {
+    const id = decodeURIComponent(basePath.slice('/watchlist/banderas/'.length))
+    if (!_BANDERAS_DEMO.includes(id)) return blocked()
+    const nombre = String(body?.nombre || '').split(/\s+/).filter(Boolean).join(' ').slice(0, 30) || null
+    const banderas = { ...(overlay.banderas || {}) }
+    if (nombre) banderas[id] = nombre; else delete banderas[id]
+    saveDemoOverlay({ ...overlay, banderas })
+    return { ok: true, id, nombre }
+  }
+  if (method === 'PUT' && basePath === '/watchlist/orden') {
+    const lugar = new Map((body?.simbolos || []).map((x, i) => [String(x).toUpperCase(), i]))
+    const current = (overlay.watchlist ?? [...WATCHLIST_BASE]).map(w => (
+      lugar.has((w.symbol || '').toUpperCase()) ? { ...w, orden: lugar.get((w.symbol || '').toUpperCase()) } : w))
+    saveDemoOverlay({ ...overlay, watchlist: current })
+    return { ok: true }
   }
   if (method === 'DELETE' && basePath.startsWith('/watchlist/')) {
     const symbol = decodeURIComponent(basePath.slice('/watchlist/'.length)).toUpperCase()

@@ -22,11 +22,22 @@
 //
 // Una sola pantalla para compu y celular (R6): en el celular el buscador ocupa
 // el ancho de la pantalla.
+//
+// Al costado del gráfico, tu lista (components/ListaDelGrafico.jsx, como en
+// TradingView; Nico, 10/11): en la compu un panel a la derecha que se abre y
+// se cierra; en el celular, la misma lista como una hoja que sube desde abajo
+// (el botón «Tu lista» del renglón del activo). Tocar un activo de la lista lo
+// abre acá, por el mismo camino que el buscador. La lista vive AFUERA del
+// gráfico de cada activo: cambiar de activo no la arma de nuevo (no vuelve
+// arriba ni se cierra). Sus datos son los de la página (`lista`: useListaTecnica,
+// que Análisis técnico pide una vez para todas sus pestañas).
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ChevronDown, Search, X } from 'lucide-react'
 import LecturaTecnica from '../components/asset/LecturaTecnica'
+import ListaDelGrafico, { BotonDeLaLista, useVistaDeLaLista } from '../components/ListaDelGrafico'
+import { useListaDelGrafico } from '../hooks/useListaDelGrafico'
 import AssetTypeBadge from '../components/AssetTypeBadge'
 import Skeleton from '../components/Skeleton'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
@@ -46,18 +57,50 @@ const ESPERA_MAXIMA_MS = 15000
 // Lo que dice el pie del buscador en el Gráfico (en Backtesting no hay dibujos).
 const PIE_DEL_GRAFICO = 'Al cambiar de activo, tus dibujos del que estabas quedan guardados en él.'
 
-export default function GraficoTecnico() {
+/** `lista`: la de la página (useListaTecnica). Sin ella (otra pantalla que
+ *  monte sólo el gráfico), la lista del costado pide la suya. */
+export default function GraficoTecnico({ lista = null }) {
   const { clientCtx } = useAdvisorContext()
   const cliente = nombreDelCliente(clientCtx)
   // El activo abierto, el mismo que el de Backtesting (hooks/useActivoDelGrafico).
   const { activo, setActivo, recientes, enfocar, elegir, abierto } = useActivoDelGrafico()
+  const datos = useListaDelGrafico(lista)
+  const vista = useVistaDeLaLista()
+  // Lo que sabe la ficha del activo abierto (tus lotes, si es de BYMA), para la
+  // ficha corta de la lista: la misma cuenta que /activo/:ticker.
+  const [deLaFicha, setDeLaFicha] = useState(null)
+  const onFicha = useCallback((x) => setDeLaFicha(x), [])
+  // En el celular la lista es una hoja que tapa la mitad de abajo: al abrirla,
+  // la página sube hasta el gráfico para que quede a la vista arriba de la hoja
+  // (como en el lienzo). Debajo de la barra de arriba del celular, que es fija.
+  const filaDelGrafico = useRef(null)
+  const alternarLista = () => {
+    const abrir = !vista.abierta
+    vista.cambiar({ abierta: abrir })
+    const el = filaDelGrafico.current
+    if (!abrir || vista.compu || !el || typeof window === 'undefined') return
+    const barra = parseFloat(window.getComputedStyle?.(document.documentElement)?.getPropertyValue('--alto-barra-celular')) || 0
+    window.scrollTo?.({ top: Math.max(0, el.getBoundingClientRect().top + window.scrollY - barra - 8), behavior: 'smooth' })
+  }
 
   if (!activo) return <Cargando />
-  return <GraficoDe key={activo} activo={activo} recientes={recientes} cliente={cliente} enfocar={enfocar}
-    onElegir={elegir} onTuyo={(s) => setActivo(s)} onAbierto={abierto} />
+  return (
+    <div className="flex flex-col gap-2">
+      {/* Se arma de nuevo con cada activo (`key`): el botón nuevo toma el foco. */}
+      <Encabezado key={activo} activo={activo} recientes={recientes} cliente={cliente} enfocar={enfocar} onElegir={elegir}
+        extra={<BotonDeLaLista abierta={vista.abierta} onAlternar={alternarLista} />} />
+      <div ref={filaDelGrafico} className="flex items-stretch gap-3">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <GraficoDe key={activo} activo={activo} onTuyo={(s) => setActivo(s)} onAbierto={abierto} onFicha={onFicha} />
+        </div>
+        <ListaDelGrafico datos={datos} activo={activo} onElegir={elegir} deLaFicha={deLaFicha} vista={vista}
+          cliente={cliente} recientes={recientes} />
+      </div>
+    </div>
+  )
 }
 
-function GraficoDe({ activo, recientes, cliente, enfocar, onElegir, onTuyo, onAbierto }) {
+function GraficoDe({ activo, onTuyo, onAbierto, onFicha }) {
   // Lo tenés con otro nombre (pediste GGAL.BA y tu lote es GGAL de IOL; BTC y
   // tu lote es BTC-USD): el tuyo, con tu precio y tus compras. Lo decide la
   // ficha, que sabe en qué mercado está cada lote (tu GGAL de Schwab NO es
@@ -71,19 +114,21 @@ function GraficoDe({ activo, recientes, cliente, enfocar, onElegir, onTuyo, onAb
     if (ficha.otroNombre) onTuyo(activoValido(ficha.otroNombre))
     else if (!ficha.loading) onAbierto(activo)
   }, [ficha.otroNombre, ficha.loading]) // eslint-disable-line react-hooks/exhaustive-deps
+  // A la lista: «Lo tenés» (tus lotes, la cuenta de la ficha) y si se mira en BYMA.
+  useEffect(() => {
+    if (!ficha.loading && !ficha.otroNombre) onFicha?.({ activo, agg: ficha.agg, accionLocal: ficha.accionLocal })
+  }, [ficha.loading, ficha.otroNombre, ficha.agg, ficha.accionLocal]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  return (
-    <div className="flex flex-col gap-2">
-      <Encabezado activo={activo} recientes={recientes} cliente={cliente} enfocar={enfocar} onElegir={onElegir} />
-      {ficha.loading ? <Skeleton className="h-[420px] w-full rounded-xl" />
-        : !ficha.grafico ? (
-          <div className="bg-bg-1 border border-line rounded-xl px-4 py-6 text-[14px] text-ink-1">
-            Los fondos comunes no tienen gráfico de precios: se valúan una vez por día, por el valor de la cuotaparte.
-            Elegí otro activo arriba a la izquierda.
-          </div>
-        ) : <LecturaTecnica key={`${activo}|${ficha.accionLocal}`} titulo={null} {...ficha.grafico} soloGrafico />}
-    </div>
-  )
+  if (ficha.loading) return <Skeleton className="h-[420px] w-full rounded-xl" />
+  if (!ficha.grafico) {
+    return (
+      <div className="bg-bg-1 border border-line rounded-xl px-4 py-6 text-[14px] text-ink-1">
+        Los fondos comunes no tienen gráfico de precios: se valúan una vez por día, por el valor de la cuotaparte.
+        Elegí otro activo arriba a la izquierda.
+      </div>
+    )
+  }
+  return <LecturaTecnica key={`${activo}|${ficha.accionLocal}`} titulo={null} {...ficha.grafico} soloGrafico />
 }
 
 function Cargando() {
@@ -97,8 +142,9 @@ function Cargando() {
 
 // Arriba del gráfico: el activo (abre el buscador), los últimos que miraste y
 // la ficha completa. Lo usa también la pestaña «Backtesting» (pages/Backtesting.jsx),
-// con su propio `pie` del buscador (null: sin pie).
-export function Encabezado({ activo, recientes, cliente, enfocar, onElegir, pie = PIE_DEL_GRAFICO }) {
+// con su propio `pie` del buscador (null: sin pie). `extra`: lo que va al final
+// del renglón (en el Gráfico, el botón «Tu lista» del celular).
+export function Encabezado({ activo, recientes, cliente, enfocar, onElegir, pie = PIE_DEL_GRAFICO, extra = null }) {
   const [abierto, setAbierto] = useState(false)
   const caja = useRef(null)
   const boton = useRef(null)
@@ -129,6 +175,7 @@ export function Encabezado({ activo, recientes, cliente, enfocar, onElegir, pie 
         </div>
       )}
       <Link to={urlDeActivo(activo)} className="text-[13px] font-medium text-data-violet hover:underline px-1">Ver ficha →</Link>
+      {extra}
       {abierto && (
         <Buscador activo={activo} recientes={recientes} cliente={cliente} caja={caja} pie={pie}
           onCerrar={cerrar}

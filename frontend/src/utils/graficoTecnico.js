@@ -22,7 +22,7 @@
 // York, y AGRO.BA (Agrometal) con tu AGRO de Schwab (Adecoagro).
 
 import { normalizar, puntaje, mismoPapel, miradaSinTenencia } from './buscadorRapido'
-import { POPULAR_TICKERS, tickerName, inferType, isBondPosition } from './tickers'
+import { POPULAR_TICKERS, catalogoDelBuscador, tickerName, inferType, isBondPosition } from './tickers'
 import { isFciSym, isBymaHolding } from './valuation'
 import { esLoteLocal } from './accionLocal'
 import { leerDe, guardarDe } from './almacen'
@@ -112,6 +112,18 @@ const nombreDe = (s) => DEL_CATALOGO.get(s)?.name || tickerName(s)
 const enByma = (s) => miradaSinTenencia(s).simboloPrecio.endsWith('.BA')
 const grafico = (simbolo, byma) => `${mismoPapel(simbolo)}|${byma ? 'byma' : 'afuera'}`
 
+/** ¿`a` y `b` abren el mismo gráfico? El mismo nombre, o el mismo papel en el
+ *  mismo mercado según la regla de lo que no tenés (GGAL y GGAL.BA sí; AAPL y
+ *  AAPL.BA, la acción y su CEDEAR, no). La usa la lista al costado del gráfico
+ *  para saber cuál de sus renglones es el que estás mirando: tocar GGAL.BA
+ *  puede abrir tu GGAL de IOL (useFichaDelActivo, otroNombre). */
+export function mismoGrafico(a, b) {
+  const x = activoValido(a)
+  const y = activoValido(b)
+  if (!x || !y) return false
+  return x === y || grafico(x, enByma(x)) === grafico(y, enByma(y))
+}
+
 /** Tus activos con gráfico, uno por ticker, en el orden de tus lotes: sin el
  *  efectivo ni los fondos (FCI), que no tienen serie de precios. */
 export function tuyos(posiciones = []) {
@@ -193,9 +205,15 @@ export function opcionesDelBuscador({ consulta = '', filtro = 'todo', recientes 
     return secciones
   }
 
-  const catalogo = POPULAR_TICKERS
-    .map(t => fila(t.symbol.toUpperCase(), { origen: 'catalogo' }))
-    .filter(x => x.tipo !== 'bond' && !yaEsta(x))
+  // Con algo escrito, el catálogo de los buscadores que suman a la watchlist
+  // (tickers.catalogoDelBuscador: los populares y además TODOS los CEDEARs, las
+  // acciones argentinas y las de EE.UU.), no sólo los populares: «apple» ofrece
+  // la acción en dólares Y el CEDEAR en pesos (AAPL.BA), que abren dos gráficos
+  // distintos. Lo usa también la lista al costado del gráfico para agregar
+  // (Nico, 10/11): un solo buscador.
+  const catalogo = catalogoDelBuscador(consulta)
+    .map(t => fila(t.symbol.toUpperCase(), { tipo: t.type, origen: 'catalogo' }))
+    .filter(x => x.tipo !== 'bond' && activoValido(x.simbolo) && !yaEsta(x))
   const PRIORIDAD = { cartera: 0, lista: 1, catalogo: 2 }
   const escrito = activoValido(consulta)
   // Primero de todo, lo escrito tal cual (tu AGRO de Schwab, si escribiste

@@ -19,7 +19,7 @@
 // Con «Ocultar saldos» no se muestra cuánto pesa (la proporción también es
 // información de la cartera, como en la radiografía).
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { ArrowDown, ArrowUp, Info, LayoutGrid, Rows3, X } from 'lucide-react'
 import { api } from '../utils/api'
@@ -29,6 +29,8 @@ import TickerSearch from '../components/fundamentals/TickerSearch'
 import useWatchlist from '../components/fundamentals/useWatchlist'
 import { catalogoDelBuscador } from '../utils/tickers'
 import Skeleton from '../components/Skeleton'
+import { IconoBandera } from '../components/ListaDelGrafico'
+import { nombreDeBandera, nombresDeBanderas } from '../utils/listaDelGrafico'
 import AssetLogo from '../components/AssetLogo'
 import { PildoraTendencia } from '../components/RadiografiaTecnica'
 import { BotonAvisame, useAvisosTecnicos, senalDeTarjeta } from '../components/alerts/AvisameTecnico'
@@ -49,10 +51,15 @@ import {
  * Lo que necesita la tabla: tu watchlist y, del servidor, la lectura técnica de
  * todo más lo que tenés y cuánto pesa (`tenencias`: la valuación del servidor,
  * la misma del % alcista y de la pestaña Señales). → { cargando, error,
- * tenencias, sinMedir, seguidos, indice }
+ * tenencias, sinMedir, seguidos, banderas, indice, cambiar }
+ * `banderas`: las de tu lista con su nombre (las pone la lista al costado del
+ * gráfico, pages/GraficoTecnico.jsx). `cambiar(fn)`: esa lista escribe acá lo
+ * que cambió (una bandera, su nombre, el orden, precios nuevos), sin volver a
+ * pedir la lectura de todo; `fn` recibe { seguidos, banderas } y devuelve lo
+ * que cambia.
  */
 export function useListaTecnica({ seguirLaWatchlist = false } = {}) {
-  const [estado, setEstado] = useState(null)   // { seguidos, tenencias, indice }
+  const [estado, setEstado] = useState(null)   // { seguidos, banderas, tenencias, indice }
   const [error, setError] = useState(null)     // 'base' | 'lectura'
   // Con `seguirLaWatchlist` (Análisis técnico) se vuelve a pedir cuando cambia
   // la watchlist: el buscador de «Tu lista», la ficha, el inicio, todos avisan
@@ -86,7 +93,7 @@ export function useListaTecnica({ seguirLaWatchlist = false } = {}) {
         return api.post('/tecnico/lista', { activos: activosDeLaLista(seguidos).slice(0, MAX_POR_PEDIDO) })
           .then(r => {
             if (!vivo) return
-            setEstado({ seguidos, tenencias: r?.tenencias || [], sinMedir: r?.sin_medir || null, indice: indexarLecturas(r?.lecturas || []) })
+            setEstado({ seguidos, banderas: wl?.banderas || [], tenencias: r?.tenencias || [], sinMedir: r?.sin_medir || null, indice: indexarLecturas(r?.lecturas || []) })
             hayDatos.current = true
             setError(null)
             setRefrescoFallido(false)
@@ -96,10 +103,14 @@ export function useListaTecnica({ seguirLaWatchlist = false } = {}) {
     return () => { vivo = false }
   }, [vuelta])
 
+  const cambiar = useCallback((fn) => setEstado(e => (e ? { ...e, ...fn(e) } : e)), [])
+
   return {
     cargando: !error && !estado,
     error,
     refrescoFallido,
+    cambiar,
+    banderas: estado?.banderas || [],
     tenencias: estado?.tenencias || [],
     // Qué parte de tu plata es efectivo y plazos fijos (senales_semana.
     // pesos_sin_medir): el mapa de tu cartera lo usa para nombrar el cuadrito
@@ -230,6 +241,7 @@ export function TablaLista({ filas, oculto = false, orden, onOrdenar, filtro = '
                       className="font-semibold text-ink-0 hover:text-data-violet">
                       {f.nombre}
                     </Link>
+                    <BanderaDeLaFila f={f} className="ml-1.5 inline-block align-[-1px]" />
                     {f.detalle && <span className="block text-[11.5px] text-ink-3 whitespace-nowrap">{f.detalle}</span>}
                   </td>
                   <td className="px-3 py-2.5 whitespace-nowrap">
@@ -492,6 +504,18 @@ function Medidores({ f }) {
   )
 }
 
+/** La bandera que le pusiste en tu lista al costado del gráfico, si tiene
+ *  (`banderaNombre`: la pone TuLista con los nombres de tu cuenta). */
+function BanderaDeLaFila({ f, className = '' }) {
+  if (!f.bandera) return null
+  return (
+    <span title={`Bandera: ${f.banderaNombre || ''}`} className={`shrink-0 ${className}`}>
+      <IconoBandera id={f.bandera} size={12} />
+      <span className="sr-only">Bandera: {f.banderaNombre}</span>
+    </span>
+  )
+}
+
 /** Logo, ticker, nombre y el link a la ficha, que cubre TODA la tarjeta (con
  *  `after:`), para que se pueda abrir en otra pestaña sin meter el botón de
  *  «Avisame» adentro de un link. */
@@ -504,6 +528,7 @@ function Cabeza({ f, children }) {
           <Link to={ruta(f)} className="text-[15px] font-semibold text-ink-0 after:absolute after:inset-0 after:rounded-xl after:content-['']">
             {f.nombre}
           </Link>
+          <BanderaDeLaFila f={f} />
           {f.nuevo && <span className="rounded-full bg-data-violet/15 px-[7px] py-px text-[10.5px] font-semibold text-data-violet">Nuevo</span>}
         </div>
         <div className="truncate text-[12px] text-ink-2">{[f.empresa, f.detalle].filter(Boolean).join(' · ')}</div>
@@ -662,6 +687,9 @@ export default function TuLista({ datos, filas }) {
   useEffect(() => { setVista(vistaGuardada(persona)) }, [persona])
   const avisos = useAvisosTecnicos()
   const elegir = (v) => { setVista(v); guardarVista(persona, v) }
+  // Cada fila con el nombre de su bandera (los de tu cuenta).
+  const nombres = useMemo(() => nombresDeBanderas(datos.banderas), [datos.banderas])
+  const conBandera = useMemo(() => filas.map(f => (f.bandera ? { ...f, banderaNombre: nombreDeBandera(f.bandera, nombres).texto } : f)), [filas, nombres])
 
   if (datos.error === 'base') {
     return <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos cargar tu cartera y tu watchlist. Probá de nuevo en unos minutos.</Panel>
@@ -683,7 +711,7 @@ export default function TuLista({ datos, filas }) {
     <div className="space-y-4">
       <BuscarParaTuLista filas={filas} refrescoFallido={datos.refrescoFallido} />
       {filas.length ? (
-        <ListaTecnica filas={filas} oculto={hidden} vista={vista} onVista={elegir} avisos={avisos}
+        <ListaTecnica filas={conBandera} oculto={hidden} vista={vista} onVista={elegir} avisos={avisos}
           onAbrir={f => navigate(ruta(f))} />
       ) : (
         <Panel padding="lg" className="text-center text-[13px] text-ink-2">

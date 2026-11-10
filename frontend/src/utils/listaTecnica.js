@@ -148,7 +148,9 @@ export function textoDelCambio(c) {
  * `seguidos`: los ítems de /watchlist; `indice`: clave → lectura del servidor.
  * Cada fila:
  *   { clave, nombre, ruta, tenes, peso (0–100), vigente, motivo,
- *     fondo, corto, rsi, adx, desdeMax, linea, cambio }
+ *     fondo, corto, rsi, adx, desdeMax, linea, cambio, bandera }
+ * `bandera`: la que le pusiste en tu lista al costado del gráfico (o null);
+ * si lo tenés y además lo seguís, la del que seguís.
  * `vigente` false = «Sin lectura» (sin velas, bono/fondo o sin precios de la
  * última semana, `vieja` del servidor): esa fila no muestra números y `motivo`
  * dice por qué.
@@ -181,6 +183,7 @@ export function filasDeLaLista({ tenencias = [], seguidos = [], indice, hoy = ho
       desdeMax: l?.dist_maximo_12m != null ? { pct: l.dist_maximo_12m, enMaximo: l.dist_maximo_12m >= -0.1, anioCompleto: !!l.anio_completo } : null,
       linea,
       cambio: c?.fecha ? { ...textoDelCambio(c), fecha: c.fecha, hace: haceCuanto(c.fecha, hoy) } : null,
+      bandera: base.bandera || null,
     })
   }
   for (const t of tenencias) {
@@ -194,8 +197,17 @@ export function filasDeLaLista({ tenencias = [], seguidos = [], indice, hoy = ho
   for (const it of seguidos) {
     const { asset, local, simbolo } = lecturaDeSeguido(it?.symbol, it?.asset_type)
     const k = clave(asset, local)
-    if (!asset || filaOcupada(filas, asset, local)) continue
-    armar(k, { nombre: isCrypto(asset) ? asset : simbolo, ruta: simbolo, tenes: false, peso: 0, p: loteDeSeguido(it, asset) })
+    if (!asset) continue
+    const ocupada = filaOcupada(filas, asset, local)
+    if (ocupada) {
+      // Lo tenés y además lo seguís: su bandera. Con dos (la acción de Nueva
+      // York y su CEDEAR, que acá son una fila), la del que es como tu lote.
+      const comoTuLote = ocupada.tenes
+        && (String(ocupada.p?.asset_type || '').toUpperCase() === 'CEDEAR') === (inferType(simbolo) === 'cedear')
+      if (it?.bandera && (!ocupada.bandera || comoTuLote)) ocupada.bandera = it.bandera
+      continue
+    }
+    armar(k, { nombre: isCrypto(asset) ? asset : simbolo, ruta: simbolo, tenes: false, peso: 0, p: loteDeSeguido(it, asset), bandera: it?.bandera || null })
   }
   return conDetalle([...filas.values()])
 }
