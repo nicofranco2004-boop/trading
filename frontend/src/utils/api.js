@@ -92,6 +92,19 @@ export function clearClientContext() {
   setClientContext(null)
 }
 
+// 🔴 SIN EL PLAN ASESOR NO HAY CLIENTE ABIERTO. El servidor no deja mirar la
+// cuenta de un cliente a quien no tiene el plan (`_resolve_client_context`): le
+// contesta 403 a cada pedido. Pero la pestaña recuerda el último cliente
+// (`clienteAbierto` sobrevive a cerrar el navegador), así que a quien se le
+// venció o se le quitó el plan la app le abría adentro del cliente y todo daba
+// error. AuthContext la llama con el plan que contesta /auth/me, que es el de
+// quien mira (/api/auth no sigue al cliente). Devuelve true si soltó uno.
+export function soltarClienteSinPlanAsesor(tier) {
+  if (!_clientCtx || tier === 'advisor') return false
+  clearClientContext()
+  return true
+}
+
 // 🔴 LA PERSONA Y EL DEMO SÍ SON UNO PARA TODAS LAS PESTAÑAS. La sesión es una
 // cookie, y la marca del demo se guarda una vez para todo el navegador. Si en
 // otra pestaña entra otra persona —o se entra o se sale del demo—, ésta seguía

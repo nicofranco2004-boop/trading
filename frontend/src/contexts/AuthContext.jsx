@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useState } from 'react'
-import { api, clearClientContext, EVENTO_PLAN_REQUERIDO, recargarPorPersona, fijarPersonaDeLaPestana, arranqueResuelto, avisarDesfase, entrandoALaSesion, abrirLaPestana, mostrandoLaCuentaDe, personaDeLaPestana, pedirAlServidor } from '../utils/api'
+import { api, clearClientContext, soltarClienteSinPlanAsesor, EVENTO_PLAN_REQUERIDO, recargarPorPersona, fijarPersonaDeLaPestana, arranqueResuelto, avisarDesfase, entrandoALaSesion, abrirLaPestana, mostrandoLaCuentaDe, personaDeLaPestana, pedirAlServidor } from '../utils/api'
 import { setBrokersRegistry } from '../utils/valuation'
 import { isDemoMode, enableDemoMode, disableDemoMode, vencerDemoSiCorresponde, EMAIL_DEL_DEMO } from '../utils/demo'
 import { track } from '../utils/track'
@@ -168,6 +168,11 @@ export function AuthProvider({ children }) {
         // mostraba datos de nadie).
         if (!guardada) fijarPersonaDeLaPestana(quienEs(fresh))
         guardarSesion(fresh)
+        // Abría adentro de un cliente y ya no tiene el plan Asesor: se suelta y
+        // se recarga UNA vez. Las pantallas ya salieron a pedir con el cliente
+        // (no esperan a esta respuesta) y se quedaron con el 403; recargadas,
+        // piden lo suyo. No hay bucle: el cliente ya no está guardado.
+        if (soltarClienteSinPlanAsesor(fresh.tier)) { window.location.reload(); return }
         setUser(fresh)
         refreshPlanFeatures()
         // Analytics: identificar al user y setear propiedades para segmentación
@@ -383,6 +388,7 @@ export function AuthProvider({ children }) {
     const me = await api.get('/auth/me')
     const fresh = mapMeToUser(me)
     guardarSesion(fresh)
+    if (soltarClienteSinPlanAsesor(fresh.tier)) { window.location.reload(); return fresh }
     setUser(fresh)
     refreshPlanFeatures()
     return fresh

@@ -4758,6 +4758,9 @@ def admin_pedidos_sin_persona(uid: int = Depends(get_admin_user)):
 #   • Header con vínculo inexistente/revocado → 403 SIEMPRE (nunca fallback
 #     silencioso al uid propio: eso enmascararía bugs del frontend mostrando
 #     datos del asesor como si fueran del cliente).
+#   • Vínculo activo pero quien mira SIN el plan Asesor → 403 también. El
+#     vínculo no se borra cuando el plan vence (si vuelve a pagar, recupera a
+#     sus clientes), así que sin este chequeo la puerta seguía abierta.
 #   • Escrituras (todo lo que no es GET/HEAD/OPTIONS) exigen permission
 #     'read_write' (managed). Los vínculos 'linked' (v1) son read-only.
 CLIENT_CTX_HEADER = "X-Rendi-Client-Id"
@@ -4830,11 +4833,20 @@ def _resolve_client_context(request: Request, uid: int) -> Optional[int]:
                WHERE advisor_uid=? AND client_uid=? AND status='active'""",
             (uid, client_id),
         ).fetchone()
+        if not row:
+            # 403 explícito — jamás degradar en silencio al uid propio.
+            raise HTTPException(403, "Sin acceso a ese cliente")
+        # 🔴 El vínculo solo no alcanza: hace falta el plan. Hasta el 10/11/2026
+        # esto no se miraba, y a quien se le vencía (o se le quitaba) el plan
+        # Asesor seguía leyendo y escribiendo las carteras de sus clientes por
+        # este encabezado: todo lo de /api/advisor/* ya pedía el plan, pero esta
+        # puerta —la de todas las pantallas— no. Es la misma regla que esas
+        # (`_require_advisor`: tier 'advisor' de verdad, `is_admin` no alcanza),
+        # y `get_tier` corta el plan el instante en que vence, sin esperar al
+        # proceso de la noche.
+        _require_advisor(conn, uid)
     finally:
         conn.close()
-    if not row:
-        # 403 explícito — jamás degradar en silencio al uid propio.
-        raise HTTPException(403, "Sin acceso a ese cliente")
     if _escribe_en_la_cuenta(request) and row["permission"] != "read_write":
         raise HTTPException(403, "Acceso de solo lectura a ese cliente")
     return client_id
