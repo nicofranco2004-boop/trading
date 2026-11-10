@@ -16,7 +16,12 @@
 const isDev = () => {
   try {
     // Vite: import.meta.env.DEV. En tests (vitest) también es true.
-    return !!(import.meta && import.meta.env && import.meta.env.DEV)
+    // SÓLO la clave, nunca `import.meta.env` como valor (`import.meta.env && …`):
+    // así Vite pega el objeto ENTERO en el sitio, con el mensaje del último
+    // commit y su autor (pasó hasta el 10/11/2026; lo vigila
+    // __guards__/build-sin-datos-del-deploy.test.js). Fuera de Vite, donde no
+    // existe, el try lo cubre.
+    return !!import.meta.env.DEV
   } catch {
     return false
   }
