@@ -16,13 +16,17 @@ y la confirma (/api/imports/confirm). Ninguna llama al comparador directo.
      lo volvía a comprar con un aporte que nunca existió.
   6. El ajuste de efectivo se calculaba en la vista previa y se aplicaba al
      confirmar sin volver a mirar si entró plata entre medio.
+  7. La foto sin fecha llevaba el efectivo al de la foto contra la caja de HOY:
+     si la foto era vieja, se llevaba la plata que entró después. Nico decidió
+     el 2026-11-10 no tocar el efectivo sin fecha y decirlo (opción B).
 """
 import io
 import json
 import os
+import re
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 _TMP = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _TMP.close()
@@ -576,3 +580,112 @@ def test_lo_archivado_sin_fecha_tampoco_se_recompra_y_al_restaurar_coincide():
                      json={"archive_id": arch[0]["id"]}).status_code == 200
     cu.subir_foto(texto)
     assert cu.qty("AL30") == q0
+
+
+# ── 7. La foto sin fecha no toca el efectivo (decisión de Nico, 2026-11-10) ──
+# Sin fecha, Rendi no sabe de qué día es el saldo de la foto. Llevar la caja a
+# ese número es correcto sólo si la foto es de hoy; si es vieja, retira la plata
+# que entró después. Las tenencias se siguen completando: comprar lo que falta
+# con un aporte de apertura no le saca plata a nadie.
+
+def _sin_fecha(texto):
+    return re.sub(r"Tenencias al \d\d/\d\d/\d{4}", "Tenencias al día", texto)
+
+
+def _con_cobro_posterior():
+    return [_cobro(1, 9, 326495.16, 326495.16), _compra(3, 9, "AVGO", 23, 14173.7, 500),
+            _cobro(20, 10, 1000000, 1000500, 3)]
+
+
+def test_foto_sin_fecha_no_toca_el_efectivo_y_completa_lo_que_falta():
+    cu = _Cuenta(pesos=_con_cobro_posterior())
+    j = cu.subir_foto(_sin_fecha(_foto("01/11/2026", [("Cedears", "ARS", [
+        ("AVGO", 23, 12650), ("KO", 10, 20000)])], pesos=900000)), confirmar=False)
+    assert j["fecha_origen"] == "fallback_hoy"
+    assert j["cash_ajustes"] == []               # antes: un retiro de $100.500
+    assert j["caja_sin_ajustar"]["motivo"] == "foto_sin_fecha"
+    assert [(d["moneda"], round(d["rendi"]), round(d["foto"]))
+            for d in j["caja_sin_ajustar"]["diferencias"]] == [("ARS", 1000500, 900000)]
+    texto = j["caja_sin_ajustar"]["texto"]
+    assert "no dice de qué día es" in texto and "$900.000 en pesos" in texto
+    assert "un retiro de $100.500 con «Registrar» → «Retiro»" in texto
+    c = cu.c.post("/api/imports/confirm", headers=cu.h, json={"session_id": j["session_id"]})
+    assert c.status_code == 200, c.text
+    assert round(cu.caja()) == 1000500
+    assert cu.qty("KO") == 10
+
+
+def test_foto_sin_fecha_que_solo_difiere_en_efectivo_no_dice_coincide():
+    cu = _Cuenta(pesos=_con_cobro_posterior())
+    j = cu.subir_foto(_sin_fecha(_foto("01/11/2026", [("Cedears", "ARS", [("AVGO", 23, 12650)])],
+                                       pesos=900000)))
+    assert j["session_id"] is None               # antes: una sesión con el retiro
+    assert j["todo_coincide"] is False
+    assert j["caja_sin_ajustar"]["motivo"] == "foto_sin_fecha"
+    assert "efectivo" in j["message"] and "coincide" not in j["message"]
+    assert round(cu.caja()) == 1000500
+
+
+def test_foto_sin_fecha_con_el_mismo_efectivo_coincide():
+    """La otra mitad: sin diferencia no hay nada que avisar."""
+    cu = _Cuenta(pesos=_con_cobro_posterior())
+    j = cu.subir_foto(_sin_fecha(_foto("01/11/2026", [("Cedears", "ARS", [("AVGO", 23, 12650)])],
+                                       pesos=1000500)))
+    assert j["todo_coincide"] is True
+    assert not j.get("caja_sin_ajustar")
+
+
+def test_foto_sin_fecha_con_dolares_no_crea_la_cuenta_en_dolares():
+    """Para un ajuste que no se va a hacer no se crea «Bull Market · USD». Con KO
+    por completar la vista previa se guarda: sin nada que completar, lo que la
+    vista previa crea se descarta solo y la prueba pasaba sin la guarda."""
+    cu = _Cuenta(pesos=_con_cobro_posterior())
+    j = cu.subir_foto(_sin_fecha(_foto("01/11/2026", [("Cedears", "ARS", [
+        ("AVGO", 23, 12650), ("KO", 10, 20000)])], pesos=1000500, dolares=300)))
+    assert j["_confirm"] and cu.qty("KO") == 10
+    assert not cu.q("SELECT 1 FROM brokers WHERE user_id=? AND name=?", cu.uid, BMU)
+    assert [(d["moneda"], d["rendi"], d["foto"])
+            for d in j["caja_sin_ajustar"]["diferencias"]] == [("USD", 0.0, 300.0)]
+    assert "un depósito de US$ 300,00 con «Registrar» → «Depósito»" in j["caja_sin_ajustar"]["texto"]
+
+
+def test_foto_sin_fecha_con_centavos_en_dolares_coincide():
+    """Menos de US$ 1 sin cuenta en dólares es polvo, con fecha o sin ella."""
+    cu = _Cuenta(pesos=_con_cobro_posterior())
+    j = cu.subir_foto(_sin_fecha(_foto("01/11/2026", [("Cedears", "ARS", [("AVGO", 23, 12650)])],
+                                       pesos=1000500, dolares=0.5)))
+    assert j["todo_coincide"] is True and not j.get("caja_sin_ajustar")
+
+
+def test_foto_sin_fecha_con_plata_fechada_mas_adelante_no_inventa_la_fecha_de_la_foto():
+    """La plata «posterior» se buscaba contra la fecha inventada (hoy): un cobro
+    fechado más adelante decía «la foto es del <hoy>», que es falso."""
+    from fechas import hoy_art_date
+    fut = datetime.combine(hoy_art_date() + timedelta(days=3), datetime.min.time())
+    cu = _Cuenta(pesos=_con_cobro_posterior()
+                 + [[fut, fut, "RECIBO DE COBRO", 4, 0, None, 0, 1000, 1001500, None]])
+    j = cu.subir_foto(_sin_fecha(_foto("01/11/2026", [("Cedears", "ARS", [("AVGO", 23, 12650)])],
+                                       pesos=900000)))
+    assert j["caja_sin_ajustar"]["motivo"] == "foto_sin_fecha"
+    assert "la foto es del" not in j["message"]
+    assert round(cu.caja()) == 1001500
+
+
+def test_foto_sin_fecha_en_negativo_no_pide_un_retiro_imposible():
+    """La app no deja un retiro que lleve el saldo bajo cero."""
+    cu = _Cuenta(pesos=_con_cobro_posterior())
+    j = cu.subir_foto(_sin_fecha(_foto("01/11/2026", [("Cedears", "ARS", [("AVGO", 23, 12650)])],
+                                       pesos=-5000)))
+    assert j["caja_sin_ajustar"]["motivo"] == "foto_sin_fecha"
+    assert "Registrar" not in j["caja_sin_ajustar"]["texto"]
+    assert round(cu.caja()) == 1000500
+
+
+def test_foto_con_fecha_sigue_ajustando_el_efectivo():
+    """Con fecha, el ajuste sigue como antes (la regla nueva es sólo para la sin fecha)."""
+    cu = _Cuenta(pesos=_con_cobro_posterior())
+    j = cu.subir_foto(_foto("01/11/2026", [("Cedears", "ARS", [("AVGO", 23, 12650)])],
+                            pesos=900000))
+    assert j["fecha_origen"] == "archivo"
+    assert cu.caja() == 900000.0
+

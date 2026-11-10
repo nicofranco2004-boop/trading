@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../utils/api'
-import { fechaCorta } from '../../utils/cuantoSeMueve'
 
 // Los motivos de `importing/proyeccion.py` (no se pudo llevar a la fecha de la foto).
 // Lo archivado va aparte: no es «algo posterior», y lo que hay que hacer es otra cosa.
@@ -236,10 +235,10 @@ export default function TenenciaUpload({
                 </ul>
               </div>
             )}
-            {preview.caja_sin_ajustar && (
-              <p className="text-xs text-rendi-warn mb-2">
-                El efectivo no lo tocamos: {docLabel} es del {fechaCorta(preview.caja_sin_ajustar.fecha_foto)} y después hubo movimientos de plata (hasta el {fechaCorta(preview.caja_sin_ajustar.hasta)}), así que no sabemos cuánto había ese día.
-              </p>
+            {/* El texto lo arma el servidor (`_texto_caja_sin_ajustar`): uno solo
+                para esta pantalla, la del asistente y el mensaje de «nada para completar». */}
+            {preview.caja_sin_ajustar?.texto && (
+              <p className="text-xs text-rendi-warn mb-2">{preview.caja_sin_ajustar.texto}</p>
             )}
             {noComparados.length > 0 && (
               <p className="text-xs text-rendi-warn mb-2">

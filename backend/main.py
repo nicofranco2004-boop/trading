@@ -1,4 +1,4 @@
-from money_fmt import fmt_num
+from money_fmt import fmt_money, fmt_num
 from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
@@ -46854,9 +46854,14 @@ def import_tenencia_preview(
         # todos los brokers que pasan por acá). Rodar la caja hacia atrás sería un
         # segundo motor de caja; lo que no se puede rodar no se adivina: con plata
         # movida después de la foto, la caja NO se ajusta y se avisa por qué.
+        # Sin fecha no se busca: la fecha es la de hoy, inventada, y un movimiento
+        # fechado más adelante daba un aviso con esa fecha falsa. La foto sin fecha
+        # tiene su propia regla (abajo).
+        _sin_fecha = fecha_origen == "fallback_hoy"
         _plata_post = (_import_proyeccion.plata_posterior(
                            conn, uid, pair=_par_caja, fecha=seed_date)
-                       if (snap.cash_ars is not None or snap.cash_usd is not None) else [])
+                       if not _sin_fecha and (snap.cash_ars is not None
+                                              or snap.cash_usd is not None) else [])
         caja_sin_ajustar = None
         if _complete and _plata_post:
             caja_sin_ajustar = {"motivo": "movimientos_posteriores", "fecha_foto": seed_date,
@@ -46882,16 +46887,39 @@ def import_tenencia_preview(
             # (el usuario no tuvo movimientos en dólares), lo CREAMOS para dejar el saldo en
             # dólares exacto (antes sólo Balanz/IEB/IOL → Cocos/PPI/BMB con cash USD pero
             # SIN holdings USD lo descartaban en silencio). Para polvo (< 1 USD) no
-            # ensuciamos con un sub-broker.
-            if snap.cash_usd is not None and abs(snap.cash_usd) >= 1.0 and not _sib:
+            # ensuciamos con un sub-broker. Sin fecha no: el ajuste no se va a hacer (abajo).
+            if (snap.cash_usd is not None and abs(snap.cash_usd) >= 1.0 and not _sib
+                    and not _sin_fecha):
                 parent_row = conn.execute(
                     "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
                 _sib = _ensure_usd_sibling(conn, uid, parent_row)["name"]
             if snap.cash_ars is not None:
                 _adj.append((broker, "ARS", _cur_cash(broker), snap.cash_ars, 1.0))
-            if snap.cash_usd is not None and _sib:
-                _adj.append((_sib, "USD", _cur_cash(_sib), snap.cash_usd, 0.01))
+            # Sin fecha y sin cuenta en dólares, contra cero y con el mismo piso de
+            # US$ 1 que decide crearla: menos es polvo, con fecha o sin ella.
+            if snap.cash_usd is not None and (
+                    _sib or (_sin_fecha and abs(snap.cash_usd) >= 1.0)):
+                _adj.append((_sib or broker, "USD", _cur_cash(_sib) if _sib else 0.0,
+                             snap.cash_usd, 0.01))
         _cash_txs, _cash_applied = _import_tenencia.build_cash_trueup_txs(_adj, seed_date)
+        # 🔴 SIN FECHA, EL EFECTIVO NO SE TOCA (decisión de Nico, 2026-11-10). La
+        # foto sin fecha se compara contra la caja de HOY: si es vieja, el ajuste
+        # retira la plata que entró después — el mismo daño que `plata_posterior`
+        # frena con fecha, sin poder verlo. Las tenencias sí se completan (un aporte
+        # de apertura no le saca plata a nadie). La diferencia se calcula igual,
+        # sólo para mostrarla: sin ella la persona no sabe qué corregir a mano.
+        if _cash_applied and _sin_fecha:
+            caja_sin_ajustar = {
+                "motivo": "foto_sin_fecha", "fecha_foto": None,
+                "diferencias": [{"broker": _b, "moneda": _ccy, "rendi": round(_cur, 2),
+                                 "foto": round(_tgt, 2)}
+                                for _b, _ccy, _cur, _tgt, _d in _cash_applied]}
+            log.info("tenencia cash true-up SALTEADO uid=%s broker=%s: la foto no dice su "
+                     "fecha (%s)", uid, broker,
+                     ", ".join(f"{_c} {_cur:.2f}→{_t:.2f}" for _b, _c, _cur, _t, _d in _cash_applied))
+            _cash_txs, _cash_applied = [], []
+        if caja_sin_ajustar:
+            caja_sin_ajustar["texto"] = _texto_caja_sin_ajustar(caja_sin_ajustar)
         for _b, _ccy, _cur, _tgt, _diff in _cash_applied:
             log.info("tenencia cash true-up uid=%s broker=%s %s rendi=%.2f foto=%.2f diff=%.2f",
                      uid, _b, _ccy, _cur, _tgt, _diff)
@@ -47137,10 +47165,7 @@ def import_tenencia_preview(
                     _msg += (" No pudimos verificar la comparación contra el registro diario "
                              "de tu cartera.")
                 if caja_sin_ajustar:
-                    _f = caja_sin_ajustar["fecha_foto"]
-                    _msg += (f" El efectivo no lo comparamos: la foto es del "
-                             f"{_f[8:10]}/{_f[5:7]}/{_f[:4]} y después hubo movimientos de "
-                             f"plata, así que no sabemos cuánto tenías ese día.")
+                    _msg += " " + caja_sin_ajustar["texto"]
             return {"session_id": None, "nothing_to_do": True, "matched": len(rec.matched),
                     "foto_completa": _foto_completa, "warnings": _warnings,
                     "tickers_normalizados": tickers_normalizados,
@@ -47770,6 +47795,41 @@ def _reconstruir_en_fila(uids) -> None:
         except Exception:
             _MTM_FILA_ACTIVA = False
             log.exception("mtm-auto: no se pudo lanzar la fila de reconstrucción")
+
+
+def _texto_caja_sin_ajustar(c: dict) -> str:
+    """Por qué la foto no tocó el efectivo, en el texto que lee la persona. Un solo
+    lugar: lo muestran el mensaje de «nada para completar» y las dos pantallas de
+    la foto (`TenenciaUpload`, `ImportWizard`), que antes tenían cada una su copia.
+
+      · foto_sin_fecha: comparada contra la caja de HOY, si la foto es vieja el
+        ajuste desharía la plata de después (decisión de Nico, 2026-11-10). Dice
+        cuánto dice la foto y qué cargar a mano si la foto sí es de hoy.
+      · movimientos_posteriores: hubo plata movida después de la fecha de la foto.
+    """
+    if c["motivo"] == "foto_sin_fecha":
+        difs = c["diferencias"]
+        dice = " y ".join(
+            f"{fmt_money(d['foto'], d['moneda'])} en "
+            f"{'pesos' if d['moneda'] == 'ARS' else 'dólares'} "
+            f"(en Rendi: {fmt_money(d['rendi'], d['moneda'])})" for d in difs)
+        texto = (f"El efectivo no lo tocamos: la foto dice {dice}, pero no dice de qué día "
+                 f"es, y si es de otro día, llevar el efectivo a ese número desharía la "
+                 f"plata que entró o salió después.")
+        # Un retiro que deja el saldo bajo cero la app lo rechaza: con la foto en
+        # negativo no hay nada que se pueda cargar a mano.
+        if all(d["foto"] >= 0 for d in difs):
+            pasos = [("depósito" if d["foto"] > d["rendi"] else "retiro",
+                      fmt_money(abs(d["foto"] - d["rendi"]), d["moneda"])) for d in difs]
+            botones = " y ".join(dict.fromkeys(f"«{k.capitalize()}»" for k, _ in pasos))
+            texto += (f" Si la foto es de hoy, cargá "
+                      f"{' y '.join(f'un {k} de {m}' for k, m in pasos)} con «Registrar» → "
+                      f"{botones}.")
+        return texto
+    _f, _h = c["fecha_foto"], c["hasta"]
+    return (f"El efectivo no lo comparamos: la foto es del {_f[8:10]}/{_f[5:7]}/{_f[:4]} y "
+            f"después hubo movimientos de plata (hasta el {_h[8:10]}/{_h[5:7]}/{_h[:4]}), "
+            f"así que no sabemos cuánto había ese día.")
 
 
 def _caja_de_la_foto_cambio(conn, uid: int, session_id: str) -> Optional[dict]:

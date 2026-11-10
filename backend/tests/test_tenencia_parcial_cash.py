@@ -91,13 +91,14 @@ class FotoParcialNoTocaElEfectivoTest(unittest.TestCase):
         self.conn.commit()
         self.headers = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
 
-    def _preview(self, csv_text):
+    def _preview(self, csv_text, nombre="portfolio_report_20261101.csv"):
+        # Con la fecha en el nombre (así se llaman los exports de Cocos): sin
+        # fecha, la foto no toca el efectivo (decisión de Nico, 2026-11-10).
         return self.client.post(
             "/api/imports/tenencia/preview",
             headers=self.headers,
             data={"broker": self.BROKER, "format": "cocos"},
-            files={"file": ("portfolio_report.csv", io.BytesIO(csv_text.encode("utf-8")),
-                            "text/csv")})
+            files={"file": (nombre, io.BytesIO(csv_text.encode("utf-8")), "text/csv")})
 
     def _cash(self):
         r = self.conn.execute(
@@ -130,6 +131,18 @@ class FotoParcialNoTocaElEfectivoTest(unittest.TestCase):
         self.assertIsNotNone(body.get("session_id"), body)
         self.assertEqual(self._confirmar(body["session_id"]).status_code, 200)
         self.assertAlmostEqual(self._cash(), 900000, places=2)
+
+    def test_una_foto_completa_sin_fecha_no_toca_el_efectivo(self):
+        """Sin fecha en el archivo ni en el nombre, Rendi no sabe de qué día es el
+        saldo: si la foto es vieja, ajustarlo se llevaría la plata de después."""
+        r = self._preview(HDR + "MELI (MELI);10;100;ARS;1000\nARS;900000;1;ARS;900000\n",
+                          nombre="portfolio_report.csv")
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["fecha_origen"], "fallback_hoy")
+        self.assertEqual(body["caja_sin_ajustar"]["motivo"], "foto_sin_fecha")
+        self.assertEqual(self._confirmar(body["session_id"]).status_code, 200)
+        self.assertAlmostEqual(self._cash(), 750000, places=2)
 
 
 if __name__ == "__main__":

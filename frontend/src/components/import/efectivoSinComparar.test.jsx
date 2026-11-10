@@ -10,14 +10,16 @@ const base = { matched: 1, to_seed: [], over: [], not_in_snapshot: [], no_reconc
   cash_ajustes: [], override: {} }
 
 describe('efectivo sin comparar en la revisión de la foto', () => {
-  it('con plata posterior a la foto, dice que el efectivo no se toca y por qué', () => {
+  // El texto lo arma el servidor (`_texto_caja_sin_ajustar`, con sus pruebas en
+  // backend/tests/test_foto_errores_prod.py): la pantalla lo muestra tal cual.
+  it('dice que el efectivo no se toca, con el texto del servidor', () => {
     const html = renderToStaticMarkup(
       <ReconcileStep data={{ ...base, caja_sin_ajustar: {
         motivo: 'movimientos_posteriores', fecha_foto: '2026-09-05', movimientos: 1,
-        hasta: '2026-10-20' } }} decisiones={new Map()} onDecidir={() => {}} />)
+        hasta: '2026-10-20', texto: 'TEXTO DEL SERVIDOR' } }}
+                     decisiones={new Map()} onDecidir={() => {}} />)
     expect(html).toContain('Efectivo sin comparar')
-    expect(html).toContain('05/09/26')
-    expect(html).toContain('20/10/26')
+    expect(html).toContain('TEXTO DEL SERVIDOR')
     expect(html).toContain('no se ajusta')
   })
 

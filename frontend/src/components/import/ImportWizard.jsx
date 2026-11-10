@@ -4,7 +4,6 @@ import InfoTooltip from '../InfoTooltip'
 import BrokerInstructions from './BrokerInstructions'
 import WallbitConnect from './WallbitConnect'
 import { api, pedirAlServidor } from '../../utils/api'
-import { fechaCorta } from '../../utils/cuantoSeMueve'
 import { whatsappUrl } from '../../utils/support'
 import { WhatsAppIcon } from '../SupportWhatsAppFab'
 import { track } from '../../utils/track'
@@ -2249,11 +2248,12 @@ export function ReconcileStep({ data, decisiones, onDecidir, sujeto = 'vos' }) {
       )}
 
       {/* La caja de hoy no es la de la fecha de la foto: con plata movida
-          después, el servidor no ajusta el efectivo. Se dice, para que nadie
-          lea la ausencia de ajuste como «el efectivo coincide». */}
+          después, o sin fecha, el servidor no ajusta el efectivo. Se dice, para
+          que nadie lea la ausencia de ajuste como «el efectivo coincide». El
+          texto lo arma el servidor (`_texto_caja_sin_ajustar`). */}
       {data.caja_sin_ajustar && (
         <RecSection titulo="Efectivo sin comparar"
-                    sub={`La foto es del ${fechaCorta(data.caja_sin_ajustar.fecha_foto)} y después hubo movimientos de plata (hasta el ${fechaCorta(data.caja_sin_ajustar.hasta)}). No sabemos cuánto efectivo había ese día, así que no lo tocamos.`}
+                    sub={data.caja_sin_ajustar.texto}
                     chip={<Chip ok={false} no="no se ajusta" />} tono="warn" />
       )}
 
