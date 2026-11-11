@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { Shield, ShieldCheck, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift, Search, MessageSquare, Download } from 'lucide-react'
+import { Shield, ShieldCheck, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, MailX, Send, Gift, Search, MessageSquare, Download } from 'lucide-react'
 import { api } from '../utils/api'
 import { filtrarFilas, contarCaen, contarFrenadas } from '../utils/fxPanel'
 import {
@@ -167,6 +167,18 @@ export default function Admin() {
     if (!await confirmar(`¿Eliminar la cuenta de ${u.email} junto a todos sus datos? Esta acción no se puede deshacer.`)) return
     try {
       await api.delete(`/admin/users/${u.id}`)
+      refresh()
+    } catch (e) {
+      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
+    }
+  }
+
+  async function cambiarMails(u, recibe) {
+    try {
+      if (!await cambiarMailsPromocionales({ u, recibe, confirmar, pedir: api.post })) return
+      toast.push(recibe
+        ? `${u.email} vuelve a recibir los mails promocionales.`
+        : `Listo: no le vas a mandar más mails promocionales a ${u.email}.`, { type: 'success' })
       refresh()
     } catch (e) {
       toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
@@ -522,6 +534,7 @@ export default function Admin() {
                     {u.email}
                     {u.is_admin && <span className="ml-2 text-[12px] px-1.5 py-0.5 rounded bg-rendi-accent/15 text-rendi-accent font-semibold">admin</span>}
                     {!u.approved && <span className="ml-2 text-[12px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold"><Clock size={10} className="inline -mt-0.5" /> Pendiente</span>}
+                    <MarcaSinMails u={u} />
                   </td>
                   <td className="px-3 py-2 text-ink-2">{u.name || '—'}</td>
                   <td className="px-3 py-2"><PlanBadge plan={u.plan} affected={u.billing_affected} creditActive={u.credit_active} daysRemaining={u.days_remaining} estado={u.estado} pausaMotivo={u.pausa_motivo} requiresPlan={u.requires_plan} /></td>
@@ -573,6 +586,7 @@ export default function Admin() {
                           <RotateCcw size={12} /> Restaurar
                         </button>
                       )}
+                      <BotonMails u={u} onCambiar={cambiarMails} />
                       {!u.approved && !u.is_admin && (
                         <button
                           onClick={() => approveUser(u)}
@@ -610,6 +624,63 @@ export default function Admin() {
         </p>
       </div>
     </div>
+  )
+}
+
+// ── Baja de los mails promocionales, desde la tabla de Usuarios ──
+// Para quien la pide por otro lado (le contesta un mail a Nico, le escribe por
+// Instagram). Es la MISMA marca que el link «dejar de recibir» del pie de los
+// mails (`users.marketing_baja_at`): la respetan todas las campañas del panel y
+// la lista para Meta. El servidor: `admin_mails_promocionales` en main.py.
+
+export function preguntaMails(u, recibe) {
+  return recibe
+    ? `¿Volver a mandarle mails promocionales a ${u.email}?\n\n`
+      + 'Hacelo sólo si te equivocaste de fila o si te lo pidió: si pidió la baja, la ley obliga a respetarla.'
+    : `¿Dar de baja a ${u.email} de los mails promocionales?\n\n`
+      + 'No le van a llegar más las campañas que mandás desde el panel y sale de la lista para Meta. '
+      + 'Le siguen llegando los mails de su cuenta: los códigos para entrar, los recibos, las alertas '
+      + 'que armó y los avisos de que se le termina la prueba o el plan.'
+}
+
+// Pregunta y, si dice que sí, se lo pide al servidor. Devuelve la respuesta, o
+// null si canceló. `confirmar` y `pedir` llegan de afuera para poder probarla.
+export async function cambiarMailsPromocionales({ u, recibe, confirmar, pedir }) {
+  if (!await confirmar(preguntaMails(u, recibe), { si: recibe ? 'Volver a mandarle' : 'Dar de baja' })) return null
+  return pedir(`/admin/users/${u.id}/mails-promocionales`, { recibe })
+}
+
+export function MarcaSinMails({ u }) {
+  if (!u.marketing_baja_at) return null
+  return (
+    <span
+      className="ml-2 whitespace-nowrap text-[12px] px-1.5 py-0.5 rounded bg-bg-2 text-ink-2 font-semibold"
+      title={`No recibe mails promocionales desde el ${u.marketing_baja_at.slice(0, 10)}`}
+    ><MailX size={10} className="inline -mt-0.5" /> Sin mails</span>
+  )
+}
+
+export function BotonMails({ u, onCambiar }) {
+  if (u.is_admin) return null
+  if (u.marketing_baja_at) {
+    return (
+      <button
+        onClick={() => onCambiar(u, true)}
+        className="flex items-center gap-1 whitespace-nowrap text-xs px-2 py-1 rounded text-ink-3 hover:text-ink-0 hover:bg-bg-2"
+        title="Volver a mandarle los mails promocionales (sólo si te equivocaste de fila o si te lo pidió)"
+      >
+        <Mail size={12} /> Volver a mandarle
+      </button>
+    )
+  }
+  return (
+    <button
+      onClick={() => onCambiar(u, false)}
+      className="flex items-center gap-1 whitespace-nowrap text-xs px-2 py-1 rounded bg-bg-2 text-ink-1 hover:bg-bg-2/60 hover:text-ink-0"
+      title="No mandarle más mails promocionales: lo mismo que tocar «dejar de recibir» al pie de un mail"
+    >
+      <MailX size={12} /> Baja de mails
+    </button>
   )
 }
 

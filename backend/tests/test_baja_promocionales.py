@@ -181,6 +181,102 @@ class LinkDeBajaTest(unittest.TestCase):
         self.assertTrue(self._baja(self.a))
 
 
+class BajaDesdeLaTablaDeUsuariosTest(unittest.TestCase):
+    """El botón «Baja de mails» de la tabla de Usuarios: para quien la pide por
+    otro lado (le contesta un mail a Nico). Tiene que dejar a la persona igual
+    que el link del pie: afuera de las campañas y de la lista para Meta.
+    (Mails de @ejemplo.com: la lista para Meta deja afuera los de @rendi.test.)"""
+
+    def setUp(self):
+        self.client = TestClient(main.app)
+        self.tag = uuid.uuid4().hex[:8]
+        conn = main.get_db()
+        self.admin = _mk(conn, f"tadm-{self.tag}@rendi.test", is_admin=1)
+        self.a = _mk(conn, f"ta-{self.tag}@ejemplo.com", name="Ana")
+        self.b = _mk(conn, f"tb-{self.tag}@ejemplo.com", name="Beto")
+        conn.commit(); conn.close()
+        self.h = {"Authorization": f"Bearer {main.create_token(self.admin)}"}
+
+    def _boton(self, uid, recibe, h=None):
+        return self.client.post(f"/api/admin/users/{uid}/mails-promocionales",
+                                json={"recibe": recibe}, headers=self.h if h is None else h)
+
+    def _fila(self, uid):
+        """La fila de la tabla, por los dos pedidos que la arman (lista y búsqueda)."""
+        lista = self.client.get("/api/admin/users", headers=self.h).json()
+        busq = self.client.get(f"/api/admin/users/search?q={uid}", headers=self.h).json()
+        de_lista = next(f for f in lista if f["id"] == uid)
+        de_busq = next(f for f in busq if f["id"] == uid)
+        self.assertEqual(de_lista["marketing_baja_at"], de_busq["marketing_baja_at"])
+        return de_lista
+
+    def _broadcast(self, **body):
+        body = {"subject": f"Novedad {self.tag}", "body": "Hola {nombre}", **body}
+        r = self.client.post("/api/admin/email/broadcast", json=body, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def _meta(self):
+        r = self.client.get("/api/admin/users/mails-meta.csv", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.text
+
+    def test_la_baja_del_panel_saca_a_la_persona_de_todo(self):
+        self.assertIsNone(self._fila(self.b)["marketing_baja_at"])
+
+        r = self._boton(self.b, False)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["marketing_baja_at"])
+        # La tabla la muestra dada de baja; a Ana no le tocó nada.
+        self.assertTrue(self._fila(self.b)["marketing_baja_at"])
+        self.assertIsNone(self._fila(self.a)["marketing_baja_at"])
+
+        # La campaña no se la ofrece y, mandada igual, el motor no le escribe.
+        prev = self._broadcast()
+        mios = {f["id"] for f in prev["recipients"] if f["email"].endswith(f"-{self.tag}@ejemplo.com")}
+        self.assertEqual(mios, {self.a})
+        resend = _Resend()
+        with resend.activo():
+            self._broadcast(confirm=True, vistos=[{"id": self.a}, {"id": self.b}])
+        self.assertIn(f"ta-{self.tag}@ejemplo.com", resend.pedidos)
+        self.assertNotIn(f"tb-{self.tag}@ejemplo.com", resend.pedidos)
+
+        # Y sale de la lista para Meta.
+        csv = self._meta()
+        self.assertIn(f"ta-{self.tag}@ejemplo.com", csv)
+        self.assertNotIn(f"tb-{self.tag}@ejemplo.com", csv)
+
+    def test_volver_a_mandarle_la_deshace(self):
+        self._boton(self.b, False)
+        r = self._boton(self.b, True)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIsNone(r.json()["marketing_baja_at"])
+        self.assertIsNone(self._fila(self.b)["marketing_baja_at"])
+        prev = self._broadcast()
+        self.assertIn(self.b, {f["id"] for f in prev["recipients"]})
+
+    def test_es_la_misma_marca_que_el_link(self):
+        """Quien se dio de baja con el link aparece así en la tabla, y la baja
+        del panel se ve en la página del link como hecha."""
+        self.client.post(_ruta(main._url_de_baja(self.a)))
+        self.assertTrue(self._fila(self.a)["marketing_baja_at"])
+
+        self._boton(self.b, False)
+        pagina = self.client.get(_ruta(main._url_de_baja(self.b))).text
+        self.assertIn("Ya no te mandamos mails promocionales", pagina)
+
+    def test_dos_bajas_no_cambian_la_fecha(self):
+        primera = self._boton(self.b, False).json()["marketing_baja_at"]
+        self.assertEqual(self._boton(self.b, False).json()["marketing_baja_at"], primera)
+
+    def test_solo_el_admin_y_solo_cuentas_que_existen(self):
+        h_ana = {"Authorization": f"Bearer {main.create_token(self.a)}"}
+        self.assertEqual(self._boton(self.b, False, h=h_ana).status_code, 403)
+        self.assertEqual(self._boton(self.b, False, h={}).status_code, 401)
+        self.assertIsNone(self._fila(self.b)["marketing_baja_at"])
+        self.assertEqual(self._boton(999_999_999, False).status_code, 404)
+
+
 class SeisCampanasTest(unittest.TestCase):
     """Las seis funciones de campaña pasan por `_send`: adentro de `con_baja`
     todas salen con el link. Si una armara su propio pedido, saldría sin él."""

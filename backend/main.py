@@ -30799,6 +30799,7 @@ _ADMIN_USERS_SELECT = """
     SELECT
         u.id, u.email, u.name, u.is_admin, u.approved, u.created_at, u.last_login_at,
         u.tier, u.credit_active_until, u.credit_anchor_plan, u.email_verified,
+        u.marketing_baja_at,
         (SELECT {cnt} FROM positions p WHERE p.user_id = u.id AND {abierta}) AS positions_count,
         (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS operations_count,
         (SELECT COUNT(*) FROM brokers b WHERE b.user_id = u.id) AS brokers_count,
@@ -31214,6 +31215,20 @@ def _se_dio_de_baja(conn, uid) -> bool:
     return bool(r and r["marketing_baja_at"])
 
 
+# Las dos únicas escrituras de la baja. Las usan el link del mail (la persona) y
+# el botón de la tabla de Usuarios del panel (el admin, cuando se lo piden por
+# otro lado: un mail, un mensaje). Es la misma marca para los dos: la que mira
+# `_envio_masivo` antes de cada mail y `_sql_acepta_publicidad` en cada lista.
+def _dar_de_baja_promocionales(conn, uid) -> None:
+    # `IS NULL`: dar de baja dos veces no le cambia la fecha a la primera.
+    conn.execute("UPDATE users SET marketing_baja_at=? WHERE id=? AND marketing_baja_at IS NULL",
+                 (datetime.utcnow().isoformat(), int(uid)))
+
+
+def _volver_a_recibir_promocionales(conn, uid) -> None:
+    conn.execute("UPDATE users SET marketing_baja_at=NULL WHERE id=?", (int(uid),))
+
+
 def _mandar_con_baja(mandar, t):
     """El mail de una campaña, como PROMOCIONAL: con el link de baja de SU
     destinatario al pie (ver `emails.con_baja`)."""
@@ -31311,8 +31326,7 @@ def email_baja(request: Request, u: str = "", t: str = ""):
     if uid is None:
         return _baja_invalida()
     with db_abierta() as conn:
-        conn.execute("UPDATE users SET marketing_baja_at=? WHERE id=? AND marketing_baja_at IS NULL",
-                     (datetime.utcnow().isoformat(), uid))
+        _dar_de_baja_promocionales(conn, uid)
         conn.commit()
     log.info("email-baja: uid=%s pidió no recibir mails promocionales", uid)
     return _pagina_baja(
@@ -31330,11 +31344,36 @@ def email_alta(request: Request, u: str = "", t: str = ""):
     if uid is None:
         return _baja_invalida()
     with db_abierta() as conn:
-        conn.execute("UPDATE users SET marketing_baja_at=NULL WHERE id=?", (uid,))
+        _volver_a_recibir_promocionales(conn, uid)
         conn.commit()
     log.info("email-baja: uid=%s volvió a aceptar mails promocionales", uid)
     return _pagina_baja("Listo: vas a volver a recibirlos",
                         "Gracias. Podés darte de baja cuando quieras desde el pie de cualquiera de esos mails.")
+
+
+class MailsPromocionalesIn(BaseModel):
+    recibe: bool
+
+
+@app.post("/api/admin/users/{user_id}/mails-promocionales")
+def admin_mails_promocionales(user_id: int, body: MailsPromocionalesIn,
+                              uid: int = Depends(get_admin_user)):
+    """El botón «Baja de mails» de la tabla de Usuarios: la misma baja que el
+    link del pie de los mails, para quien la pide por otro lado (le contesta un
+    mail a Nico, le escribe por Instagram). `recibe=False` da de baja;
+    `recibe=True` la deshace (para cuando el admin tocó la fila equivocada)."""
+    with db_abierta() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE id=?", (user_id,)).fetchone():
+            raise HTTPException(404, "Usuario no existe")
+        if body.recibe:
+            _volver_a_recibir_promocionales(conn, user_id)
+        else:
+            _dar_de_baja_promocionales(conn, user_id)
+        conn.commit()
+        fila = conn.execute("SELECT marketing_baja_at FROM users WHERE id=?", (user_id,)).fetchone()
+    log.info("email-baja: el admin uid=%s %s a uid=%s", uid,
+             "volvió a anotar" if body.recibe else "dio de baja", user_id)
+    return {"ok": True, "marketing_baja_at": fila["marketing_baja_at"]}
 
 
 def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, campaña,
