@@ -34,7 +34,9 @@ a las 03:45 UTC (después del snapshot job + lifecycle, para no pisar).
 
 Env vars (todas opcionales):
     DB_PATH                  — path al archivo SQLite (default: trading.db)
-    BACKUP_LOCAL_DIR         — dir local de backups (default: ./backups/)
+    BACKUP_LOCAL_DIR         — dir local de backups (default: ./backups/). Con `-`
+                               NO se guarda copia local: sólo la de afuera (R2), y
+                               entonces que la subida falle es un ERROR (ver SIN_COPIA_LOCAL)
     BACKUP_LOCAL_KEEP_DAYS   — retención local (default: 30)
     BACKUP_REMOTE_KEEP_DAYS  — retención remota (default: 90)
     BACKUP_S3_BUCKET         — nombre del bucket S3
@@ -464,6 +466,13 @@ def _dsn_de_la_app() -> str:
     return os.environ.get("DATABASE_URL", "").strip()
 
 
+# `BACKUP_LOCAL_DIR=-`: el respaldo vive SÓLO afuera (R2). Para soltar el disco de
+# Railway después del pasaje a Postgres (04/11/2026): la base ya no vive ahí y lo
+# único que quedaba en el disco eran estas copias. Sin copia local, una subida que
+# no se hizo deja la noche SIN respaldo: por eso ahí no es «skip», es un error.
+SIN_COPIA_LOCAL = "-"
+
+
 def run_backup(db_path: Optional[str] = None) -> dict:
     """Pipeline completo: copia → guardar local → subir remoto → prune.
     Devuelve un dict con stats del run para logging.
@@ -483,6 +492,7 @@ def run_backup(db_path: Optional[str] = None) -> dict:
     today = _today_utc()
     ts = _timestamp_utc()
     local_dir = os.environ.get('BACKUP_LOCAL_DIR', './backups')
+    solo_afuera = local_dir.strip() == SIN_COPIA_LOCAL
     local_keep = _env_int('BACKUP_LOCAL_KEEP_DAYS', 30)
     remote_keep = _env_int('BACKUP_REMOTE_KEEP_DAYS', 90)
     remote_prefix = os.environ.get('BACKUP_S3_PREFIX', 'rendi/')
@@ -549,11 +559,12 @@ def run_backup(db_path: Optional[str] = None) -> dict:
                     f"el SQLite no cambia hace {horas:.0f} h (tope {tope} h): ¿la app escribe en "
                     f"otra base? Con DATABASE_URL puesta, el backup es el volcado de Postgres.")
 
-        # Local copy (siempre)
-        try:
-            stats['local_path'] = save_local_backup(listo, local_dir, today, nombre)
-        except Exception as e:
-            stats['errors'].append(f"local save falló: {e}")
+        # Local copy (salvo BACKUP_LOCAL_DIR=-)
+        if not solo_afuera:
+            try:
+                stats['local_path'] = save_local_backup(listo, local_dir, today, nombre)
+            except Exception as e:
+                stats['errors'].append(f"local save falló: {e}")
 
         # Remote upload (opcional)
         try:
@@ -569,12 +580,18 @@ def run_backup(db_path: Optional[str] = None) -> dict:
         except Exception as e:
             stats['errors'].append(f"remote upload falló: {e}")
             stats['remote_skip_reason'] = str(e)
+        if solo_afuera and not stats['remote_uploaded'] and not any(
+                "remote upload falló" in x for x in stats['errors']):
+            stats['errors'].append(
+                f"sin copia local (BACKUP_LOCAL_DIR=-) y la subida a R2 no se hizo: "
+                f"esta noche NO hay respaldo ({stats['remote_skip_reason']})")
 
-    # Prune (siempre, independiente de errores arriba)
-    try:
-        stats['local_pruned'] = prune_local_backups(local_dir, local_keep)
-    except Exception as e:
-        stats['errors'].append(f"local prune falló: {e}")
+    # Prune (siempre, independiente de errores arriba; sin copia local no hay qué podar)
+    if not solo_afuera:
+        try:
+            stats['local_pruned'] = prune_local_backups(local_dir, local_keep)
+        except Exception as e:
+            stats['errors'].append(f"local prune falló: {e}")
 
     try:
         stats['remote_pruned'] = prune_remote_backups(remote_prefix, remote_keep)

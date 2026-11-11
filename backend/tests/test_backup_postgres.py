@@ -216,3 +216,59 @@ class UnSQLiteCongeladoNoEsOK(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(PG and BIN, "el volcado de Postgres necesita Postgres y pg_dump local")
+class SinCopiaLocal(unittest.TestCase):
+    """`BACKUP_LOCAL_DIR=-`: el respaldo vive sólo en R2. Para soltar el disco de
+    Railway después del pasaje (04/11/2026), donde lo único que quedaba eran estas
+    copias. Sin copia local, una subida que no se hizo es una noche SIN respaldo."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cwd = os.getcwd()
+        os.chdir(self.tmp.name)                  # un `./-/` o `./backups/` quedaría acá
+        self.addCleanup(os.chdir, self.cwd)
+        env = {"BACKUP_LOCAL_DIR": "-", "BACKUP_PG_BIN": BIN,
+               "DATABASE_URL": main.DATABASE_URL}
+        for k in ("BACKUP_S3_BUCKET", "BACKUP_S3_ACCESS_KEY", "BACKUP_S3_SECRET_KEY"):
+            env[k] = ""
+        p = mock.patch.dict(os.environ, env)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_con_la_subida_hecha_es_ok_y_no_deja_nada_en_disco(self):
+        subidos = []
+
+        def subir(path, key):
+            subidos.append((os.path.getsize(path), key))
+            return True, None
+
+        with mock.patch.object(backup_db, "upload_to_s3", side_effect=subir):
+            stats = backup_db.run_backup()
+        self.assertEqual(stats["errors"], [])
+        self.assertTrue(stats["remote_uploaded"])
+        self.assertIsNone(stats["local_path"])
+        self.assertEqual(len(subidos), 1)
+        self.assertGreater(subidos[0][0], 0)
+        self.assertRegex(subidos[0][1], r"^rendi/rendi-pg-\d{4}-\d{2}-\d{2}\.dump$")
+        self.assertEqual(os.listdir(self.tmp.name), [], "dejó archivos en el disco")
+
+    def test_sin_subida_no_es_ok(self):
+        """Sin las claves de R2 (como en este setUp) la subida se saltea: con copia
+        local eso era «skip»; sin copia local la noche queda sin respaldo."""
+        stats = backup_db.run_backup()
+        self.assertFalse(stats["remote_uploaded"])
+        self.assertTrue(any("NO hay respaldo" in e for e in stats["errors"]), stats["errors"])
+
+    def test_si_la_subida_revienta_no_es_ok(self):
+        with mock.patch.object(backup_db, "upload_to_s3", side_effect=RuntimeError("R2 caído")):
+            stats = backup_db.run_backup()
+        self.assertTrue(any("R2 caído" in e for e in stats["errors"]), stats["errors"])
+
+    def test_el_nocturno_lo_dice_en_el_registro(self):
+        with self.assertLogs("backup_db", level=logging.INFO) as reg:
+            main._run_backup_db_job()
+        self.assertFalse(any("Backup OK" in m for m in reg.output),
+                         "sin subida y sin copia local, el registro decía «Backup OK»")
