@@ -184,8 +184,17 @@ describe('la escala logarítmica del gráfico', () => {
     expect(cuenta.ultimoPut.escalas).toBe(true)              // esta pantalla conoce la escala
     // En logarítmica, rectas: cada una es un <line>.
     expect(lineas().every(n => n.nodeName === 'LINE')).toBe(true)
+    // La franja del canal va de su línea a su paralela (la que multiplica, no
+    // la línea más «ancho» de plata): su tercera esquina es la punta de la paralela.
+    const franja = () => todos(montado.contenedor, n => n.nodeName === 'POLYGON' && (n.getAttribute('fill-opacity') || n.getAttribute('fillOpacity')))
+      .map(n => n.getAttribute('points').split(' ').map(q => q.split(',').map(Number)))[0]
+    const paralela = lineas().filter(n => n.getAttribute('data-dibujo') === c.id)[1]
+    expect(franja()).toHaveLength(4)
+    expect(franja()[1][0]).toBeCloseTo(Number(paralela.getAttribute('x2')), 6)
+    expect(franja()[2][1]).toBeCloseTo(Number(paralela.getAttribute('y2')), 6)
     // En la de siempre, la misma línea es una curva (un solo trazo).
     await tocarLog()
+    expect(franja().length).toBeGreaterThan(10)              // la franja también, curva
     const curvas = lineas().filter(n => n.nodeName === 'POLYLINE')
     expect(curvas.length).toBe(4)                            // la tendencia y los tres bordes del canal
     expect(curvas.every(n => n.getAttribute('points').split(' ').length > 10)).toBe(true)
