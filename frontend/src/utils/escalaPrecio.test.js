@@ -2,7 +2,7 @@
 // lineal y en logarítmica. El gráfico montado de verdad con «Log» prendido se
 // prueba en components/asset/EscalaLogGrafico.test.js.
 import { describe, it, expect } from 'vitest'
-import { ANCHO_LOG_MAXIMO, anchoQueVale, armarEscala, cabeEnLaEscala, escalaDe, ladoDeAfuera, largoEnEje, marcasLog, precioCorrido, precioEnLaRecta, precioMasAncho, rangoConAire } from './escalaPrecio'
+import { ANCHO_LINEAL_MAXIMO, ANCHO_LOG_MAXIMO, anchoQueVale, armarEscala, cabeEnLaEscala, escalaDe, ladoDeAfuera, largoEnEje, marcasLog, precioCorrido, precioEnLaRecta, precioMasAncho, rangoConAire } from './escalaPrecio'
 import { marcasDePrecio } from './ejesGrafico'
 
 describe('la escala', () => {
@@ -159,6 +159,9 @@ describe('el ancho de un canal que se puede guardar (la misma regla que el servi
   it('distinto de cero, un número, y en log hasta el tope', () => {
     expect(anchoQueVale(12.5, 'lineal')).toBe(true)
     expect(anchoQueVale(500, 'lineal')).toBe(true)
+    // El de siempre también tiene tope (el del servidor): ensanchando uno mirando en log se puede pasar.
+    expect(anchoQueVale(ANCHO_LINEAL_MAXIMO, 'lineal')).toBe(true)
+    expect(anchoQueVale(-ANCHO_LINEAL_MAXIMO * 1.5, 'lineal')).toBe(false)
     expect(anchoQueVale(0, 'lineal')).toBe(false)
     expect(anchoQueVale(NaN, 'lineal')).toBe(false)
     expect(anchoQueVale(ANCHO_LOG_MAXIMO, 'log')).toBe(true)

@@ -27,7 +27,7 @@
 // precio en la escala que se mire.
 
 import { COLORES_DIBUJO, cuentasDePosicion, etiquetasDe, puntasDe } from '../../utils/dibujos'
-import { aEje, escalaDe, esLog, precioEnLaRecta, precioMasAncho } from '../../utils/escalaPrecio'
+import { aEje, deEje, escalaDe, esLog, precioEnLaRecta, precioMasAncho } from '../../utils/escalaPrecio'
 import { pctConSigno } from '../../utils/cuantoSeMueve'
 import { extensionFibonacci, fibonacciAMano, nivelPct, rayas, rotuloNivel, rotulosQueEntran } from '../../utils/fibonacci'
 import { PRIORIDAD } from '../../utils/rotulos'
@@ -39,24 +39,37 @@ export const colorDe = (d) => {
   return c ? `rgb(var(--${c.token}))` : COLOR_DIBUJO
 }
 
-// Cuántos tramos lleva una recta mirada en la otra escala (se ve curva).
+// Cuántos tramos lleva una recta mirada en la otra escala (se ve curva): esa
+// cantidad parejos en días y otra tanta parejos en la altura.
 const TRAMOS_DE_CURVA = 24
 
 /** Los puntos ([x, y] en lo que se ve, de 0 a 100) de la recta de a a b, recta
  *  en `escala`, entre los lugares k1 y k2, corrida `mas` en el eje de su escala
  *  (la paralela de un canal). Mirada en su misma escala es recta: dos puntos;
- *  en la otra, una curva de TRAMOS_DE_CURVA tramos. */
+ *  en la otra, una curva. Con puntos parejos sólo en días, una línea que
+ *  multiplica mucho su precio se apartaba varios píxeles de la de verdad donde
+ *  se empina (auditoría 12/11): por eso también van puntos parejos en la
+ *  altura, que se juntan justo ahí. */
 export function puntosDeLaRecta(a, b, k1, k2, escala, vista, pctX, pctY, mas = 0) {
   // Las dos puntas en el mismo lugar (en semanales, dos días de la misma
   // semana): una raya de una a la otra, como siempre.
   if (a.k === b.k) return [a, b].map(p => [pctX(p.k), pctY(precioMasAncho(p.precio, mas, escala))])
-  const n = escalaDe(escala) === escalaDe(vista) ? 1 : TRAMOS_DE_CURVA
-  const out = []
-  for (let j = 0; j <= n; j++) {
-    const k = k1 + ((k2 - k1) * j) / n
-    out.push([pctX(k), pctY(precioMasAncho(precioEnLaRecta(a, b, k, escala), mas, escala))])
+  const precioEn = (k) => precioMasAncho(precioEnLaRecta(a, b, k, escala), mas, escala)
+  if (escalaDe(escala) === escalaDe(vista)) return [k1, k2].map(k => [pctX(k), pctY(precioEn(k))])
+  const ks = new Set()
+  for (let j = 0; j <= TRAMOS_DE_CURVA; j++) ks.add(k1 + ((k2 - k1) * j) / TRAMOS_DE_CURVA)
+  // A cada altura pareja (en el eje de lo que se ve), el lugar donde la recta
+  // pasa por ahí: su precio en el eje de la recta, sin la paralela.
+  const v1 = aEje(precioEn(k1), vista), v2 = aEje(precioEn(k2), vista)
+  const ua = aEje(a.precio, escala), ub = aEje(b.precio, escala)
+  if (Number.isFinite(v1) && Number.isFinite(v2) && v1 !== v2 && ub !== ua) {
+    for (let j = 1; j < TRAMOS_DE_CURVA; j++) {
+      const precio = deEje(v1 + ((v2 - v1) * j) / TRAMOS_DE_CURVA, vista)
+      const k = a.k + ((aEje(precio, escala) - mas - ua) / (ub - ua)) * (b.k - a.k)
+      if (Number.isFinite(k) && k > Math.min(k1, k2) && k < Math.max(k1, k2)) ks.add(k)
+    }
   }
-  return out
+  return [...ks].sort((x, y) => (k2 >= k1 ? x - y : y - x)).map(k => [pctX(k), pctY(precioEn(k))])
 }
 
 // La recta de a a b seguida desde q hasta el borde derecho (hasta donde la

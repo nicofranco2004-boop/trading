@@ -283,7 +283,7 @@ class DibujosGraficoTest(unittest.TestCase):
         self.assertEqual(self._guardar([{**T, "escala": "raiz"}]).status_code, 422)
         r = self._guardar([{**canal, "ancho": 25}])
         self.assertEqual(r.status_code, 400, r.text)
-        self.assertIn("demasiado ancho", r.json()["detail"])
+        self.assertIn("no entra en la escala logarítmica", r.json()["detail"])
         self.assertEqual(self._leer(), [T, log, canal, H])
 
     def test_una_pantalla_vieja_no_deforma_tus_lineas_logaritmicas(self):

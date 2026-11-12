@@ -53,6 +53,19 @@ describe('recta en su escala, curva en la otra', () => {
     expect(Math.abs(medio.y1 - y(210))).toBeGreaterThan(10)        // el promedio (210) queda lejos
   })
 
+  it('una línea que multiplica mucho su precio: la curva no se aparta de la de verdad (ni medio por ciento del alto)', () => {
+    // De 10 a 600 (×60) en 50 lugares, mirada en la de siempre: casi todo el
+    // salto está cerca de la punta cara, y ahí la curva se empina.
+    const empinada = { id: 'e', tipo: 'tendencia', a: P(10, 10), b: P(60, 600), escala: 'log' }
+    const y = armarEscala(5, 700, 100, 'lineal').y
+    const tr = trazosDeDibujos([empinada], pctX, y, [], 'lineal')
+    for (let k = 10; k <= 60; k += 0.25) {
+      const t = tr.find(s => s.x1 <= k && s.x2 >= k)
+      const enLaCurva = t.y1 + ((t.y2 - t.y1) * (k - t.x1)) / (t.x2 - t.x1 || 1)
+      expect(Math.abs(enLaCurva - y(preciosAlBorde(empinada, k)[0]))).toBeLessThan(0.5)
+    }
+  })
+
   it('con aviso, sigue hasta el borde por la recta de su escala', () => {
     const tr = trazosDeDibujos([t], pctX, enVista('lineal'), ['t'], 'lineal').filter(x => x.correccion)
     expect(tr.at(-1).x2).toBe(100)

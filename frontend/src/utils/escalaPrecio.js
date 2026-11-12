@@ -24,10 +24,14 @@
 
 export const ESCALA_DE_FABRICA = 'lineal'
 
-/** El tope del ancho de un canal logarítmico: su paralela multiplica por
- *  e^ancho, y más de e^20 (500 millones de veces) no es un canal. El mismo que
- *  el servidor (backend/tecnico.ANCHO_LOG_MAXIMO). */
+/** El tope del ancho de un canal logarítmico: su paralela multiplica (o
+ *  divide) por e^ancho, y más de e^20 (unos 485 millones de veces) no es un
+ *  canal. El mismo que el servidor (backend/tecnico.ANCHO_LOG_MAXIMO). */
 export const ANCHO_LOG_MAXIMO = 20
+/** El de un canal de la escala de siempre, en plata: el mismo que el servidor
+ *  (backend/main._Dibujo.ancho). Ensanchando uno así mirando en logarítmica,
+ *  cada pixel multiplica: se puede pasar. */
+export const ANCHO_LINEAL_MAXIMO = 1e9
 
 // Hasta dónde se va lo que no tiene altura (ver armarEscala): mil veces el alto.
 const FUERA = 1000
@@ -93,13 +97,14 @@ export function precioCorrido(precio, du, escala, piso = true) {
   return piso ? Math.max(precio + du, precio * 0.02) : precio + du
 }
 
-/** ¿Es un ancho de canal que se puede guardar? Un número distinto de cero y,
- *  en un canal logarítmico, hasta ANCHO_LOG_MAXIMO. La MISMA regla al crearlo,
+/** ¿Es un ancho de canal que se puede guardar? Un número distinto de cero,
+ *  hasta ANCHO_LOG_MAXIMO en un canal logarítmico y hasta ANCHO_LINEAL_MAXIMO
+ *  en uno de la escala de siempre. La MISMA regla al crearlo,
  *  al ensancharlo, al leerlo (utils/dibujos.dibujoValido) y en el servidor
  *  (main.put_tecnico_dibujos): si la pantalla guardara uno que la cuenta
  *  rechaza, se trabaría el guardado de TODOS tus dibujos de ese activo. */
 export function anchoQueVale(ancho, escala) {
-  return Number.isFinite(ancho) && ancho !== 0 && (!esLog(escala) || Math.abs(ancho) <= ANCHO_LOG_MAXIMO)
+  return Number.isFinite(ancho) && ancho !== 0 && Math.abs(ancho) <= (esLog(escala) ? ANCHO_LOG_MAXIMO : ANCHO_LINEAL_MAXIMO)
 }
 
 /** [lo, hi] con aire: un `margen` (fracción del rango) arriba y abajo, y

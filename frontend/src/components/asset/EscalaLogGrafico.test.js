@@ -192,8 +192,10 @@ describe('la escala logarítmica del gráfico', () => {
     expect(franja()).toHaveLength(4)
     expect(franja()[1][0]).toBeCloseTo(Number(paralela.getAttribute('x2')), 6)
     expect(franja()[2][1]).toBeCloseTo(Number(paralela.getAttribute('y2')), 6)
-    // En la de siempre, la misma línea es una curva (un solo trazo).
+    expect(texto(montado.contenedor)).not.toContain('se ven curvas acá')
+    // En la de siempre, la misma línea es una curva (un solo trazo), y se dice por qué.
     await tocarLog()
+    expect(texto(montado.contenedor)).toContain('Las líneas que dibujaste en la escala logarítmica se ven curvas acá: son las mismas')
     expect(franja().length).toBeGreaterThan(10)              // la franja también, curva
     const curvas = lineas().filter(n => n.nodeName === 'POLYLINE')
     expect(curvas.length).toBe(4)                            // la tendencia y los tres bordes del canal
@@ -231,7 +233,7 @@ describe('la escala logarítmica del gráfico', () => {
   }
   const sinNumerosRotos = () => todos(montado.contenedor, n => ['d', 'x1', 'y1', 'x2', 'y2', 'points', 'y', 'height']
     .some(a => /NaN|Infinity/.test(n.getAttribute?.(a) || '')))
-  const automatico = () => todos(montado.contenedor, n => n.nodeName === 'BUTTON' && texto(n) === 'Automático')[0]
+  const automatico = () => boton('automatico')
 
   it('arrastrar una horizontal en «Log» la deja donde se soltó', async () => {
     await dibujar()
@@ -262,12 +264,14 @@ describe('la escala logarítmica del gráfico', () => {
     await tocarLog()
     await usar('canal'); await clickEn(200, 220); await clickEn(700, 140); await clickEn(450, 120)
     await tocarLog()
-    // La punta del ancho: el medio de la paralela (la segunda curva del canal).
+    // La punta del ancho: el medio de la paralela (la segunda curva del canal),
+    // a mitad de camino entre sus puntas.
     const paralela = () => lineas().filter(n => n.nodeName === 'POLYLINE')[1].getAttribute('points').split(' ').map(p => p.split(',').map(Number))
-    const [px, py] = paralela()[12]
+    const enElMedio = () => { const ps = paralela(), xm = (ps[0][0] + ps.at(-1)[0]) / 2; return ps.find(p => Math.abs(p[0] - xm) < 1e-6) }
+    const [px, py] = enElMedio()
     const x = px * 10, y = py * 2.5
     await arrastrar(x, y, x, y - 20)
-    expect(paralela()[12][1] * 2.5).toBeCloseTo(y - 20, 0)
+    expect(enElMedio()[1] * 2.5).toBeCloseTo(y - 20, 0)
     expect(cuenta.usd[0].escala).toBe('log')
   })
 
@@ -276,7 +280,7 @@ describe('la escala logarítmica del gráfico', () => {
     await tocarLog()
     await usar('canal'); await clickEn(100, 240); await clickEn(102, 20); await clickEn(990, 240)
     expect(cuenta.usd).toEqual([])
-    expect(texto(montado.contenedor)).toContain('Ese canal es demasiado ancho para la escala logarítmica')
+    expect(texto(montado.contenedor)).toContain('Ese canal no entra en la escala logarítmica')
   })
 
   it('con un servidor de antes de la escala, la línea logarítmica queda pendiente y se vuelve a subir', async () => {

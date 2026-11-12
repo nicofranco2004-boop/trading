@@ -14037,8 +14037,8 @@ def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: s
         from tecnico import ANCHO_LOG_MAXIMO
         if any(d["tipo"] == "canal" and d.get("escala") == "log" and abs(d["ancho"]) > ANCHO_LOG_MAXIMO
                for d in lista):
-            raise HTTPException(400, "Ese canal es demasiado ancho para la escala logarítmica: su paralela "
-                                     "multiplicaría el precio más de 500 millones de veces.")
+            raise HTTPException(400, "Ese canal no entra en la escala logarítmica: sus dos líneas quedarían "
+                                     "a cientos de millones de veces una de la otra.")
         if len(lista) > _DIBUJOS_MAXIMOS:
             raise HTTPException(409, f"Llegaste a {_DIBUJOS_MAXIMOS} dibujos y notas en este activo: borrá alguno.")
         if lista:

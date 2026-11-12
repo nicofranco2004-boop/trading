@@ -1,8 +1,8 @@
 // Arrastrar los ejes del gráfico técnico, montado de verdad
 // (testing/navegadorMinimo.js, que reparte el puntero como Chrome):
 //   · la columna de precios: hacia abajo achica el gráfico (los precios de la
-//     grilla se separan) y deja el precio a mano: aparece «Automático», y
-//     arrastrar el gráfico lo mueve para arriba y para abajo; «Automático», el
+//     grilla se separan) y deja el precio a mano: aparece «Auto» (Automático),
+//     y arrastrar el gráfico lo mueve para arriba y para abajo; «Auto», el
 //     doble click u otro rango vuelven a lo automático;
 //   · la fila de fechas, con el dedo: hacia la izquierda acerca (se ven menos
 //     meses y ningún botón de rango queda elegido), doble click vuelve al 1A.
@@ -67,6 +67,16 @@ function porTitulo(nodo, empieza) {
 }
 const numeros = (t) => (t.match(/[\d.]+(,\d+)?/g) || []).map(x => Number(x.replace(/\./g, '').replace(',', '.')))
 
+// «Auto» (Automático): el botón que vuelve el precio y las fechas a automático.
+function botonAuto() {
+  const pila = [montado.contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if (n.nodeName === 'BUTTON' && n.getAttribute?.('data-capa') === 'automatico') return n
+    pila.push(...(n.childNodes || []))
+  }
+  return null
+}
 async function arrastrar(nodo, { dx = 0, dy = 0, pointerType = 'mouse' }) {
   await puntero('pointerdown', nodo, { pointerType, clientX: 100, clientY: 100 })
   for (let k = 1; k <= 7; k++) {
@@ -104,7 +114,7 @@ describe('arrastrar los ejes del gráfico', () => {
     // Cada rótulo de la columna (la grilla y el último precio), por separado.
     const grilla = () => columna.childNodes.filter(n => n.getAttribute?.('data-mira') == null).map(n => numeros(texto(n))[0]).filter(x => x != null)
     const antes = grilla()
-    expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
+    expect(botonAuto()).toBeNull()
 
     await arrastrar(columna, { dy: 140 })
     const achicado = grilla()
@@ -112,7 +122,7 @@ describe('arrastrar los ejes del gráfico', () => {
     // (como TradingView) van de a saltos más grandes (de 40 en 40 → de 50 en 50).
     const paso = (g) => { const r = g.filter(Number.isInteger).sort((x, y) => x - y); return Math.min(...r.slice(1).map((x, k) => x - r[k])) }
     expect(paso(achicado)).toBeGreaterThan(paso(antes))
-    expect(buscarBoton(montado.contenedor, 'Automático')).not.toBeNull()
+    expect(botonAuto()).not.toBeNull()
 
     // Con el precio a mano, arrastrar el gráfico hacia abajo muestra precios más altos.
     const grafico = porRol(montado.contenedor, 'img')
@@ -123,10 +133,10 @@ describe('arrastrar los ejes del gráfico', () => {
     expect(Math.max(...corrido)).toBeGreaterThan(Math.max(...achicado))
 
     // «Automático» lo devuelve.
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Automático'))
+    await clic(montado.contenedor, botonAuto())
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
     expect(grilla()).toEqual(antes)
-    expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
+    expect(botonAuto()).toBeNull()
 
     // El doble click también.
     await arrastrar(columna, { dy: -100 })
@@ -147,14 +157,14 @@ describe('arrastrar los ejes del gráfico', () => {
     await raton('mousemove', grafico, { clientX: 500, clientY: 106 })
     await raton('mouseup', grafico, { clientX: 500, clientY: 106 })
     expect(grilla()).toEqual(antes)
-    expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
+    expect(botonAuto()).toBeNull()
     // Hacia abajo, mucho: muestra precios bastante más altos que el máximo que hubo.
     await raton('mousedown', grafico, { clientX: 500, clientY: 20 })
     for (const y of [60, 120, 180, 240]) await raton('mousemove', grafico, { clientX: 500, clientY: y })
     await raton('mouseup', grafico, { clientX: 500, clientY: 240 })
-    expect(buscarBoton(montado.contenedor, 'Automático')).not.toBeNull()
+    expect(botonAuto()).not.toBeNull()
     expect(Math.min(...grilla())).toBeGreaterThan(Math.max(...antes))  // ya no se ve ningún precio de los de antes
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Automático'))
+    await clic(montado.contenedor, botonAuto())
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
     expect(grilla()).toEqual(antes)
   })
@@ -206,26 +216,26 @@ describe('arrastrar los ejes del gráfico', () => {
       const auto = grilla()
       await arrastrar(columna(), { dy: 120 })
       expect(grilla()).not.toEqual(auto)
-      expect(buscarBoton(montado.contenedor, 'Automático')).not.toBeNull()
+      expect(botonAuto()).not.toBeNull()
       for (const b of despues) {
         await tocar(b)
         for (let i = 0; i < 3; i++) await montado.redibujar(el())
       }
-      expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
+      expect(botonAuto()).toBeNull()
     }, 15000)   // muchos redibujos de toda la historia: con la suite entera corriendo pasa los 5 s
   }
 
   it('las fechas a mano también muestran «Automático» (en el celular no hay doble click)', async () => {
     await dibujar()
     const fechas = porTitulo(montado.contenedor, 'Arrastrá hacia los costados')
-    expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
+    expect(botonAuto()).toBeNull()
     await arrastrar(fechas, { dx: -200, pointerType: 'touch' })   // acerca (con «Todo» ya no se puede alejar más)
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
     expect(periodoElegido(montado.contenedor)).toBe(null)
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Automático'))
+    await clic(montado.contenedor, botonAuto())
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
     expect(periodoElegido(montado.contenedor)).toBe('Todo')
-    expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
+    expect(botonAuto()).toBeNull()
   })
 
   it('la fila de fechas, con el dedo: hacia la izquierda acerca; doble click, vuelve a «Todo»', async () => {

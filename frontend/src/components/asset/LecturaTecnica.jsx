@@ -884,7 +884,7 @@ export default function LecturaTecnica({
       const ancho = Math.round(crudo * 1e4) / 1e4 || crudo
       // La misma regla que la cuenta: uno que no vale trabaría el guardado de todos tus dibujos.
       if (anchoQueVale(ancho, escalaDePrecio)) cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'canal', a, b, ancho, ...marcaDeEscala(escalaDePrecio) }])
-      else if (crudo !== 0) setAviso('Ese canal es demasiado ancho para la escala logarítmica: su paralela multiplicaría el precio más de 500 millones de veces. Probá con la línea de abajo menos empinada o el tercer toque más cerca.')
+      else if (crudo !== 0) setAviso('Ese canal no entra en la escala logarítmica: sus dos líneas quedarían a cientos de millones de veces una de la otra. Probá con la primera línea menos empinada o con el tercer toque más cerca de ella.')
       setDibujarEstado({ tipo: null, puntos: [] })
     } else if (dibujar.tipo === 'extension') {
       const puntos = [...dibujar.puntos, p]
@@ -1282,6 +1282,10 @@ export default function LecturaTecnica({
                 <p data-ayuda="" className="flex-1 min-w-0 text-[11.5px] text-ink-2 mt-0.5 leading-snug">
                   {notaEstimado && <span data-estimado="" className="text-ink-1">{notaEstimado} </span>}
                   {esLog(escalaDePrecio) && <span data-escala-log="">Escala logarítmica: una suba del mismo porcentaje mide lo mismo en todo el gráfico. </span>}
+                  {/* Una línea o un canal de la otra escala se ve curvo: que nadie crea que se rompió. */}
+                  {misDibujos.some(d => (d.tipo === 'tendencia' || d.tipo === 'canal') && escalaDe(d.escala) !== escalaDe(escalaDePrecio)) && (
+                    <span data-curvas="">{`Las líneas que dibujaste en la escala ${esLog(escalaDePrecio) ? 'de siempre' : 'logarítmica'} se ven curvas acá: son las mismas, y si tienen aviso, sigue mirando ese mismo precio. `}</span>
+                  )}
                   {semanales && 'Cada vela es una semana. '}
                   {horas && (
                     <>
@@ -2911,19 +2915,22 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             </span>
           )}
           {/* Debajo de la columna, al lado de las fechas (abajo de todo lo
-              pisaba «↓ Tu precio»), como TradingView: «Log» siempre, y
-              «Automático» a su izquierda mientras el precio o las fechas están
-              a mano. El doble click no se descubre solo y en el celular no
-              existe: ese botón vuelve LAS DOS cosas a automático (uno solo, no
-              dos iguales uno al lado del otro). Los dos frenan el apretar y el
-              doble click: si no, empezarían a estirar la columna o la volverían
-              a automático. */}
+              pisaba «↓ Tu precio»), como TradingView: «Log» siempre, y «Auto»
+              a su izquierda mientras el precio o las fechas están a mano. El
+              doble click no se descubre solo y en el celular no existe: ese
+              botón vuelve LAS DOS cosas a automático (uno solo, no dos iguales
+              uno al lado del otro). Los dos entran en el ancho de la columna
+              (con «Automático» entero se metían 32 px sobre la fila de fechas y
+              la de balances: tapaban la última marca, auditoría 12/11). Los dos
+              frenan el apretar y el doble click: si no, empezarían a estirar la
+              columna o la volverían a automático. */}
           {(onEscala || precioMano || fechasAMano) && (
-            <div className="absolute top-full mt-1 right-0 z-10 flex gap-1" onPointerDown={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
+            <div className="absolute top-full mt-1 right-0 z-10 flex gap-0.5" onPointerDown={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
               {(precioMano || fechasAMano) && (
-                <button type="button" onClick={() => { setPrecioMano(null); onFechasAuto?.() }}
+                <button type="button" data-capa="automatico" onClick={() => { setPrecioMano(null); onFechasAuto?.() }}
+                  aria-label="Automático" title="Vuelve el precio y las fechas a automático"
                   className="rounded border border-line-2 bg-bg-1 px-1.5 py-0.5 text-[10.5px] text-ink-1 hover:text-ink-0 whitespace-nowrap">
-                  Automático
+                  Auto
                 </button>
               )}
               {onEscala && (

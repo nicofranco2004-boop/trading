@@ -1752,12 +1752,17 @@ def _indice_del_punto(velas: list, p: dict):
         desde, hasta = date.fromisoformat(d), date.fromisoformat(fechas[0])
     except (ValueError, IndexError):
         return None
-    habiles = sum(1 for k in range((hasta - desde).days) if (desde + timedelta(days=k)).weekday() < 5)
+    # Por semanas enteras (5 hábiles cada una) y el resto, día por día: un punto
+    # con una fecha absurda (el año 1) recorría 740.000 días en cada vela, en
+    # cada pedido (auditoría 12/11). El mismo número que contarlos uno por uno.
+    semanas, resto = divmod((hasta - desde).days, 7)
+    habiles = semanas * 5 + sum(1 for k in range(resto) if (desde + timedelta(days=k)).weekday() < 5)
     return -max(1, habiles) + mas
 
 
-# El tope de un canal logarítmico: su paralela multiplica por e^ancho. Más de
-# e^20 (500 millones de veces) no es un canal, y e^700 ya no es un número.
+# El tope de un canal logarítmico: su paralela multiplica (o divide) por
+# e^ancho. Más de e^20 (unos 485 millones de veces) no es un canal, y e^700 ya
+# no es un número.
 ANCHO_LOG_MAXIMO = 20
 
 

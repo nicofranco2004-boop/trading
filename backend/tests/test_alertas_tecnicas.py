@@ -977,7 +977,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         r2 = self.client.put("/api/tecnico/MSFT/dibujos?moneda=usd", headers=self.h,
                              json={"dibujos": [{**self._canal(ancho=25.0, id="c3"), "escala": "log"}], "escalas": True})
         self.assertEqual(r2.status_code, 400, r2.text)
-        self.assertIn("demasiado ancho", r2.json()["detail"])
+        self.assertIn("no entra en la escala logarítmica", r2.json()["detail"])
 
     def test_tu_canal_logaritmico_inclinado_avisa_con_el_borde_de_su_escala(self):
         # La línea de abajo también es la de su escala: de 60 a 75 en 10 ruedas,
@@ -997,6 +997,20 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertEqual([x.get("escala") for x in lineas.values()], ["log"])
         self.assertEqual([x.get("escala") for x in self.client.get(
             "/api/tecnico/MSFT/lineas?moneda=usd", headers=self.h).json()["lineas"]], ["log"])
+
+    def test_un_punto_con_una_fecha_absurda_no_tarda_ni_cambia_la_cuenta(self):
+        # Antes de la primera vela los días hábiles se contaban de a uno: un
+        # punto en el año 1 recorría 740.000 días en cada vela (auditoría 12/11).
+        import time
+        velas = [{"date": "2026-10-01", "close": 1.0}, {"date": "2026-10-02", "close": 1.0}]
+        def a_mano(desde, hasta):
+            return sum(1 for k in range((hasta - desde).days) if (desde + timedelta(days=k)).weekday() < 5)
+        for d in ["2026-09-30", "2026-09-26", "2025-01-01", "2024-02-29", "1990-07-15"]:
+            esperado = -max(1, a_mano(date.fromisoformat(d), date(2026, 10, 1)))
+            self.assertEqual(tecnico._indice_del_punto(velas, {"d": d, "mas": 0}), esperado, d)
+        t = time.perf_counter()
+        self.assertLess(tecnico._indice_del_punto(velas, {"d": "0001-01-01", "mas": 0}), -500000)
+        self.assertLess(time.perf_counter() - t, 0.01)
 
     def test_un_dia_que_toca_los_dos_bordes_de_un_canal_logaritmico_desempata_por_su_mitad(self):
         # Bordes 100 y 400: su mitad en la escala del canal es 200 (no 250). Cerró en 220: salió por arriba.
