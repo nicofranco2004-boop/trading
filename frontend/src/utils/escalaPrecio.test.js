@@ -2,7 +2,7 @@
 // lineal y en logarítmica. El gráfico montado de verdad con «Log» prendido se
 // prueba en components/asset/EscalaLogGrafico.test.js.
 import { describe, it, expect } from 'vitest'
-import { armarEscala, cabeEnLaEscala, escalaDe, ladoDeAfuera, largoEnEje, marcasLog, precioCorrido, precioEnLaRecta, precioMasAncho, rangoConAire } from './escalaPrecio'
+import { ANCHO_LOG_MAXIMO, anchoQueVale, armarEscala, cabeEnLaEscala, escalaDe, ladoDeAfuera, largoEnEje, marcasLog, precioCorrido, precioEnLaRecta, precioMasAncho, rangoConAire } from './escalaPrecio'
 import { marcasDePrecio } from './ejesGrafico'
 
 describe('la escala', () => {
@@ -39,6 +39,13 @@ describe('la escala', () => {
     expect(armarEscala(0, 10, 10, null).y(5)).toBeCloseTo(5)
   })
 
+  it('en log, un precio cero o negativo va muy por debajo del borde (nunca arriba, nunca un NaN)', () => {
+    const e = armarEscala(5, 120, 100, 'log')
+    for (const p of [0, -5, -1e9]) expect(e.y(p)).toBeGreaterThan(100)
+    expect(Number.isFinite(e.y(-5))).toBe(true)
+    expect(e.y(Infinity)).toBeLessThan(0)
+  })
+
   it('en log no entra un precio cero o negativo', () => {
     expect(cabeEnLaEscala(0, 'log')).toBe(false)
     expect(cabeEnLaEscala(-3, 'log')).toBe(false)
@@ -51,6 +58,7 @@ describe('arrastres y márgenes, en el eje de cada escala', () => {
   it('correr un precio: en lineal suma plata, en log multiplica', () => {
     expect(precioCorrido(100, 20, 'lineal')).toBe(120)
     expect(precioCorrido(100, -500, 'lineal')).toBe(2)          // nunca llega a 0
+    expect(precioCorrido(100, -500, 'lineal', false)).toBe(-400) // una distancia (el ancho de un canal): sin piso
     expect(precioCorrido(100, Math.log(2), 'log')).toBeCloseTo(200)
     expect(precioCorrido(100, -Math.log(4), 'log')).toBeCloseTo(25)
   })
@@ -129,9 +137,32 @@ describe('los rótulos del eje en log', () => {
     expect(marcasLog(130, 9000, 300, parejos).length).toBeGreaterThanOrEqual(3)
   })
 
+  it('un rango enorme (de 1 a un millón en un celular): una marca cada tantas décadas, nunca una sola', () => {
+    const parejosCel = (lo, hi, alto) => marcasDePrecio(lo, hi, alto, 56)
+    for (const [lo, hi, alto] of [[1, 1e6, 255], [1, 1e4, 224], [0.5, 2e9, 250], [1e-6, 1e6, 300]]) {
+      const m = marcasLog(lo, hi, alto, parejosCel, 40)
+      expect(m.length, `${lo}-${hi}`).toBeGreaterThanOrEqual(2)
+      const e = armarEscala(lo, hi, alto, 'log')
+      for (let i = 1; i < m.length; i++) expect(e.y(m[i - 1]) - e.y(m[i])).toBeGreaterThanOrEqual(40)
+      for (const v of m) expect(Math.log10(v) % 1).toBeCloseTo(0, 9)               // potencias de 10
+    }
+  })
+
   it('sin rango, sin alto o con precios no positivos, nada', () => {
     expect(marcasLog(5, 5, 300, parejos)).toEqual([])
     expect(marcasLog(-1, 5, 300, parejos)).toEqual([])
     expect(marcasLog(1, 5, 0, parejos)).toEqual([])
+  })
+})
+
+describe('el ancho de un canal que se puede guardar (la misma regla que el servidor)', () => {
+  it('distinto de cero, un número, y en log hasta el tope', () => {
+    expect(anchoQueVale(12.5, 'lineal')).toBe(true)
+    expect(anchoQueVale(500, 'lineal')).toBe(true)
+    expect(anchoQueVale(0, 'lineal')).toBe(false)
+    expect(anchoQueVale(NaN, 'lineal')).toBe(false)
+    expect(anchoQueVale(ANCHO_LOG_MAXIMO, 'log')).toBe(true)
+    expect(anchoQueVale(-ANCHO_LOG_MAXIMO - 0.1, 'log')).toBe(false)
+    expect(anchoQueVale(-Infinity, 'log')).toBe(false)
   })
 })

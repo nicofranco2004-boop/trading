@@ -23,7 +23,7 @@
 
 import { velaCompleta, haciaDondeVa, notaDeLaMoneda, ADX_CLAVE, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
 import { marcasDeFechas, marcasDePrecioEn } from './ejesGrafico'
-import { armarEscala, esLog, rangoConAire } from './escalaPrecio'
+import { armarEscala, cabeEnLaEscala, esLog, rangoConAire } from './escalaPrecio'
 import { extensionFibonacci, fibonacciAMano, nivelPct, rayas, rotuloNivel, rotulosQueEntran } from './fibonacci'
 import { rotuloOnda } from './elliott'
 import { cuentasDePosicion, etiquetasDe } from './dibujos'
@@ -91,13 +91,16 @@ export function specDelGrafico({
   const anchoLugar = 100 / Math.max(lugares, 1)
 
   // Una serie de los puntos como tramos seguidos (se corta donde falta el dato).
-  const serie = (k, y = pctY) => {
+  // Las de precio, también donde el precio no entra en la escala (en log, una
+  // banda de Bollinger bajo cero): la misma regla que la pantalla (`cabe` en
+  // LecturaTecnica). RSI y ADX tienen su propia escala (`y`).
+  const serie = (k, y = null) => {
     const tramos = []
     let actual = null
     puntos.forEach((p, i) => {
-      if (p[k] == null) { actual = null; return }
+      if (p[k] == null || (!y && !cabeEnLaEscala(p[k], escalaDePrecio))) { actual = null; return }
       if (!actual) { actual = []; tramos.push(actual) }
-      actual.push([pctX(i), y(p[k])])
+      actual.push([pctX(i), (y || pctY)(p[k])])
     })
     return tramos.filter(t => t.length > 1)
   }
@@ -149,7 +152,10 @@ export function specDelGrafico({
       }
       tramo = []
     }
-    puntos.forEach((p, i) => { if (p.bb_arriba != null && p.bb_abajo != null) tramo.push(i); else cerrar() })
+    puntos.forEach((p, i) => {
+      if (p.bb_arriba != null && p.bb_abajo != null && cabeEnLaEscala(p.bb_arriba, escalaDePrecio) && cabeEnLaEscala(p.bb_abajo, escalaDePrecio)) tramo.push(i)
+      else cerrar()
+    })
     cerrar()
     for (const k of ['bb_arriba', 'bb_abajo']) for (const t of serie(k)) lineas.push({ puntos: t, color: colores.bandas, ancho: 1.6, alpha: 0.75 })
     leyenda.push({ nombre: 'Bandas de Bollinger', color: colores.bandas, forma: 'banda' })

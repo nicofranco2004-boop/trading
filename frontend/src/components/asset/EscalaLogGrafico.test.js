@@ -14,7 +14,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { MemoryRouter } from 'react-router-dom'
-import { instalarNavegadorMinimo, montar, texto, enActo, medidas, clic } from '../../testing/navegadorMinimo'
+import { instalarNavegadorMinimo, montar, texto, enActo, medidas, clic, puntero } from '../../testing/navegadorMinimo'
 import { pasarATodo } from '../../testing/menuGrafico'
 
 // Cinco años de un papel que se multiplicó por 20: de 10 a 200, parejo en porcentaje.
@@ -29,7 +29,8 @@ const DATOS = {
 }
 
 // La cuenta, del otro lado de la frontera: lo que se guarda de los dibujos.
-const cuenta = { usd: [] }
+// `viejo`: un servidor de antes de la escala (guarda sin ella y no lo dice).
+const cuenta = { usd: [], viejo: false, puts: 0 }
 vi.mock('../../utils/api', () => ({
   getClientContext: () => null,
   EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
@@ -38,7 +39,12 @@ vi.mock('../../utils/api', () => ({
       : ruta.startsWith('/alerts') ? { items: [] } : ruta.includes('/eventos') ? { eventos: [] } : DATOS)),
     post: vi.fn(() => Promise.resolve({ ok: true })),
     patch: vi.fn(() => Promise.resolve({ ok: true })),
-    put: vi.fn((ruta, body) => { cuenta.usd = body.dibujos; cuenta.ultimoPut = body; return Promise.resolve({ ok: true }) }),
+    put: vi.fn((ruta, body) => {
+      cuenta.puts++
+      cuenta.usd = cuenta.viejo ? body.dibujos.map(({ escala, ...d }) => d) : body.dibujos
+      cuenta.ultimoPut = body
+      return Promise.resolve(cuenta.viejo ? { ok: true, dibujos: body.dibujos.length } : { ok: true, dibujos: body.dibujos.length, escalas: true })
+    }),
   },
 }))
 vi.mock('../../utils/track', () => ({ track: vi.fn() }))
@@ -62,7 +68,7 @@ afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
   localStorage.clear()
-  cuenta.usd = []
+  Object.assign(cuenta, { usd: [], viejo: false, puts: 0, ultimoPut: null })
   pedidas.length = 0
 })
 
@@ -198,4 +204,109 @@ describe('la escala logarítmica del gráfico', () => {
     const eje = Object.fromEntries(spec.grafico.eje.map(t => [t.texto, t.y]))
     expect(eje['10'] - eje['100']).toBeCloseTo(eje['20'] - eje['200'], 6)
   })
+
+  // — arrastrar con «Log» prendido: la línea, el eje y el ancho de un canal —
+  async function arrastrar(x0, y0, x1, y1) {
+    await evento('mousedown', grafico(), { clientX: x0, clientY: y0 })
+    await evento('mousemove', grafico(), { clientX: (x0 + x1) / 2, clientY: (y0 + y1) / 2 })
+    await evento('mousemove', grafico(), { clientX: x1, clientY: y1 })
+    await evento('mouseup', grafico(), { clientX: x1, clientY: y1 })
+    await redibujar()
+  }
+  const columna = () => todos(montado.contenedor, n => (n.getAttribute?.('title') || '').startsWith('Arrastrá hacia arriba o hacia abajo'))[0]
+  async function estirarColumna(dy) {
+    await puntero('pointerdown', columna(), { clientX: 970, clientY: 100 })
+    for (let k = 1; k <= 7; k++) await puntero('pointermove', columna(), { clientX: 970, clientY: 100 + (dy * k) / 7 })
+    await puntero('pointerup', columna(), { clientX: 970, clientY: 100 + dy })
+    await redibujar()
+  }
+  const sinNumerosRotos = () => todos(montado.contenedor, n => ['d', 'x1', 'y1', 'x2', 'y2', 'points', 'y', 'height']
+    .some(a => /NaN|Infinity/.test(n.getAttribute?.(a) || '')))
+  const automatico = () => todos(montado.contenedor, n => n.nodeName === 'BUTTON' && texto(n) === 'Automático')[0]
+
+  it('arrastrar una horizontal en «Log» la deja donde se soltó', async () => {
+    await dibujar()
+    await tocarLog()
+    await usar('horizontal'); await clickEn(400, 100)
+    await arrastrar(500, 100, 500, 150)
+    const [l] = lineas()
+    expect(Number(l.getAttribute('y1'))).toBeCloseTo(60, 2)          // 150 de 250 px
+  })
+
+  it('estirar la columna en «Log» hasta el tope, dos veces: el gráfico sigue entero; cambiar de escala vuelve a automático', async () => {
+    await dibujar()
+    await tocarLog()
+    await estirarColumna(2000)
+    await estirarColumna(2000)
+    expect(sinNumerosRotos()).toEqual([])
+    const r = rotulos()
+    expect(r.length).toBeGreaterThanOrEqual(2)
+    expect(r.every(x => x.precio > 0)).toBe(true)
+    expect(automatico()).toBeTruthy()
+    await tocarLog()                                         // a la de siempre: el precio a mano no sirve ahí
+    expect(automatico()).toBeFalsy()
+    expect(sinNumerosRotos()).toEqual([])
+  })
+
+  it('ensanchar un canal logarítmico mirándolo en la de siempre: queda donde se soltó', async () => {
+    await dibujar()
+    await tocarLog()
+    await usar('canal'); await clickEn(200, 220); await clickEn(700, 140); await clickEn(450, 120)
+    await tocarLog()
+    // La punta del ancho: el medio de la paralela (la segunda curva del canal).
+    const paralela = () => lineas().filter(n => n.nodeName === 'POLYLINE')[1].getAttribute('points').split(' ').map(p => p.split(',').map(Number))
+    const [px, py] = paralela()[12]
+    const x = px * 10, y = py * 2.5
+    await arrastrar(x, y, x, y - 20)
+    expect(paralela()[12][1] * 2.5).toBeCloseTo(y - 20, 0)
+    expect(cuenta.usd[0].escala).toBe('log')
+  })
+
+  it('un canal demasiado ancho para la logarítmica no se crea (trabaría tu cuenta) y lo dice', async () => {
+    await dibujar()
+    await tocarLog()
+    await usar('canal'); await clickEn(100, 240); await clickEn(102, 20); await clickEn(990, 240)
+    expect(cuenta.usd).toEqual([])
+    expect(texto(montado.contenedor)).toContain('Ese canal es demasiado ancho para la escala logarítmica')
+  })
+
+  it('con un servidor de antes de la escala, la línea logarítmica queda pendiente y se vuelve a subir', async () => {
+    cuenta.viejo = true
+    await dibujar()
+    await tocarLog()
+    await usar('tendencia'); await clickEn(100, 200); await clickEn(600, 100)
+    expect(cuenta.usd[0].escala).toBeUndefined()            // el servidor viejo la guardó sin escala
+    expect(texto(montado.contenedor)).toContain('No se pudieron guardar tus dibujos en tu cuenta')
+    // Se publica el servidor nuevo; la próxima vez que abrís el gráfico, se sube con su escala.
+    cuenta.viejo = false
+    await montado.desmontar()
+    await dibujar()
+    expect(cuenta.usd[0].escala).toBe('log')
+  })
+
+  it('el pincel no guarda puntos de precio cero o menos (trabaría tu cuenta)', async () => {
+    await dibujar()                                          // la de siempre: abajo de todo, el eje baja de 0
+    await usar('pincel')
+    await evento('mousedown', grafico(), { clientX: 300, clientY: 230 })
+    for (const [x, y] of [[320, 240], [340, 249], [360, 249], [380, 200]]) await evento('mousemove', grafico(), { clientX: x, clientY: y })
+    await evento('mouseup', grafico(), { clientX: 380, clientY: 200 }); await redibujar()
+    const pinceles = cuenta.usd.filter(d => d.tipo === 'pincel')
+    expect(pinceles.every(d => d.puntos.every(p => p.precio > 0))).toBe(true)
+  })
+
+  it('la imagen de «Compartir» en «Log»: tu canal logarítmico recto y tu línea de siempre curva', async () => {
+    await dibujar()
+    await usar('tendencia'); await clickEn(100, 200); await clickEn(600, 100)          // en la de siempre
+    await tocarLog()
+    await usar('canal'); await clickEn(200, 220); await clickEn(700, 140); await clickEn(450, 120)
+    await clic(montado.contenedor, boton('compartir'))
+    for (let i = 0; i < 3; i++) await enActo(async () => {})
+    const g = pedidas.at(-1).grafico
+    const curvas = g.trazos.filter(t => t.puntos)
+    expect(curvas).toHaveLength(1)                                                       // la línea de siempre
+    expect(curvas[0].puntos.length).toBeGreaterThan(10)
+    const franja = g.poligonos.find(p => p.alpha === 0.08)
+    expect(franja.puntos).toHaveLength(4)                                                // el canal, recto en su escala
+  })
 })
+

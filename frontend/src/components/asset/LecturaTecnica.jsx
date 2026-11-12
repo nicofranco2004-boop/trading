@@ -60,7 +60,7 @@ import { BotonMervalle, PanelMervalle, useResumenMervalle } from './ResumenMerva
 import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
 import { api, getClientContext } from '../../utils/api'
 import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecioEn, empezarAMano, correrAMano, estirarAMano, arrastreDentroDelTope } from '../../utils/ejesGrafico'
-import { ESCALA_DE_FABRICA, armarEscala, cabeEnLaEscala, escalaDe, esLog, ladoDeAfuera, largoEnEje, precioCorrido, rangoConAire } from '../../utils/escalaPrecio'
+import { ESCALA_DE_FABRICA, anchoQueVale, armarEscala, cabeEnLaEscala, escalaDe, esLog, ladoDeAfuera, largoEnEje, precioCorrido, rangoConAire } from '../../utils/escalaPrecio'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
 import { ANCHO_DEL_GRAFICO, archivoDelGrafico, specDelGrafico } from '../../utils/imagenGrafico'
 import {
@@ -880,8 +880,11 @@ export default function LecturaTecnica({
       if (puntos.length < 3) { setDibujarEstado({ tipo: 'canal', puntos }); return }
       const [a, b] = puntos.map(guardado)
       // En la escala que se mira: en logarítmica, el ancho es cuánto multiplica la paralela.
-      const ancho = anchoDelCanal({ k: puntos[0].i, precio: puntos[0].precio }, { k: puntos[1].i, precio: puntos[1].precio }, { k: p.i, precio: p.precio }, escalaDePrecio)
-      if (Math.abs(ancho) > 0) cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'canal', a, b, ancho: Math.round(ancho * 1e4) / 1e4 || ancho, ...marcaDeEscala(escalaDePrecio) }])
+      const crudo = anchoDelCanal({ k: puntos[0].i, precio: puntos[0].precio }, { k: puntos[1].i, precio: puntos[1].precio }, { k: p.i, precio: p.precio }, escalaDePrecio)
+      const ancho = Math.round(crudo * 1e4) / 1e4 || crudo
+      // La misma regla que la cuenta: uno que no vale trabaría el guardado de todos tus dibujos.
+      if (anchoQueVale(ancho, escalaDePrecio)) cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'canal', a, b, ancho, ...marcaDeEscala(escalaDePrecio) }])
+      else if (crudo !== 0) setAviso('Ese canal es demasiado ancho para la escala logarítmica: su paralela multiplicaría el precio más de 500 millones de veces. Probá con la línea de abajo menos empinada o el tercer toque más cerca.')
       setDibujarEstado({ tipo: null, puntos: [] })
     } else if (dibujar.tipo === 'extension') {
       const puntos = [...dibujar.puntos, p]
@@ -965,6 +968,7 @@ export default function LecturaTecnica({
       return !dk && q.t != null ? { ...nuevo, t: q.t } : nuevo
     }
     const correrPrecio = (x) => precioRedondo(precioCorrido(x, dp, escalaDePrecio))
+    const correrPunta = (x) => precioCorrido(x, dp, escalaDePrecio, false)
     cambiarDibujos(misDibujos.map(d => {
       if (d.id !== id) return d
       // El ancho de un canal se mide en su punta, a mitad de camino POR LUGAR:
@@ -973,7 +977,7 @@ export default function LecturaTecnica({
       // lugar daría otro ancho que el que se vio.
       if (que === 'ancho') {
         const visto = dibujosEnVista.find(x => x.id === id)
-        return visto ? { ...d, ancho: dibujoCorrido(visto, que, correr, correrPrecio).ancho } : d
+        return visto ? { ...d, ancho: dibujoCorrido(visto, que, correr, correrPrecio, correrPunta).ancho } : d
       }
       return dibujoCorrido(d, que, correr, correrPrecio)
     }))
@@ -2331,7 +2335,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   const [agarrado, setAgarrado] = useState(null)
   const vistos = agarrado ? dibujos.map(d => (d.id !== agarrado.id ? d
     : dibujoCorrido(d, agarrado.que, (p) => ({ ...p, k: p.k + agarrado.dk, precio: precioCorrido(p.precio, agarrado.dp, escalaDePrecio) }),
-      (x) => precioCorrido(x, agarrado.dp, escalaDePrecio)))) : dibujos
+      (x) => precioCorrido(x, agarrado.dp, escalaDePrecio), (x) => precioCorrido(x, agarrado.dp, escalaDePrecio, false)))) : dibujos
   // Tus dibujos en pantalla (CapaDibujos.jsx), como trazos: para saber a cuál
   // se le tocó encima y para el precio de las horizontales en la columna.
   const trazos = trazosDeDibujos(vistos, pctX, pctY, conAviso, escalaDePrecio)
@@ -2915,7 +2919,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               doble click: si no, empezarían a estirar la columna o la volverían
               a automático. */}
           {(onEscala || precioMano || fechasAMano) && (
-            <div className="absolute top-full mt-1 right-0 flex gap-1" onPointerDown={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
+            <div className="absolute top-full mt-1 right-0 z-10 flex gap-1" onPointerDown={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
               {(precioMano || fechasAMano) && (
                 <button type="button" onClick={() => { setPrecioMano(null); onFechasAuto?.() }}
                   className="rounded border border-line-2 bg-bg-1 px-1.5 py-0.5 text-[10.5px] text-ink-1 hover:text-ink-0 whitespace-nowrap">

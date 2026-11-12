@@ -23,6 +23,10 @@ export const PIXELES_POR_DOBLE = 140
 // Topes de un arrastre de la columna de precios: de 5 veces más cerca a 6 más lejos.
 export const ESCALA_Y_MIN = 0.2
 export const ESCALA_Y_MAX = 6
+// En logarítmica, lo más que se puede alejar: seis décadas para cada lado del
+// medio (de 0,000001 a 1.000.000 veces), y los bordes, dentro de e^±690.
+export const MEDIO_RANGO_LOG_MAXIMO = 6 * Math.LN10
+const BORDE_LOG = 690
 
 /** El factor de un arrastre de `px` píxeles: 1 = nada; 2 = el doble. */
 export function factorDeArrastre(px) {
@@ -47,7 +51,10 @@ export function rangoEstirado(lo, hi, dy, escala) {
   const k = Math.min(ESCALA_Y_MAX, Math.max(ESCALA_Y_MIN, factorDeArrastre(dy)))
   const a = aEje(lo, escala), b = aEje(hi, escala)
   const c = (a + b) / 2
-  const m = ((b - a) / 2) * k
+  // En log, los estirones se suman (cada uno parte del anterior) y en el eje
+  // cada uno ya multiplica el rango: sin tope, a la cuarta vez los precios se
+  // van de los números. Hasta MEDIO_RANGO_LOG_MAXIMO para cada lado.
+  const m = Math.min(((b - a) / 2) * k, esLog(escala) ? MEDIO_RANGO_LOG_MAXIMO : Infinity)
   return { lo: deEje(c - m, escala), hi: deEje(c + m, escala) }
 }
 
@@ -56,7 +63,8 @@ export function rangoEstirado(lo, hi, dy, escala) {
  *  entran precios más altos. Negativo: hacia arriba. */
 export function rangoCorrido(lo, hi, f, escala) {
   const a = aEje(lo, escala), b = aEje(hi, escala)
-  const d = f * (b - a)
+  // En log, sin salirse de los números que existen (e^±690).
+  const d = esLog(escala) ? Math.max(-BORDE_LOG - a, Math.min(BORDE_LOG - b, f * (b - a))) : f * (b - a)
   return { lo: deEje(a + d, escala), hi: deEje(b + d, escala) }
 }
 

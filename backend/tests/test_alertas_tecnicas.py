@@ -972,10 +972,57 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertEqual({k: d.get("escala") for k, d in guardados.items()},
                          {"t1": None, "t2": "log", "t3": None, "h1": None, "c2": "log", "f1": None})
         self.assertEqual(guardados["t1"], self._tendencia("t1"), "una línea de siempre se guarda igual que antes")
-        # Un canal logarítmico con un ancho absurdo no es un canal (e^25 = 72 mil millones de veces).
+        # Un canal logarítmico con un ancho absurdo no es un canal (e^25 = 72 mil
+        # millones de veces): se rechaza con su motivo, que la pantalla muestra.
         r2 = self.client.put("/api/tecnico/MSFT/dibujos?moneda=usd", headers=self.h,
-                             json={"dibujos": [{**self._canal(ancho=25.0, id="c3"), "escala": "log"}]})
-        self.assertEqual(r2.status_code, 422, r2.text)
+                             json={"dibujos": [{**self._canal(ancho=25.0, id="c3"), "escala": "log"}], "escalas": True})
+        self.assertEqual(r2.status_code, 400, r2.text)
+        self.assertIn("demasiado ancho", r2.json()["detail"])
+
+    def test_tu_canal_logaritmico_inclinado_avisa_con_el_borde_de_su_escala(self):
+        # La línea de abajo también es la de su escala: de 60 a 75 en 10 ruedas,
+        # ayer pasa por 93,75 (no por 90) y la paralela un 12 % más arriba, por 105.
+        import math
+        r = _ruedas(self.hoy, 30)
+        canal = {"id": "c1", "tipo": "canal", "a": {"d": r[-21].isoformat(), "mas": 0, "precio": 60},
+                 "b": {"d": r[-11].isoformat(), "mas": 0, "precio": 75}, "ancho": math.log(1.12), "escala": "log"}
+        self.yahoo.precios["MSFT"] = lambda d: 105.5 if d >= self.ayer else 95.0
+        self._preparar_linea(canal, dibujo="c1", direction="either")
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT subió hasta el borde de arriba de tu canal, en US$ 105,00"])
+        # «Mis alertas» y el formulario dibujan esa línea en su escala.
+        lineas = self.client.get("/api/alerts/lineas", headers=self.h).json()["lineas"]
+        self.assertEqual([x.get("escala") for x in lineas.values()], ["log"])
+        self.assertEqual([x.get("escala") for x in self.client.get(
+            "/api/tecnico/MSFT/lineas?moneda=usd", headers=self.h).json()["lineas"]], ["log"])
+
+    def test_un_dia_que_toca_los_dos_bordes_de_un_canal_logaritmico_desempata_por_su_mitad(self):
+        # Bordes 100 y 400: su mitad en la escala del canal es 200 (no 250). Cerró en 220: salió por arriba.
+        import math
+        velas = [{"date": "2026-10-01", "close": 150.0, "high": 151, "low": 149},
+                 {"date": "2026-10-02", "close": 220.0, "high": 410, "low": 90}]
+        canal = {"tipo": "canal", "a": {"d": "2026-10-01", "mas": 0, "precio": 100},
+                 "b": {"d": "2026-10-02", "mas": 0, "precio": 100}, "ancho": math.log(4)}
+        self.assertEqual(tecnico.salida_de_canal(velas, {**canal, "escala": "log"}, "2026-10-01")["sentido"], "arriba")
+        # El mismo día con un canal de siempre de 100 a 400: su mitad es 250, salió por abajo.
+        self.assertEqual(tecnico.salida_de_canal(velas, {**canal, "ancho": 300}, "2026-10-01")["sentido"], "abajo")
+
+    def test_el_aviso_de_una_linea_logaritmica_muy_empinada_no_dice_que_sus_puntas_caen_el_mismo_dia(self):
+        # De 1 a 1000 en una rueda, hace 700 ruedas: hoy la recta ya no es un
+        # número que se pueda escribir, pero sus puntas son dos días distintos.
+        r = _ruedas(self.hoy, 760)
+        linea = {"id": "e1", "tipo": "tendencia", "escala": "log",
+                 "a": {"d": r[-700].isoformat(), "mas": 0, "precio": 1}, "b": {"d": r[-699].isoformat(), "mas": 0, "precio": 1000}}
+        self.yahoo.precios["MSFT"] = lambda d: 100.0
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(linea)
+        self._crear_linea(dibujo="e1")
+        # Y «Mis alertas» la muestra sin romperse (sin infinitos en la respuesta).
+        r = self.client.get("/api/alerts/lineas", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
 
     def test_si_moves_la_linea_el_aviso_la_sigue(self):
         self.yahoo.precios["MSFT"] = self._salta_ayer

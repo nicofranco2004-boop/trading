@@ -13906,12 +13906,11 @@ class _Dibujo(BaseModel):
                 raise ValueError("un conteo de Elliott con más ondas de las que tiene su forma")
         if self.tipo == "canal" and (self.a is None or self.b is None or not self.ancho):
             raise ValueError("un canal necesita su línea (dos puntos) y su ancho")
+        # El tope del ancho de un canal logarítmico NO va acá: lo mira el
+        # guardado (put_tecnico_dibujos) después de dejar como estaban los que
+        # una pantalla vieja no sabe tocar; acá rechazaría el pedido entero antes.
         if self.tipo not in ("tendencia", "canal") or self.escala != "log":
             self.escala = None
-        if self.tipo == "canal" and self.escala == "log":
-            from tecnico import ANCHO_LOG_MAXIMO
-            if abs(self.ancho) > ANCHO_LOG_MAXIMO:
-                raise ValueError("un canal logarítmico con un ancho que no es un canal")
         if self.tipo == "pincel" and (not self.puntos or len(self.puntos) < 2):
             raise ValueError("un trazo del pincel necesita al menos dos puntos")
         if self.tipo == "posicion":
@@ -14031,6 +14030,15 @@ def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: s
             logs = {d["id"]: d for tipo in ("tendencia", "canal")
                     for d in _guardados_de_tipo(conn, dueno, sym, moneda, tipo) if d.get("escala") == "log"}
             lista = [logs.get(d["id"], d) for d in lista]
+        # Un canal logarítmico cuya paralela multiplicaría más de e^20 no es un
+        # canal (y el aviso no lo podría seguir): la misma regla que la pantalla
+        # (frontend utils/escalaPrecio.anchoQueVale). Con su motivo, que la
+        # pantalla muestra tal cual.
+        from tecnico import ANCHO_LOG_MAXIMO
+        if any(d["tipo"] == "canal" and d.get("escala") == "log" and abs(d["ancho"]) > ANCHO_LOG_MAXIMO
+               for d in lista):
+            raise HTTPException(400, "Ese canal es demasiado ancho para la escala logarítmica: su paralela "
+                                     "multiplicaría el precio más de 500 millones de veces.")
         if len(lista) > _DIBUJOS_MAXIMOS:
             raise HTTPException(409, f"Llegaste a {_DIBUJOS_MAXIMOS} dibujos y notas en este activo: borrá alguno.")
         if lista:
@@ -14056,7 +14064,9 @@ def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: s
             conn.execute("DELETE FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
                          (dueno, sym, moneda))
         conn.commit()
-    return {"ok": True, "dibujos": len(lista)}
+    # `escalas`: este servidor guarda la escala de las líneas (la pantalla, si
+    # no lo dice, deja pendientes las logarítmicas: utils/dibujos.subirDibujos).
+    return {"ok": True, "dibujos": len(lista), "escalas": True}
 
 
 @app.get("/api/admin/velas")

@@ -271,15 +271,19 @@ class DibujosGraficoTest(unittest.TestCase):
 
     def test_la_escala_de_tus_lineas_y_canales(self):
         # Una línea o un canal dibujados en la logarítmica (Nico, 12/11) vuelven
-        # con su escala; los de siempre, sin nada, igual que antes.
+        # con su escala; los de siempre, sin nada, igual que antes. La respuesta
+        # dice que este servidor guarda la escala (la pantalla, si no lo dice,
+        # deja pendientes las logarítmicas y las vuelve a subir).
         canal = {"id": "c1", "tipo": "canal", "a": T["a"], "b": T["b"], "ancho": 0.0953, "escala": "log"}
         log = {**T, "id": "t2", "escala": "log"}
-        self._guardar([T, log, canal, {**H, "escala": "log"}])
+        self.assertEqual(self._guardar([T, log, canal, {**H, "escala": "log"}]).json(), {"ok": True, "dibujos": 4, "escalas": True})
         self.assertEqual(self._leer(), [T, log, canal, H])
         # Otra escala que no existe no se guarda; y un canal logarítmico con un
         # ancho que no es un canal (e^25) tampoco.
         self.assertEqual(self._guardar([{**T, "escala": "raiz"}]).status_code, 422)
-        self.assertEqual(self._guardar([{**canal, "ancho": 25}]).status_code, 422)
+        r = self._guardar([{**canal, "ancho": 25}])
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("demasiado ancho", r.json()["detail"])
         self.assertEqual(self._leer(), [T, log, canal, H])
 
     def test_una_pantalla_vieja_no_deforma_tus_lineas_logaritmicas(self):
@@ -292,6 +296,11 @@ class DibujosGraficoTest(unittest.TestCase):
         self.assertEqual(self._guardar([{**T, "b": {**T["b"], "precio": 250.0}}, {**canal, "ancho": 5.0953}],
                                        escalas=False).status_code, 200)
         self.assertEqual(self._leer(), [{**T, "b": {**T["b"], "precio": 250.0}}, canal])
+        # Aunque lo que manda sea un ancho que no es un canal (le sumó plata a
+        # un porcentaje): no traba el guardado de lo demás.
+        r = self._guardar([{**T, "b": {**T["b"], "precio": 260.0}}, {**canal, "ancho": 30.0953}], escalas=False)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._leer(), [{**T, "b": {**T["b"], "precio": 260.0}}, canal])
         self._guardar([T], escalas=False)
         self.assertEqual(self._leer(), [T])
         # La pantalla de hoy sí lo cambia.

@@ -66,6 +66,7 @@ export function armarEscala(lo, hi, alto, escala) {
   // cero) está infinitamente abajo: va muy por debajo del borde, nunca a un
   // «NaN» o un «Infinity» que el navegador no dibuja (y corta la línea entera).
   const fraccion = (precio) => {
+    if (esLog(escala) && precio <= 0) return FUERA
     const f = 1 - (aEje(precio, escala) - a) / largo
     return Number.isFinite(f) || Number.isNaN(precio) ? f : f > 0 ? FUERA : -FUERA
   }
@@ -84,10 +85,21 @@ export function largoEnEje(lo, hi, escala) {
 
 /** Un precio corrido `du` en el eje (un arrastre en pantalla): en lineal suma
  *  plata, en log multiplica. En lineal nunca llega a 0 (arrastrar una línea muy
- *  abajo la deja en el piso); en log no hace falta: nunca llega. */
-export function precioCorrido(precio, du, escala) {
+ *  abajo la deja en el piso); en log no hace falta: nunca llega. `piso` en
+ *  false: sin ese freno (la punta del ancho de un canal, que es una distancia y
+ *  antes se corría sin él). */
+export function precioCorrido(precio, du, escala, piso = true) {
   if (esLog(escala)) return precio * Math.exp(du)
-  return Math.max(precio + du, precio * 0.02)
+  return piso ? Math.max(precio + du, precio * 0.02) : precio + du
+}
+
+/** ¿Es un ancho de canal que se puede guardar? Un número distinto de cero y,
+ *  en un canal logarítmico, hasta ANCHO_LOG_MAXIMO. La MISMA regla al crearlo,
+ *  al ensancharlo, al leerlo (utils/dibujos.dibujoValido) y en el servidor
+ *  (main.put_tecnico_dibujos): si la pantalla guardara uno que la cuenta
+ *  rechaza, se trabaría el guardado de TODOS tus dibujos de ese activo. */
+export function anchoQueVale(ancho, escala) {
+  return Number.isFinite(ancho) && ancho !== 0 && (!esLog(escala) || Math.abs(ancho) <= ANCHO_LOG_MAXIMO)
 }
 
 /** [lo, hi] con aire: un `margen` (fracción del rango) arriba y abajo, y
@@ -106,7 +118,8 @@ export function rangoConAire(lo, hi, escala, margen = 0.08, abajo = 0) {
 export function ladoDeAfuera(precio, lo, hi, escala, tolerancia) {
   if (!cabeEnLaEscala(precio, escala)) return 'abajo'
   const a = aEje(lo, escala), b = aEje(hi, escala), p = aEje(precio, escala)
-  const rango = b - a || Math.abs(b) * 0.1 || 1
+  // Sin rango (todo plano): en lineal el 10 % del precio; en log, un 10 %.
+  const rango = b - a || (esLog(escala) ? Math.log(1.1) : Math.abs(b) * 0.1) || 1
   if (p < a - rango * tolerancia) return 'abajo'
   if (p > b + rango * tolerancia) return 'arriba'
   return null
@@ -135,7 +148,9 @@ export function precioMasAncho(precio, ancho, escala) {
 // elige el juego más tupido que deja al menos `cadaPx` entre dos rótulos. Con
 // un rango angosto (acercado a unas semanas) ningún juego de esos deja más de
 // uno o dos: ahí la logarítmica casi no se distingue de la lineal, y van los
-// precios redondos parejos de siempre, sin los que quedarían pisados.
+// precios redondos parejos de siempre, sin los que quedarían pisados. Con un
+// rango muy ancho (de 1 a un millón en un celular) ni una marca por década
+// entra: va una cada tantas décadas.
 
 const JUEGOS_LOG = [[1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8], [1, 1.5, 2, 3, 4, 5, 7], [1, 2, 3, 5, 7], [1, 2, 5], [1, 3], [1]]
 
@@ -146,6 +161,7 @@ export function marcasLog(lo, hi, altoPx, parejos, cadaPx = 40) {
   const esc = armarEscala(lo, hi, altoPx, 'log')
   const separadas = (lista) => lista.every((v, i) => i === 0 || esc.y(lista[i - 1]) - esc.y(v) >= cadaPx)
   const minimo = Math.max(3, Math.floor(altoPx / (cadaPx * 3)))
+  let angosto = false
   for (const juego of JUEGOS_LOG) {
     const out = []
     for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)) && out.length < 80; e++) {
@@ -156,8 +172,18 @@ export function marcasLog(lo, hi, altoPx, parejos, cadaPx = 40) {
     }
     if (out.length >= 2 && separadas(out)) {
       if (out.length >= minimo) return out
+      angosto = true
       break
     }
+  }
+  if (!angosto) {
+    // Rango ancho: una marca cada `salto` décadas.
+    const salto = Math.max(1, Math.ceil(cadaPx / (altoPx / Math.log10(hi / lo))))
+    const out = []
+    for (let e = Math.ceil(Math.log10(lo)); e <= Math.floor(Math.log10(hi)); e++) {
+      if (e % salto === 0) out.push(Number(Math.pow(10, e).toPrecision(6)))
+    }
+    if (out.length >= 2) return out
   }
   // Rango angosto: los parejos, sacando los que quedarían pisados (de abajo hacia arriba).
   const out = []

@@ -9,6 +9,7 @@ import { anchoDelCanal, preciosAlBorde, puntosDeLaRecta, trazosDeDibujos } from 
 import { dibujoCorrido, dibujoValido, puntasDe } from '../../utils/dibujos'
 import { armarEscala, precioCorrido } from '../../utils/escalaPrecio'
 import { trazosDeMiniLinea } from '../alerts/MiniLinea'
+import { specDelGrafico } from '../../utils/imagenGrafico'
 
 // Un gráfico de 101 lugares (pctX(k) = k) y precios de 10 a 1000 de alto.
 const pctX = (k) => k
@@ -56,6 +57,15 @@ describe('recta en su escala, curva en la otra', () => {
     const tr = trazosDeDibujos([t], pctX, enVista('lineal'), ['t'], 'lineal').filter(x => x.correccion)
     expect(tr.at(-1).x2).toBe(100)
     expect(tr.at(-1).y2).toBeCloseTo(enVista('lineal')(preciosAlBorde(t, 100)[0]))
+  })
+
+  it('las dos puntas en el mismo lugar (en semanales, la misma semana): una raya de una a la otra, como siempre', () => {
+    const misma = { id: 's', tipo: 'tendencia', a: P(40, 100), b: P(40, 120) }
+    for (const vista of ['lineal', 'log']) {
+      const [tr] = trazosDeDibujos([misma], pctX, enVista(vista), [], vista)
+      expect(tr.y1).toBeCloseTo(enVista(vista)(100))
+      expect(tr.y2).toBeCloseTo(enVista(vista)(120))
+    }
   })
 
   it('una línea de antes (sin escala) no cambia nada mirada en la de siempre', () => {
@@ -117,5 +127,18 @@ describe('el gráfico chico de «Mis alertas»', () => {
     }
     expect(recta(trazosDeMiniLinea({ serie, lineas: [linea], escala: 'log' }, 100, 50).lineas[0])).toBe(true)
     expect(recta(trazosDeMiniLinea({ serie, lineas: [linea] }, 100, 50).lineas[0])).toBe(false)
+  })
+})
+
+describe('la imagen de «Compartir» en logarítmica', () => {
+  it('una banda de Bollinger bajo cero se corta, como en la pantalla (no raya la imagen)', () => {
+    const puntos = Array.from({ length: 40 }, (_, i) => ({
+      d: new Date(Date.UTC(2026, 0, 1) + i * 86400000).toISOString().slice(0, 10), c: 30 + i,
+      bb_arriba: 40 + i, bb_abajo: i >= 22 && i < 30 ? -3 : 20 + i,
+    }))
+    const spec = specDelGrafico({ activo: 'ZZ', puntos, lo: 5, hi: 90, escalaDePrecio: 'log', ver: { bb: true } })
+    const ys = [...spec.grafico.lineas.flatMap(l => l.puntos), ...spec.grafico.poligonos.flatMap(p => p.puntos)].map(([, y]) => y)
+    expect(ys.every(y => Number.isFinite(y) && y >= 0 && y <= 100)).toBe(true)
+    expect(spec.pie.some(t => t.startsWith('Escala logarítmica'))).toBe(true)
   })
 })

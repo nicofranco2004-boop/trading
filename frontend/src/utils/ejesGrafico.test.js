@@ -37,6 +37,16 @@ describe('eje de precios', () => {
     expect(rangoCorrido(100, 400, -3, 'log').lo).toBeGreaterThan(0)
   })
 
+  it('en logarítmica, alejar una y otra vez tiene un tope: los precios nunca se van de los números', () => {
+    let r = { lo: 90, hi: 210 }
+    for (let i = 0; i < 8; i++) r = rangoEstirado(r.lo, r.hi, 5000, 'log')
+    expect(r.lo).toBeGreaterThan(0)
+    expect(Number.isFinite(r.hi)).toBe(true)
+    expect(Math.log10(r.hi / r.lo)).toBeCloseTo(12, 6)                   // seis décadas para cada lado
+    for (let i = 0; i < 50; i++) r = rangoCorrido(r.lo, r.hi, 1, 'log')  // correrlo muy arriba
+    expect(Number.isFinite(r.hi) && r.lo > 0).toBe(true)
+  })
+
   it('los rótulos siguen a la escala', () => {
     expect(marcasDePrecioEn(197.7, 352.4, 500, 'lineal')).toEqual(marcasDePrecio(197.7, 352.4, 500))
     expect(marcasDePrecioEn(10, 250, 500, 'log')).toEqual([10, 20, 30, 50, 70, 100, 200])

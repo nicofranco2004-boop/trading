@@ -47,6 +47,9 @@ const TRAMOS_DE_CURVA = 24
  *  (la paralela de un canal). Mirada en su misma escala es recta: dos puntos;
  *  en la otra, una curva de TRAMOS_DE_CURVA tramos. */
 export function puntosDeLaRecta(a, b, k1, k2, escala, vista, pctX, pctY, mas = 0) {
+  // Las dos puntas en el mismo lugar (en semanales, dos días de la misma
+  // semana): una raya de una a la otra, como siempre.
+  if (a.k === b.k) return [a, b].map(p => [pctX(p.k), pctY(precioMasAncho(p.precio, mas, escala))])
   const n = escalaDe(escala) === escalaDe(vista) ? 1 : TRAMOS_DE_CURVA
   const out = []
   for (let j = 0; j <= n; j++) {

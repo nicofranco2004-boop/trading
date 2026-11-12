@@ -32,7 +32,7 @@
 // logarítmico es el logaritmo de cuánto multiplica su paralela.
 
 import { indiceDeFecha } from './tecnico'
-import { ANCHO_LOG_MAXIMO, aEje, esLog, precioEnLaRecta, precioMasAncho } from './escalaPrecio'
+import { aEje, anchoQueVale, esLog, precioEnLaRecta, precioMasAncho } from './escalaPrecio'
 import { api } from './api'
 import { useDuenoDeLaPestana } from './duenoDeLaPestana'
 import { leer, guardar, leerDe, guardarDe, borrarDe } from './almacen'
@@ -222,7 +222,7 @@ export function dibujoValido(x) {
   // El canal: la línea de abajo (a → b) y cuánto más arriba (o abajo) va su
   // paralela (Nico, 29/10: «el lateral»): en precio, o en uno logarítmico el
   // logaritmo de cuánto multiplica, con su tope (como el servidor).
-  if (x.tipo === 'canal') return punto(x.a) && punto(x.b) && numero(x.ancho) && x.ancho !== 0 && (!esLog(x.escala) || Math.abs(x.ancho) <= ANCHO_LOG_MAXIMO)
+  if (x.tipo === 'canal') return punto(x.a) && punto(x.b) && anchoQueVale(x.ancho, x.escala)
   if (x.tipo === 'pincel') return Array.isArray(x.puntos) && x.puntos.length >= 2 && x.puntos.length <= PINCEL_MAXIMO && x.puntos.every(punto)
   if (x.tipo === 'extension') return punto(x.a) && punto(x.b) && punto(x.c)
   if (x.tipo === 'nota') return punto(x.a) && typeof x.texto === 'string' && !!limpiarNota(x.texto) && largoDeNota(limpiarNota(x.texto)) <= NOTA_MAXIMA
@@ -312,9 +312,13 @@ export function subirDibujos(asset, moneda, lista, dueno) {
   const sigue = (enFila[k] || Promise.resolve(true))
     // `notas`, `posiciones` y `escalas`: esta pantalla las conoce (si no, el servidor no las toca).
     .then(() => enviarDe(ENVIOS.dibujos, dueno, { dibujos: lista.slice(0, DIBUJOS_MAXIMOS), notas: true, posiciones: true, escalas: true }, rutaDesdeTecnico(asset, moneda)))
-    // Si el servidor lo rechaza con un motivo (los topes y el activo válido de
-    // E3), se devuelve ese texto para decirlo; si no, false.
-    .then(() => true, (e) => {
+    // Guardada. Pero un servidor de antes del 12/11 no conoce la escala: guarda
+    // la línea sin ella y contesta bien. Si la respuesta no dice que la conoce,
+    // una lista con líneas logarítmicas queda pendiente (false) y se vuelve a
+    // subir (al publicar, la web nueva puede llegar unos minutos antes que el
+    // servidor). Si el servidor lo rechaza con un motivo (los topes y el activo
+    // válido de E3), se devuelve ese texto para decirlo; si no, false.
+    .then((r) => !lista.some(d => esLog(d?.escala)) || !!r?.escalas, (e) => {
       if (e?.cuentaCambiada) return { cuentaCambiada: true }
       const motivo = e?.payload?.detail
       return [400, 409, 429].includes(e?.status) && typeof motivo === 'string' && motivo.trim() ? motivo : false
@@ -394,18 +398,18 @@ function puntaDelAncho(d) {
  * entero; en un canal, 'ancho' lleva su paralela a donde quedó esa punta.
  * `correr(p)` da el punto nuevo de una punta; `correrPrecio(x)`, el precio
  * nuevo de una horizontal (el arrastre en la escala que se está mirando:
- * utils/escalaPrecio.precioCorrido). La MISMA cuenta para lo que se ve
- * mientras se arrastra (puntos en lugares de la pantalla) y para lo que se
- * guarda (puntos por día).
+ * utils/escalaPrecio.precioCorrido); `correrPunta(x)`, el de la punta del
+ * ancho, sin el piso del 2 % (es una distancia: antes se sumaba entera). La
+ * MISMA cuenta para lo que se ve mientras se arrastra y para lo que se guarda;
+ * el ancho necesita los lugares (`k`) de lo que se ve.
  */
-export function dibujoCorrido(d, que, correr, correrPrecio) {
+export function dibujoCorrido(d, que, correr, correrPrecio, correrPunta = correrPrecio) {
   if (d.tipo === 'horizontal') return { ...d, precio: correrPrecio(d.precio) }
   if (d.tipo === 'canal' && que === 'ancho') {
     // El ancho nuevo, en la escala del canal: de su línea a donde quedó la punta.
     const punta = puntaDelAncho(d)
-    const ancho = aEje(correrPrecio(punta.precio), d.escala) - aEje(precioEnLaRecta(d.a, d.b, punta.k, d.escala), d.escala)
-    const vale = Number.isFinite(ancho) && ancho !== 0 && (!esLog(d.escala) || Math.abs(ancho) <= ANCHO_LOG_MAXIMO)
-    return vale ? { ...d, ancho } : d
+    const ancho = aEje(correrPunta(punta.precio), d.escala) - aEje(precioEnLaRecta(d.a, d.b, punta.k, d.escala), d.escala)
+    return anchoQueVale(ancho, d.escala) ? { ...d, ancho } : d
   }
   if (d.tipo === 'posicion') return posicionCorrida(d, que, correr, correrPrecio)
   const mueve = (nombre) => que === 'todo' || que === nombre
