@@ -13871,6 +13871,12 @@ class _Dibujo(BaseModel):
     lado: Optional[Literal["compra", "venta"]] = None
     objetivo: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     stop: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    # Sólo la tendencia y el canal (Nico 12/11): en qué escala los dibujaste.
+    # 'log' = recta en la logarítmica, y el `ancho` del canal es el logaritmo de
+    # cuánto multiplica su paralela (tecnico.valor_de_linea / bordes_de_canal).
+    # Sin ella, la de siempre: 'lineal' se guarda como nada, así lo de antes
+    # queda igual que estaba.
+    escala: Optional[Literal["lineal", "log"]] = None
 
     @field_validator("texto", mode="before")
     @classmethod
@@ -13900,6 +13906,12 @@ class _Dibujo(BaseModel):
                 raise ValueError("un conteo de Elliott con más ondas de las que tiene su forma")
         if self.tipo == "canal" and (self.a is None or self.b is None or not self.ancho):
             raise ValueError("un canal necesita su línea (dos puntos) y su ancho")
+        if self.tipo not in ("tendencia", "canal") or self.escala != "log":
+            self.escala = None
+        if self.tipo == "canal" and self.escala == "log":
+            from tecnico import ANCHO_LOG_MAXIMO
+            if abs(self.ancho) > ANCHO_LOG_MAXIMO:
+                raise ValueError("un canal logarítmico con un ancho que no es un canal")
         if self.tipo == "pincel" and (not self.puntos or len(self.puntos) < 2):
             raise ValueError("un trazo del pincel necesita al menos dos puntos")
         if self.tipo == "posicion":
@@ -13925,6 +13937,12 @@ class DibujosIn(BaseModel):
     # Lo mismo con las posiciones (desde el 03/11): una pantalla de antes las
     # descarta al leer y, al guardar una línea, las borraría.
     posiciones: bool = False
+    # La pantalla conoce la escala de las líneas y canales (desde el 12/11). Una
+    # de antes los ve, pero hace las cuentas en la de siempre: al ensanchar un
+    # canal logarítmico le sumaría plata a un ancho que es un porcentaje. Sin
+    # esta marca, una línea o un canal logarítmico guardado que llega con su
+    # mismo id queda como estaba (borrarlo, sí se puede).
+    escalas: bool = False
 
 
 def _guardados_de_tipo(conn, dueno: int, sym: str, moneda: str, tipo: str) -> list:
@@ -14008,6 +14026,11 @@ def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: s
         # Una pantalla que no conoce las posiciones: las guardadas quedan como estaban.
         if not data.posiciones:
             lista = [d for d in lista if d["tipo"] != "posicion"] + _guardados_de_tipo(conn, dueno, sym, moneda, "posicion")
+        # Una pantalla que no conoce la escala: tus líneas y canales logarítmicos, como estaban.
+        if not data.escalas:
+            logs = {d["id"]: d for tipo in ("tendencia", "canal")
+                    for d in _guardados_de_tipo(conn, dueno, sym, moneda, tipo) if d.get("escala") == "log"}
+            lista = [logs.get(d["id"], d) for d in lista]
         if len(lista) > _DIBUJOS_MAXIMOS:
             raise HTTPException(409, f"Llegaste a {_DIBUJOS_MAXIMOS} dibujos y notas en este activo: borrá alguno.")
         if lista:
@@ -52391,8 +52414,9 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn", dueno: int) ->
     # Una de tendencia o un canal (que es la misma recta y su paralela).
     if linea["tipo"] in ("tendencia", "canal") and linea.get("a") and linea.get("b"):
         velas = tecnico.serie(conn, symbol, moneda, bool(data.accion_local))["velas"]
-        ultimo = len(velas) - 1
-        mismo_dia = (tecnico.valor_de_linea(velas, linea, max(ultimo, 0)) is None if velas
+        # Por las puntas, no por el precio de hoy: el de una recta logarítmica
+        # muy empinada no se puede saber, y no es que caigan en el mismo día.
+        mismo_dia = (tecnico.puntas_en_la_misma_vela(velas, linea) if velas
                      else (linea["a"].get("d"), linea["a"].get("mas")) == (linea["b"].get("d"), linea["b"].get("mas")))
         if mismo_dia:
             raise HTTPException(400, "Las dos puntas de esa línea caen en el mismo día: no tiene "

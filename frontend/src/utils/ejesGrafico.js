@@ -9,8 +9,14 @@
 //   velas más anchas); hacia la derecha aleja. El último día queda quieto.
 //   (Al revés de la primera versión: Nico lo pidió así, 23/10.)
 // · Doble click en cualquiera de los dos, o el botón «Automático»: vuelve a lo
-//   automático. Otro rango, moneda o tipo de gráfico también.
+//   automático. Otro rango, moneda, tipo de gráfico o escala también.
+// · En la escala logarítmica (utils/escalaPrecio.js) estirar y correr se hacen
+//   en el eje de esa escala: correr multiplica en vez de sumar, así el borde de
+//   abajo nunca cruza el cero (que en log no existe) y el gráfico se mueve
+//   parejo en cualquier parte.
 // Acá sólo las cuentas; el gráfico (LecturaTecnica.jsx) las usa.
+
+import { aEje, deEje, esLog, marcasLog } from './escalaPrecio'
 
 // Cuántos píxeles de arrastre duplican (o reducen a la mitad) la escala.
 export const PIXELES_POR_DOBLE = 140
@@ -35,20 +41,23 @@ export function arrastreDentroDelTope(dy) {
 }
 
 /** El rango de precios después de arrastrar la columna `dy` píxeles (positivo =
- *  hacia abajo = entra más rango), partiendo de [lo, hi]. Centro quieto, con topes. */
-export function rangoEstirado(lo, hi, dy) {
+ *  hacia abajo = entra más rango), partiendo de [lo, hi]. Centro quieto (en el
+ *  eje de la `escala`), con topes. */
+export function rangoEstirado(lo, hi, dy, escala) {
   const k = Math.min(ESCALA_Y_MAX, Math.max(ESCALA_Y_MIN, factorDeArrastre(dy)))
-  const c = (lo + hi) / 2
-  const m = ((hi - lo) / 2) * k
-  return { lo: c - m, hi: c + m }
+  const a = aEje(lo, escala), b = aEje(hi, escala)
+  const c = (a + b) / 2
+  const m = ((b - a) / 2) * k
+  return { lo: deEje(c - m, escala), hi: deEje(c + m, escala) }
 }
 
 /** El rango de precios después de arrastrar el gráfico hacia abajo una
  *  fracción `f` de su alto: el dibujo baja con el mouse, o sea que a la vista
  *  entran precios más altos. Negativo: hacia arriba. */
-export function rangoCorrido(lo, hi, f) {
-  const d = f * (hi - lo)
-  return { lo: lo + d, hi: hi + d }
+export function rangoCorrido(lo, hi, f, escala) {
+  const a = aEje(lo, escala), b = aEje(hi, escala)
+  const d = f * (b - a)
+  return { lo: deEje(a + d, escala), hi: deEje(b + d, escala) }
 }
 
 // ─── El precio «a mano» lleva DOS rangos (auditoría D4, 31/10) ────────────────
@@ -66,13 +75,13 @@ export function empezarAMano([lo, hi], [cLo, cHi]) {
 }
 
 /** Arrastrar el gráfico una fracción `f` de su alto (ver rangoCorrido), los dos rangos. */
-export function correrAMano(mano, f) {
-  return { ...rangoCorrido(mano.lo, mano.hi, f), comp: rangoCorrido(mano.comp.lo, mano.comp.hi, f) }
+export function correrAMano(mano, f, escala) {
+  return { ...rangoCorrido(mano.lo, mano.hi, f, escala), comp: rangoCorrido(mano.comp.lo, mano.comp.hi, f, escala) }
 }
 
 /** Arrastrar la columna de precios `dy` píxeles desde `inicio` (ver rangoEstirado), los dos rangos. */
-export function estirarAMano(inicio, dy) {
-  return { ...rangoEstirado(inicio.lo, inicio.hi, dy), comp: rangoEstirado(inicio.comp.lo, inicio.comp.hi, dy) }
+export function estirarAMano(inicio, dy, escala) {
+  return { ...rangoEstirado(inicio.lo, inicio.hi, dy, escala), comp: rangoEstirado(inicio.comp.lo, inicio.comp.hi, dy, escala) }
 }
 
 /** El zoom de la fila de fechas: arrastrar `dx` píxeles a la izquierda acerca
@@ -107,6 +116,15 @@ export function marcasDePrecio(lo, hi, altoPx, cadaPx = 56) {
     out.push(Number(v.toFixed(dec)))
   }
   return out
+}
+
+/** Los precios de la columna en la `escala` del gráfico: en lineal, los
+ *  redondos parejos de `marcasDePrecio`; en logarítmica, los que se reparten
+ *  multiplicando (utils/escalaPrecio.marcasLog), con un poco menos de lugar
+ *  entre ellos porque no quedan a la misma distancia. */
+export function marcasDePrecioEn(lo, hi, altoPx, escala, cadaPx = 56) {
+  if (!esLog(escala)) return marcasDePrecio(lo, hi, altoPx, cadaPx)
+  return marcasLog(lo, hi, altoPx, (a, b, alto) => marcasDePrecio(a, b, alto, cadaPx), cadaPx * 0.72)
 }
 
 // Qué cambia entre un día y el anterior, de lo más grande a lo más chico.

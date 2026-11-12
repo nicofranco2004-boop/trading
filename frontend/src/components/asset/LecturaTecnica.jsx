@@ -51,7 +51,7 @@ import AssetMiniChart from '../home/AssetMiniChart'
 import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica, TIPO_DE_FABRICA } from './BarraGrafico'
 import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCapa, trazosDelFibonacci, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
 import CapaElliott, { COLOR_ELLIOTT, ID_ELL_AUTO, TarjetaElliott, fechaDelConteo, preciosDelConteo, trazosDelConteo } from './CapaElliott'
-import CapaDibujos, { anchoDelCanal, colorDe, posicionBajo, preciosAlBorde, trazosDeDibujos } from './CapaDibujos'
+import CapaDibujos, { anchoDelCanal, colorDe, marcaDeEscala, posicionBajo, preciosAlBorde, trazosDeDibujos } from './CapaDibujos'
 import CompartirGrafico from './CompartirGrafico'
 import LecturaDeHoy, { AvisoDeHoy } from './LecturaDeHoy'
 import TarjetasPorTema from './TarjetasPorTema'
@@ -59,12 +59,13 @@ import Banderitas, { CartelDeNotas, banderitaEn, banderitasEnVista, esClaveDeGru
 import { BotonMervalle, PanelMervalle, useResumenMervalle } from './ResumenMervalle'
 import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
 import { api, getClientContext } from '../../utils/api'
-import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecio, empezarAMano, correrAMano, estirarAMano, arrastreDentroDelTope } from '../../utils/ejesGrafico'
+import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecioEn, empezarAMano, correrAMano, estirarAMano, arrastreDentroDelTope } from '../../utils/ejesGrafico'
+import { ESCALA_DE_FABRICA, armarEscala, cabeEnLaEscala, escalaDe, esLog, ladoDeAfuera, largoEnEje, precioCorrido, rangoConAire } from '../../utils/escalaPrecio'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
 import { ANCHO_DEL_GRAFICO, archivoDelGrafico, specDelGrafico } from '../../utils/imagenGrafico'
 import {
   DIBUJOS_MAXIMOS, copiaLocal, etiquetasDe, diaDelPunto, dibujoCorrido, dibujoTocado, dibujosDelServidor, dibujosGuardados, guardarDibujos, idNuevo,
-  marcarSubidos, PINCEL_MAXIMO, COLORES_DIBUJO, colorDeLosNuevos, recordarColor, precioCorrido, precioRedondo, puntasDe, puntoDelDia, subirDibujos,
+  marcarSubidos, PINCEL_MAXIMO, COLORES_DIBUJO, colorDeLosNuevos, recordarColor, precioRedondo, puntasDe, puntoDelDia, subirDibujos,
   limpiarNota, useDuenoDeLaCopia, posicionNueva, resultadoDePosicion,
 } from '../../utils/dibujos'
 import {
@@ -220,6 +221,18 @@ function guardarTipo(t) {
 }
 function olvidarTipo() {
   try { borrarDelAlmacen(CATALOGO.graficoTipo) } catch { /* sin almacenamiento */ }
+}
+// La escala de precios (Nico, 12/11: un usuario la pidió): la de siempre o la
+// logarítmica (utils/escalaPrecio.js). Como línea o velas: se recuerda al tocar
+// «Log» y, sin nada guardado o con el almacenamiento bloqueado, la de siempre.
+function escalaGuardada() {
+  try { return escalaDe(leerDelAlmacen(CATALOGO.graficoEscala)) } catch { return ESCALA_DE_FABRICA }
+}
+function guardarEscala(e) {
+  try { guardarEnAlmacen(CATALOGO.graficoEscala, e) } catch { /* sin almacenamiento */ }
+}
+function olvidarEscala() {
+  try { borrarDelAlmacen(CATALOGO.graficoEscala) } catch { /* sin almacenamiento */ }
 }
 
 
@@ -502,6 +515,8 @@ export default function LecturaTecnica({
   }, [])
   const [tipo, setTipoEstado] = useState(tipoGuardado)
   const setTipo = (t) => { setTipoEstado(t); guardarTipo(t) }
+  const [escalaDePrecio, setEscalaEstado] = useState(escalaGuardada)
+  const setEscalaDePrecio = (e) => { setEscalaEstado(e); guardarEscala(e) }
   // Zoom con la rueda y arrastre: qué ruedas se ven ({ n: cuántas, fin: hasta
   // cuál, sin incluirla }). null = el del rango elegido («Todo», «Lo reciente» o «Desde que lo tenés»).
   const [ventana, setVentana] = useState(null)
@@ -560,7 +575,8 @@ export default function LecturaTecnica({
   const avisos = useAvisosTecnicos()
   // La escala de precios del gráfico para la imagen de «Compartir»: la de la
   // pantalla sin estirarse hasta tu precio, también la estirada a mano (que
-  // arranca de esa, no de la pantalla: ejesGrafico.empezarAMano).
+  // arranca de esa, no de la pantalla: ejesGrafico.empezarAMano), con su
+  // escala ({ min, max, escalaDePrecio }: el rango y su regla van juntos).
   const escala = useRef(null)
   // Lo que le pasó al aviso de la línea que moviste o borraste (Nico, 29/10):
   // { texto, deshacer, tono } o null. Lo limpia el próximo cambio.
@@ -787,10 +803,11 @@ export default function LecturaTecnica({
   // Al prender el Fibonacci o las ondas, el gráfico se acerca a lo medido si se
   // ve chico, con el aire de la derecha de siempre.
   const acercar = (v2) => { if (v2) setVentana({ n: v2.n + margenDerecho(v2.n), fin: v2.fin + margenDerecho(v2.n) }) }
-  const deFabrica = sonDeFabrica(ver) && tipo === TIPO_DE_FABRICA
+  const deFabrica = sonDeFabrica(ver) && tipo === TIPO_DE_FABRICA && escalaDePrecio === ESCALA_DE_FABRICA
   const volverDeFabrica = () => {
     setVerEstado({ ...CAPAS_DE_FABRICA }); olvidarCapas()
     setTipoEstado(TIPO_DE_FABRICA); olvidarTipo()
+    setEscalaEstado(ESCALA_DE_FABRICA); olvidarEscala()
     setMedirEstado({ activo: false, a: null, b: null })
     setDibujarEstado({ tipo: null, puntos: [] })
   }
@@ -843,7 +860,10 @@ export default function LecturaTecnica({
       setDibujarEstado({ tipo: null, puntos: [] })     // una línea por vez, como TradingView
     } else if (dibujar.tipo === 'tendencia' || dibujar.tipo === 'fibonacci') {
       if (!dibujar.puntos.length) { setDibujarEstado({ tipo: dibujar.tipo, puntos: [p] }); return }
-      cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: dibujar.tipo, a: guardado(dibujar.puntos[0]), b: guardado(p) }],
+      // La tendencia recuerda la escala en que se dibujó (recta en ella, también
+      // para el aviso); el Fibonacci no: sus niveles son precios.
+      cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: dibujar.tipo, a: guardado(dibujar.puntos[0]), b: guardado(p),
+        ...(dibujar.tipo === 'tendencia' ? marcaDeEscala(escalaDePrecio) : {}) }],
         { apaga: dibujar.tipo === 'fibonacci' ? 'fib' : null })
       // Tu Fibonacci reemplaza al automático (si no, se mezclan las rayas);
       // el automático se vuelve a prender desde su botón.
@@ -859,8 +879,9 @@ export default function LecturaTecnica({
       const puntos = [...dibujar.puntos, p]
       if (puntos.length < 3) { setDibujarEstado({ tipo: 'canal', puntos }); return }
       const [a, b] = puntos.map(guardado)
-      const ancho = anchoDelCanal({ k: puntos[0].i, precio: puntos[0].precio }, { k: puntos[1].i, precio: puntos[1].precio }, { k: p.i, precio: p.precio })
-      if (Math.abs(ancho) > 0) cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'canal', a, b, ancho: Math.round(ancho * 1e4) / 1e4 || ancho }])
+      // En la escala que se mira: en logarítmica, el ancho es cuánto multiplica la paralela.
+      const ancho = anchoDelCanal({ k: puntos[0].i, precio: puntos[0].precio }, { k: puntos[1].i, precio: puntos[1].precio }, { k: p.i, precio: p.precio }, escalaDePrecio)
+      if (Math.abs(ancho) > 0) cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'canal', a, b, ancho: Math.round(ancho * 1e4) / 1e4 || ancho, ...marcaDeEscala(escalaDePrecio) }])
       setDibujarEstado({ tipo: null, puntos: [] })
     } else if (dibujar.tipo === 'extension') {
       const puntos = [...dibujar.puntos, p]
@@ -872,11 +893,14 @@ export default function LecturaTecnica({
       // La posición (Nico, 03/11): un toque, en la entrada. Sale como en
       // TradingView: unas velas hacia adelante y con el stop a un 8 % de lo
       // que se ve de alto (el objetivo, al doble: ratio 2). Después se ajusta
-      // arrastrando el objetivo, el stop o el borde.
-      const alto = (escala.current?.max ?? precio * 1.1) - (escala.current?.min ?? precio * 0.9)
+      // arrastrando el objetivo, el stop o el borde. En logarítmica, ese 8 %
+      // del alto es un porcentaje del precio (lo que se ve de alto).
+      const e = escala.current?.escalaDePrecio
+      const lo = escala.current?.min ?? precio * 0.9, hi = escala.current?.max ?? precio * 1.1
+      const riesgo = esLog(e) ? precio - precioCorrido(precio, -0.08 * largoEnEje(lo, hi, e), e) : (hi - lo) * 0.08
       const a = guardado(p)
       const b = puntoGuardado(diaDelLugar(k + VELAS_DE_LA_POSICION), precio)
-      cambiarDibujos([...misDibujos, { id: idNuevo(), ...posicionNueva(LADO_POSICION[dibujar.tipo], a, b, alto * 0.08) }])
+      cambiarDibujos([...misDibujos, { id: idNuevo(), ...posicionNueva(LADO_POSICION[dibujar.tipo], a, b, riesgo) }])
       setDibujarEstado({ tipo: null, puntos: [] })
     } else if (FORMA_ELLIOTT[dibujar.tipo]) {
       // El segundo click de un doble click cae en el mismo lugar que el
@@ -906,7 +930,10 @@ export default function LecturaTecnica({
   // la fracción del lugar para que no quede en escalones. La herramienta
   // sigue prendida (se dibuja de a varios trazos) hasta Esc o «Listo».
   const trazarPincel = (lista) => {
-    const puntos = lista.map(q => {
+    // Sólo precios de verdad: en la franja del volumen la altura puede dar
+    // cero o menos, y un punto así haría que tu cuenta rechace TODOS tus
+    // dibujos de este activo (la lista va entera).
+    const puntos = lista.filter(q => q.precio > 0).map(q => {
       const base = Math.max(0, Math.floor(q.k))
       return puntoGuardado(diaDelLugar(base), q.precio, q.k - base)
     })
@@ -918,7 +945,8 @@ export default function LecturaTecnica({
     return false
   }
   // Soltaste un dibujo arrastrado (Grafico): `que` es la punta agarrada o
-  // 'todo'; `dk`, cuántos lugares se corrió y `dp`, cuánto precio. Cada punta
+  // 'todo'; `dk`, cuántos lugares se corrió y `dp`, cuánto en el eje de la
+  // escala que se mira (plata en lineal; en log, cuánto multiplica). Cada punta
   // se guarda otra vez por día, como al dibujarla: en diarias un lugar es un
   // día; en semanales, el día de esa vela (o 5 días por vela antes del gráfico).
   const moverDibujo = (id, que, dk, dp) => {
@@ -926,18 +954,29 @@ export default function LecturaTecnica({
       const i = lugarGuardado(q)
       // En 1H/4H se corre por velas y se guarda el momento nuevo; corrida sólo
       // de precio, el punto queda donde estaba (día, hora y todo), como en diarias.
-      if (porHora && !dk) return { ...q, precio: precioRedondo(precioCorrido(q.precio, dp)) }
-      if (porHora) return porHora.puntoDelLugar(Math.max(0, i + dk), precioCorrido(q.precio, dp), { fraccion: q.f != null })
+      if (porHora && !dk) return { ...q, precio: precioRedondo(precioCorrido(q.precio, dp, escalaDePrecio)) }
+      if (porHora) return porHora.puntoDelLugar(Math.max(0, i + dk), precioCorrido(q.precio, dp, escalaDePrecio), { fraccion: q.f != null })
       const k = lugarDelDia(i) + dk
       // Corrida sólo de precio, el día queda (en semanales, si no, iría al
       // último día de su semana) y también su hora, si se dibujó en 1H/4H.
       // El pincel conserva dónde iba dentro del día (`f`).
       const i2 = !semanales || !dk ? i + dk : k >= 0 ? diaDelLugar(Math.round(k)) : i + Math.round(dk * porVela)
-      const nuevo = puntoDelDia(actual.puntos, Math.max(0, i2), precioCorrido(q.precio, dp), q.f || 0)
+      const nuevo = puntoDelDia(actual.puntos, Math.max(0, i2), precioCorrido(q.precio, dp, escalaDePrecio), q.f || 0)
       return !dk && q.t != null ? { ...nuevo, t: q.t } : nuevo
     }
-    cambiarDibujos(misDibujos.map(d => (d.id !== id ? d
-      : dibujoCorrido(d, que, correr, (x) => precioRedondo(precioCorrido(x, dp)), dp))))
+    const correrPrecio = (x) => precioRedondo(precioCorrido(x, dp, escalaDePrecio))
+    cambiarDibujos(misDibujos.map(d => {
+      if (d.id !== id) return d
+      // El ancho de un canal se mide en su punta, a mitad de camino POR LUGAR:
+      // con el canal como se ve (dibujosEnVista), igual que mientras se
+      // arrastraba. Con la vista en otra escala que el canal, medirlo en otro
+      // lugar daría otro ancho que el que se vio.
+      if (que === 'ancho') {
+        const visto = dibujosEnVista.find(x => x.id === id)
+        return visto ? { ...d, ancho: dibujoCorrido(visto, que, correr, correrPrecio).ancho } : d
+      }
+      return dibujoCorrido(d, que, correr, correrPrecio)
+    }))
     // Con aviso: el aviso la sigue (lee la línea guardada cada noche). Se dice.
     if (alertaDeLinea(avisos.items, { asset, moneda, dibujo: id })) {
       const canal = misDibujos.find(d => d.id === id)?.tipo === 'canal'
@@ -1039,6 +1078,7 @@ export default function LecturaTecnica({
   const lugaresMinimos = (RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS)) / (semanales ? 5 : 1)
   const compartir = () => specDelGrafico({
     activo: asset, moneda, puntos: dibujo.puntos, huecos: dibujo.huecos, lo: escala.current?.min, hi: escala.current?.max,
+    escalaDePrecio: escala.current?.escalaDePrecio,
     ver, tipo, semanales, cada: horas ? cadaHoras : null, dibujos: dibujosEnVista,
     fibonacci: horas ? null : actual.fibonacci, elliott: horas ? null : actual.elliott,
     eventos: losEventos, convertida: actual.convertida, escala: actual.escala, fechaDatos: actual.lectura?.fecha,
@@ -1227,6 +1267,7 @@ export default function LecturaTecnica({
             <LeyendaIndicadores items={botones.indicadores} onAviso={setAviso} deFabrica={deFabrica} onFabrica={volverDeFabrica} />
           } grande={grande} puntos={dibujo.puntos} huecos={dibujo.huecos} moneda={moneda} promedio={ver.prom ? promedio : null}
             marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo} cada={horas ? cadaHoras : null} cuenta={cuenta}
+            escalaDePrecio={escalaDePrecio} onEscala={setEscalaDePrecio}
             fibonacci={ver.fib && !horas ? actual.fibonacci : null} elliott={ver.ell && !horas ? actual.elliott : null} onZoom={zoom} onMover={mover}
             pie={
               // Cómo se usa, corto (Nico, 29/10): en el celular, para el dedo
@@ -1236,6 +1277,7 @@ export default function LecturaTecnica({
               <div className="flex items-start gap-2">
                 <p data-ayuda="" className="flex-1 min-w-0 text-[11.5px] text-ink-2 mt-0.5 leading-snug">
                   {notaEstimado && <span data-estimado="" className="text-ink-1">{notaEstimado} </span>}
+                  {esLog(escalaDePrecio) && <span data-escala-log="">Escala logarítmica: una suba del mismo porcentaje mide lo mismo en todo el gráfico. </span>}
                   {semanales && 'Cada vela es una semana. '}
                   {horas && (
                     <>
@@ -1254,7 +1296,7 @@ export default function LecturaTecnica({
               </div>
             }
             lugaresMinimos={lugaresMinimos}
-            onAncho={setAnchoGrafico} onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rangoVisto}|${tipo}|${intervalo}`}
+            onAncho={setAnchoGrafico} onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rangoVisto}|${tipo}|${intervalo}|${escalaDePrecio}`}
             eventos={ver.eventos ? losEventos : []}
             medicion={medir.activo ? {
               a: medir.a && { k: lugarDelDia(medir.a.i), precio: medir.a.precio },
@@ -1977,8 +2019,9 @@ function CuentaRegresiva({ mercado, cada }) {
   )
 }
 
-function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', cada = null, cuenta = null, fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, resultados = {}, onAncho = null, pie = null, lugaresMinimos = RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS), escala: escalaRef = null, tesis = [] }) {
+function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', cada = null, cuenta = null, fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, resultados = {}, onAncho = null, pie = null, lugaresMinimos = RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS), escala: escalaRef = null, tesis = [], escalaDePrecio = 'lineal', onEscala = null }) {
   const conVelas = tipo === 'velas'
+  const enLog = esLog(escalaDePrecio)
   // Los lugares del ancho: los días más el aire vacío de la derecha.
   const lugares = puntos.length + huecos
   const ref = useRef(null)
@@ -2021,7 +2064,8 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // (ejesGrafico.empezarAMano); null = automático), y la fila de fechas
   // acerca o aleja. Con el precio a mano, arrastrar el gráfico también lo mueve
   // para arriba y para abajo. Doble click o «Automático»: vuelve a automático;
-  // otro rango, moneda o tipo de gráfico (`reinicioPrecio`) también.
+  // otro rango, moneda, tipo de gráfico o escala (`reinicioPrecio`) también:
+  // un rango hecho en lineal (que puede bajar de cero) no se mira en log.
   const [precioMano, setPrecioMano] = useState(null)
   useEffect(() => { setPrecioMano(null) }, [reinicioPrecio])
   const ejeY = useRef(null)
@@ -2072,7 +2116,12 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // (utils/rotulos.js). La raya queda; sólo se va el texto.
   useLayoutEffect(() => { taparRotulos(ref.current) })
 
+  // La escala de precios (utils/escalaPrecio.js): en logarítmica todo se
+  // calcula en el eje (el logaritmo), y lo que no es un precio mayor que cero
+  // (una banda de Bollinger negativa después de un salto, un nivel de
+  // Fibonacci bajo cero) no entra en la cuenta ni se dibuja.
   const { escalaY, path, area, min, max, velas, volumen, promFuera, compartible } = useMemo(() => {
+    const cabe = (x) => cabeEnLaEscala(x, escalaDePrecio)
     const valores = []
     let prevC = null
     for (const p of puntos) {
@@ -2086,20 +2135,20 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       if (ver.s200 && p.s200 != null) valores.push(p.s200)
     }
     valores.push(...preciosDeLaCapa(fibonacci, puntos), ...preciosDelConteo(elliott, puntos))
-    let lo = Math.min(...valores), hi = Math.max(...valores)
+    const entran = enLog ? valores.filter(cabe) : valores
+    let lo = Math.min(...entran), hi = Math.max(...entran)
     // Las bandas estiran la escala sólo cerca de lo que se ve, y nunca abajo de
     // 0: después de un salto brusco (un pump, un cambio de ratio que Yahoo no
     // corrige) la de abajo da un precio negativo y aplastaba todo el gráfico
     // contra un eje con precios bajo cero (auditoría 28/10). Lo que queda
     // afuera se corta en el borde, como en TradingView.
     if (ver.bb) {
-      const rangoPrecio = hi - lo || hi * 0.1 || 1
-      const piso = Math.max(0, lo - rangoPrecio * 0.35), techo = hi + rangoPrecio * 0.35
+      // «Cerca»: hasta un 35 % del rango más allá, medido en el eje (en log, un porcentaje).
       let bLo = lo, bHi = hi
       for (const p of puntos) {
         if (p.bb_arriba == null || p.bb_abajo == null) continue
-        if (p.bb_abajo >= piso) bLo = Math.min(bLo, p.bb_abajo)
-        if (p.bb_arriba <= techo) bHi = Math.max(bHi, p.bb_arriba)
+        if (p.bb_abajo >= 0 && cabe(p.bb_abajo) && !ladoDeAfuera(p.bb_abajo, lo, hi, escalaDePrecio, 0.35)) bLo = Math.min(bLo, p.bb_abajo)
+        if (cabe(p.bb_arriba) && !ladoDeAfuera(p.bb_arriba, lo, hi, escalaDePrecio, 0.35)) bHi = Math.max(bHi, p.bb_arriba)
       }
       lo = bLo; hi = bHi
     }
@@ -2112,20 +2161,13 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
     // gráfico contra un borde: va una etiqueta en ese borde con una flecha.
     let fuera = null
     if (promedio != null) {
-      const rango = hi - lo || hi * 0.1 || 1
-      if (promedio < lo - rango * 0.35) fuera = 'abajo'
-      else if (promedio > hi + rango * 0.35) fuera = 'arriba'
-      else { lo = Math.min(lo, promedio); hi = Math.max(hi, promedio) }
+      fuera = ladoDeAfuera(promedio, lo, hi, escalaDePrecio, 0.35)
+      if (!fuera) { lo = Math.min(lo, promedio); hi = Math.max(hi, promedio) }
     }
     // El volumen va en la franja de abajo (el 20 % del alto): se le deja ese
     // lugar para que las barras no tapen las velas.
     const maxVol = ver.vol ? Math.max(0, ...puntos.map(p => p.v || 0)) : 0
-    const conAire = ([a, b]) => {
-      const margen = (b - a) * 0.08 || b * 0.02 || 1
-      a -= margen; b += margen
-      if (maxVol > 0) a -= (b - a) * 0.25
-      return [a, b]
-    }
+    const conAire = ([a, b]) => rangoConAire(a, b, escalaDePrecio, 0.08, maxVol > 0 ? 0.25 : 0)
     ;[lo, hi] = conAire([lo, hi])
     let compartible = conAire(sinTuPrecio)
     if (precioMano) {
@@ -2135,12 +2177,12 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       compartible = [precioMano.comp.lo, precioMano.comp.hi]
       fuera = promedio == null ? null : promedio < lo ? 'abajo' : promedio > hi ? 'arriba' : null
     }
-    const y = (val) => H - ((val - lo) / (hi - lo)) * H
+    const y = armarEscala(lo, hi, H, escalaDePrecio).y
     const x = (i) => (lugares > 1 ? (i / (lugares - 1)) * W : W / 2)
     const linea = (k, hasta = puntos.length) => {
       let d = '', abierto = false
       puntos.forEach((p, i) => {
-        if (i >= hasta || p[k] == null) { abierto = false; return }
+        if (i >= hasta || p[k] == null || !cabe(p[k])) { abierto = false; return }
         d += `${abierto ? 'L' : 'M'}${x(i).toFixed(1)},${y(p[k]).toFixed(1)}`
         abierto = true
       })
@@ -2165,7 +2207,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
         }
         tramo = []
       }
-      puntos.forEach((p, i) => { if (p.bb_arriba != null && p.bb_abajo != null) tramo.push(i); else cerrar() })
+      puntos.forEach((p, i) => { if (p.bb_arriba != null && p.bb_abajo != null && cabe(p.bb_arriba) && cabe(p.bb_abajo)) tramo.push(i); else cerrar() })
       cerrar()
     }
     // Las velas: el ancho de cada una es el 65 % de su lugar, la mecha va del
@@ -2197,8 +2239,8 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       path: { c, hoy: tramoHoy, s50: linea('s50'), s200: linea('s200'), bbArriba: linea('bb_arriba'), bbAbajo: linea('bb_abajo'), bandas },
       area: c ? `${c}L${x(conHoy ? n - 2 : n - 1).toFixed(1)},${H}L0,${H}Z` : '',
     }
-  }, [puntos, lugares, promedio, ver.s50, ver.s200, ver.bb, ver.vol, conVelas, fibonacci, elliott, precioMano])
-  if (escalaRef) escalaRef.current = { min: compartible[0], max: compartible[1] }
+  }, [puntos, lugares, promedio, ver.s50, ver.s200, ver.bb, ver.vol, conVelas, fibonacci, elliott, precioMano, escalaDePrecio, enLog])
+  if (escalaRef) escalaRef.current = { min: compartible[0], max: compartible[1], escalaDePrecio }
 
   const rsiPath = useMemo(() => {
     let d = '', abierto = false
@@ -2272,7 +2314,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   function precioEn(clientY) {
     const r = ref.current?.getBoundingClientRect()
     if (!r || !r.height) return null
-    return min + (1 - Math.min(1, Math.max(0, (clientY - r.top) / r.height))) * (max - min)
+    return armarEscala(min, max, 1, escalaDePrecio).precio(Math.min(1, Math.max(0, (clientY - r.top) / r.height)))
   }
   function tocarEn(clientX, clientY) {
     const k = lugarEn(clientX), precio = precioEn(clientY)
@@ -2288,11 +2330,11 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // sólo el elegido (si no, cada deslizar para mover la página agarraría una línea).
   const [agarrado, setAgarrado] = useState(null)
   const vistos = agarrado ? dibujos.map(d => (d.id !== agarrado.id ? d
-    : dibujoCorrido(d, agarrado.que, (p) => ({ ...p, k: p.k + agarrado.dk, precio: precioCorrido(p.precio, agarrado.dp) }),
-      (x) => precioCorrido(x, agarrado.dp), agarrado.dp))) : dibujos
+    : dibujoCorrido(d, agarrado.que, (p) => ({ ...p, k: p.k + agarrado.dk, precio: precioCorrido(p.precio, agarrado.dp, escalaDePrecio) }),
+      (x) => precioCorrido(x, agarrado.dp, escalaDePrecio)))) : dibujos
   // Tus dibujos en pantalla (CapaDibujos.jsx), como trazos: para saber a cuál
   // se le tocó encima y para el precio de las horizontales en la columna.
-  const trazos = trazosDeDibujos(vistos, pctX, pctY, conAviso)
+  const trazos = trazosDeDibujos(vistos, pctX, pctY, conAviso, escalaDePrecio)
   // Lo que se puede elegir tocándolo: tus dibujos y también el Fibonacci y el
   // conteo AUTOMÁTICOS (elegirlos y borrarlos los apaga).
   const elegibles = [...trazos, ...trazosDelFibonacci(fibonacci, puntos, pctX, pctY), ...trazosDelConteo(elliott, puntos, pctX, pctY)]
@@ -2363,10 +2405,11 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
     }
     return { id, que }
   }
-  // Lo corrido desde donde se apretó, en lugares y en precio.
+  // Lo corrido desde donde se apretó, en lugares y en el eje de la escala
+  // (plata en lineal; en log, el logaritmo de cuánto multiplica).
   function corrimiento(g, x0, y0, x, y) {
     const r = ref.current.getBoundingClientRect()
-    return { ...g, dk: Math.round(((x - x0) / r.width) * (lugares - 1)), dp: ((y0 - y) / r.height) * (max - min) }
+    return { ...g, dk: Math.round(((x - x0) / r.width) * (lugares - 1)), dp: ((y0 - y) / r.height) * largoEnEje(min, max, escalaDePrecio) }
   }
   function soltar(g) {
     setAgarrado(null)
@@ -2443,7 +2486,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   const ultimo = puntos[puntos.length - 1]
   // Los ejes como TradingView (utils/ejesGrafico.js): precios redondos a lo
   // largo de la columna y fechas con el detalle que entra.
-  const ticks = marcasDePrecio(min, max, alto)
+  const ticks = marcasDePrecioEn(min, max, alto, escalaDePrecio)
   // Los precios del costado sin «,00» cuando son redondos («400», no
   // «400,00»); con decimales si el paso los necesita (una cripto de centavos).
   // El último precio y el del mouse siguen con todos sus decimales.
@@ -2521,7 +2564,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               const fy = (e.clientY - a.y) / r.height
               if ((precioMano || a.vertical || Math.abs(e.clientY - a.y0) >= 12) && Math.abs(fy) >= 0.005) {
                 a.vertical = true
-                setPrecioMano(correrAMano(precioMano || empezarAMano([min, max], compartible), fy)); a.y = e.clientY
+                setPrecioMano(correrAMano(precioMano || empezarAMano([min, max], compartible), fy, escalaDePrecio)); a.y = e.clientY
               }
             }
             mover(e.clientX)
@@ -2624,7 +2667,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               if (e.cancelable) e.preventDefault()
             }
           }}
-          role="img" aria-label={`Precio con su promedio de 200 y de 50 días. ${ultimo?.enCurso ? 'Precio de hoy, en curso' : 'Último cierre'} ${fmtPrecio(ultimo?.c, moneda)}.`}>
+          role="img" aria-label={`Precio con su promedio de 200 y de 50 días. ${ultimo?.enCurso ? 'Precio de hoy, en curso' : 'Último cierre'} ${fmtPrecio(ultimo?.c, moneda)}.${enLog ? ' En escala logarítmica.' : ''}`}>
           <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
             <defs>
               <linearGradient id={`area-${gid}`} x1="0" y1="0" x2="0" y2="1">
@@ -2696,7 +2739,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             marcado={sobreDibujo === ID_ELL_AUTO || elegido === ID_ELL_AUTO} />
           {/* Tus dibujos, y lo que se está dibujando (hasta el mouse). */}
           <CapaDibujos dibujos={pincel ? [...vistos, { id: '__pincel__', tipo: 'pincel', puntos: pincel, ...(colorNuevo ? { color: colorNuevo } : {}) }] : vistos} extendidos={conAviso} colorNuevo={colorNuevo} resultados={agarrado ? {} : resultados} elegido={elegido} resaltado={agarrado?.id || sobreDibujo} trazo={notaNueva ? null : trazo} cursor={onToque && !notaNueva ? cursor : null}
-            pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
+            pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} escalaDePrecio={escalaDePrecio} />
           {/* Tus notas y tu tesis: banderitas (sin línea). */}
           <Banderitas grupos={banderitas} elegido={elegido} resaltado={agarrado?.id || sobreDibujo} ancho={ancho} />
           {/* Marcas y el punto del mouse van en HTML: un círculo dentro de un
@@ -2809,7 +2852,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             // Lo arrastrado más allá del tope no se guarda (ver arrastreDentroDelTope).
             const dy = arrastreDentroDelTope(e.clientY - t.y)
             t.y = e.clientY - dy
-            setPrecioMano(estirarAMano(t, dy))
+            setPrecioMano(estirarAMano(t, dy, escalaDePrecio))
           }}
           onPointerUp={() => { ejeY.current = null }} onPointerCancel={() => { ejeY.current = null }}
           onDoubleClick={() => setPrecioMano(null)}>
@@ -2863,16 +2906,32 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               {fmtPrecio(cursor.precio, moneda).replace(/^US\$ /, '')}
             </span>
           )}
-          {/* El doble click no se descubre solo y en el celular no existe:
-              mientras el precio o las fechas están a mano, un botón vuelve LAS
-              DOS cosas a automático (uno solo, no dos iguales uno al lado del
-              otro). Va debajo de la columna, al lado de las fechas: abajo de
-              todo lo pisaba «↓ Tu precio». */}
-          {(precioMano || fechasAMano) && (
-            <button type="button" onPointerDown={e => e.stopPropagation()} onClick={() => { setPrecioMano(null); onFechasAuto?.() }}
-              className="absolute top-full mt-1 left-0 rounded border border-line-2 bg-bg-1 px-1.5 py-0.5 text-[10.5px] text-ink-1 hover:text-ink-0">
-              Automático
-            </button>
+          {/* Debajo de la columna, al lado de las fechas (abajo de todo lo
+              pisaba «↓ Tu precio»), como TradingView: «Log» siempre, y
+              «Automático» a su izquierda mientras el precio o las fechas están
+              a mano. El doble click no se descubre solo y en el celular no
+              existe: ese botón vuelve LAS DOS cosas a automático (uno solo, no
+              dos iguales uno al lado del otro). Los dos frenan el apretar y el
+              doble click: si no, empezarían a estirar la columna o la volverían
+              a automático. */}
+          {(onEscala || precioMano || fechasAMano) && (
+            <div className="absolute top-full mt-1 right-0 flex gap-1" onPointerDown={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
+              {(precioMano || fechasAMano) && (
+                <button type="button" onClick={() => { setPrecioMano(null); onFechasAuto?.() }}
+                  className="rounded border border-line-2 bg-bg-1 px-1.5 py-0.5 text-[10.5px] text-ink-1 hover:text-ink-0 whitespace-nowrap">
+                  Automático
+                </button>
+              )}
+              {onEscala && (
+                <button type="button" data-capa="escala-log" aria-pressed={enLog} aria-label="Escala logarítmica"
+                  title={enLog ? 'Escala logarítmica: una suba del mismo porcentaje mide lo mismo en todo el gráfico. Tocá para volver a la de siempre.'
+                    : 'Pasar a escala logarítmica: una suba del mismo porcentaje mide lo mismo en todo el gráfico (sirve para mirar varios años).'}
+                  onClick={() => onEscala(enLog ? 'lineal' : 'log')}
+                  className={`rounded border px-1.5 py-0.5 text-[10.5px] whitespace-nowrap ${enLog ? 'border-data-violet bg-data-violet/15 text-ink-0 font-medium' : 'border-line-2 bg-bg-1 text-ink-1 hover:text-ink-0'}`}>
+                  Log
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>

@@ -59,11 +59,12 @@ class DibujosGraficoTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()["dibujos"]
 
-    def _guardar(self, lista, asset="AAPL", moneda="usd", notas=True, posiciones=True, **kw):
-        # `notas` y `posiciones`: las marcas de la pantalla que las conoce (la de hoy).
+    def _guardar(self, lista, asset="AAPL", moneda="usd", notas=True, posiciones=True, escalas=True, **kw):
+        # `notas`, `posiciones` y `escalas`: las marcas de la pantalla que las conoce (la de hoy).
         return self.http.put(f"/api/tecnico/{asset}/dibujos?moneda={moneda}",
                              json={"dibujos": lista, **({"notas": True} if notas else {}),
-                                   **({"posiciones": True} if posiciones else {})}, headers=self._h(**kw))
+                                   **({"posiciones": True} if posiciones else {}),
+                                   **({"escalas": True} if escalas else {})}, headers=self._h(**kw))
 
     def _asesor_de_yo(self):
         conn = main.get_db()
@@ -267,6 +268,36 @@ class DibujosGraficoTest(unittest.TestCase):
         self.assertEqual(self._leer(), [pos])
         self._guardar([])
         self.assertEqual(self._leer(), [])
+
+    def test_la_escala_de_tus_lineas_y_canales(self):
+        # Una línea o un canal dibujados en la logarítmica (Nico, 12/11) vuelven
+        # con su escala; los de siempre, sin nada, igual que antes.
+        canal = {"id": "c1", "tipo": "canal", "a": T["a"], "b": T["b"], "ancho": 0.0953, "escala": "log"}
+        log = {**T, "id": "t2", "escala": "log"}
+        self._guardar([T, log, canal, {**H, "escala": "log"}])
+        self.assertEqual(self._leer(), [T, log, canal, H])
+        # Otra escala que no existe no se guarda; y un canal logarítmico con un
+        # ancho que no es un canal (e^25) tampoco.
+        self.assertEqual(self._guardar([{**T, "escala": "raiz"}]).status_code, 422)
+        self.assertEqual(self._guardar([{**canal, "ancho": 25}]).status_code, 422)
+        self.assertEqual(self._leer(), [T, log, canal, H])
+
+    def test_una_pantalla_vieja_no_deforma_tus_lineas_logaritmicas(self):
+        # Una pestaña abierta antes de la escala logarítmica ve tus líneas pero
+        # hace las cuentas en la de siempre: al ensanchar un canal le sumaría
+        # plata a un ancho que es un porcentaje. Lo que manda de ellas no pisa
+        # lo guardado; lo demás sí, y borrarlas también.
+        canal = {"id": "c1", "tipo": "canal", "a": T["a"], "b": T["b"], "ancho": 0.0953, "escala": "log"}
+        self._guardar([T, canal])
+        self.assertEqual(self._guardar([{**T, "b": {**T["b"], "precio": 250.0}}, {**canal, "ancho": 5.0953}],
+                                       escalas=False).status_code, 200)
+        self.assertEqual(self._leer(), [{**T, "b": {**T["b"], "precio": 250.0}}, canal])
+        self._guardar([T], escalas=False)
+        self.assertEqual(self._leer(), [T])
+        # La pantalla de hoy sí lo cambia.
+        self._guardar([T, canal])
+        self._guardar([T, {**canal, "ancho": 0.18}])
+        self.assertEqual(self._leer()[1]["ancho"], 0.18)
 
     def test_mirando_a_un_cliente_tus_notas_no_se_ven_ni_se_tocan(self):
         asesor = self._asesor_de_yo()

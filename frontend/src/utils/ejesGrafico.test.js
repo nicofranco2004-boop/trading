@@ -1,7 +1,7 @@
 // Las cuentas de arrastrar los ejes (utils/ejesGrafico.js). El arrastre montado
 // de verdad se prueba en components/asset/EjesGrafico.test.js.
 import { describe, it, expect } from 'vitest'
-import { PIXELES_POR_DOBLE, factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecio, rangoCorrido, rangoEstirado } from './ejesGrafico'
+import { PIXELES_POR_DOBLE, factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecio, marcasDePrecioEn, rangoCorrido, rangoEstirado } from './ejesGrafico'
 
 describe('eje de precios', () => {
   it('hacia abajo entra el doble de rango; hacia arriba, la mitad; el centro queda quieto', () => {
@@ -20,6 +20,26 @@ describe('eje de precios', () => {
   it('arrastrar el gráfico hacia abajo muestra precios más altos', () => {
     expect(rangoCorrido(100, 200, 0.1)).toEqual({ lo: 110, hi: 210 })
     expect(rangoCorrido(100, 200, -0.25)).toEqual({ lo: 75, hi: 175 })
+  })
+
+  it('en logarítmica estirar y correr multiplican: el borde de abajo nunca cruza el cero', () => {
+    // Estirar al máximo (6 veces) un rango de 100 a 400: en lineal el piso queda bajo cero.
+    expect(rangoEstirado(100, 400, 5000).lo).toBeLessThan(0)
+    const lejos = rangoEstirado(100, 400, 5000, 'log')
+    expect(lejos.lo).toBeGreaterThan(0)
+    // Centro quieto en el eje: 200 (lo que multiplica igual para los dos lados).
+    expect(Math.sqrt(lejos.lo * lejos.hi)).toBeCloseTo(200)
+    expect(lejos.hi / lejos.lo).toBeCloseTo(Math.pow(4, 6))
+    // Correr un cuarto del alto de 100 → 400 (dos duplicaciones) es media duplicación.
+    const corrido = rangoCorrido(100, 400, 0.25, 'log')
+    expect(corrido.lo).toBeCloseTo(100 * Math.SQRT2)
+    expect(corrido.hi).toBeCloseTo(400 * Math.SQRT2)
+    expect(rangoCorrido(100, 400, -3, 'log').lo).toBeGreaterThan(0)
+  })
+
+  it('los rótulos siguen a la escala', () => {
+    expect(marcasDePrecioEn(197.7, 352.4, 500, 'lineal')).toEqual(marcasDePrecio(197.7, 352.4, 500))
+    expect(marcasDePrecioEn(10, 250, 500, 'log')).toEqual([10, 20, 30, 50, 70, 100, 200])
   })
 })
 

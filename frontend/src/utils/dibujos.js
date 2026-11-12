@@ -25,8 +25,14 @@
 // `d`: un punto dibujado en el espacio vacío de la derecha (hacia adelante) es
 // «n días de mercado después del último día que había».
 // En velas de 1 o 4 horas, además, el momento (`t`): ver utils/velasPorHora.js.
+//
+// La línea de tendencia y el canal recuerdan en qué escala se dibujaron
+// (`escala: 'log'`, Nico 12/11; sin ella, la de siempre): son rectos en SU
+// escala, también para el aviso (utils/escalaPrecio.js). El `ancho` de un canal
+// logarítmico es el logaritmo de cuánto multiplica su paralela.
 
 import { indiceDeFecha } from './tecnico'
+import { ANCHO_LOG_MAXIMO, aEje, esLog, precioEnLaRecta, precioMasAncho } from './escalaPrecio'
 import { api } from './api'
 import { useDuenoDeLaPestana } from './duenoDeLaPestana'
 import { leer, guardar, leerDe, guardarDe, borrarDe } from './almacen'
@@ -214,8 +220,9 @@ export function dibujoValido(x) {
   if (x.tipo === 'horizontal') return numero(x.precio) && x.precio > 0
   if (x.tipo === 'tendencia' || x.tipo === 'fibonacci') return punto(x.a) && punto(x.b)
   // El canal: la línea de abajo (a → b) y cuánto más arriba (o abajo) va su
-  // paralela, en precio (Nico, 29/10: «el lateral»).
-  if (x.tipo === 'canal') return punto(x.a) && punto(x.b) && numero(x.ancho) && x.ancho !== 0
+  // paralela (Nico, 29/10: «el lateral»): en precio, o en uno logarítmico el
+  // logaritmo de cuánto multiplica, con su tope (como el servidor).
+  if (x.tipo === 'canal') return punto(x.a) && punto(x.b) && numero(x.ancho) && x.ancho !== 0 && (!esLog(x.escala) || Math.abs(x.ancho) <= ANCHO_LOG_MAXIMO)
   if (x.tipo === 'pincel') return Array.isArray(x.puntos) && x.puntos.length >= 2 && x.puntos.length <= PINCEL_MAXIMO && x.puntos.every(punto)
   if (x.tipo === 'extension') return punto(x.a) && punto(x.b) && punto(x.c)
   if (x.tipo === 'nota') return punto(x.a) && typeof x.texto === 'string' && !!limpiarNota(x.texto) && largoDeNota(limpiarNota(x.texto)) <= NOTA_MAXIMA
@@ -303,8 +310,8 @@ export function subirDibujos(asset, moneda, lista, dueno) {
   if (!dueno) return Promise.resolve(false)
   const k = `${dueno}${resto(asset, moneda)}`
   const sigue = (enFila[k] || Promise.resolve(true))
-    // `notas` y `posiciones`: esta pantalla las conoce (si no, el servidor no las toca).
-    .then(() => enviarDe(ENVIOS.dibujos, dueno, { dibujos: lista.slice(0, DIBUJOS_MAXIMOS), notas: true, posiciones: true }, rutaDesdeTecnico(asset, moneda)))
+    // `notas`, `posiciones` y `escalas`: esta pantalla las conoce (si no, el servidor no las toca).
+    .then(() => enviarDe(ENVIOS.dibujos, dueno, { dibujos: lista.slice(0, DIBUJOS_MAXIMOS), notas: true, posiciones: true, escalas: true }, rutaDesdeTecnico(asset, moneda)))
     // Si el servidor lo rechaza con un motivo (los topes y el activo válido de
     // E3), se devuelve ese texto para decirlo; si no, false.
     .then(() => true, (e) => {
@@ -369,24 +376,37 @@ export function puntasDe(d) {
     return [['a', d.a], ['b', { ...d.b, precio: d.a.precio }],
       ['objetivo', { ...d.a, precio: d.objetivo }], ['stop', { ...d.a, precio: d.stop }]]
   }
-  // El canal se ensancha agarrando la paralela de su mitad (como TradingView).
-  if (d.tipo === 'canal') {
-    return [['a', d.a], ['b', d.b], ['ancho', { k: (d.a.k + d.b.k) / 2, precio: (d.a.precio + d.b.precio) / 2 + d.ancho }]]
-  }
+  // El canal se ensancha agarrando la paralela de su mitad (como TradingView),
+  // en la escala del canal.
+  if (d.tipo === 'canal') return [['a', d.a], ['b', d.b], ['ancho', puntaDelAncho(d)]]
   return ['a', 'b', 'c'].filter(c => d[c]).map(c => [c, d[c]])
+}
+
+// La punta del ancho de un canal: su paralela, en el medio de a y b (en lugares de la pantalla).
+function puntaDelAncho(d) {
+  const k = (d.a.k + d.b.k) / 2
+  return { k, precio: precioMasAncho(precioEnLaRecta(d.a, d.b, k, d.escala), d.ancho, d.escala) }
 }
 
 /**
  * El dibujo arrastrado (Nico, 28/10: «mover y corregir un dibujo ya hecho»):
  * `que` es la punta agarrada (su nombre en `puntasDe`) o 'todo', para moverlo
- * entero; en un canal, 'ancho' corre su paralela `dp` de precio. `correr(p)` da el punto nuevo de una punta; `correrPrecio(x)`, el
- * precio nuevo de una horizontal. La MISMA cuenta para lo que se ve mientras
- * se arrastra (puntos en lugares de la pantalla) y para lo que se guarda
- * (puntos por día).
+ * entero; en un canal, 'ancho' lleva su paralela a donde quedó esa punta.
+ * `correr(p)` da el punto nuevo de una punta; `correrPrecio(x)`, el precio
+ * nuevo de una horizontal (el arrastre en la escala que se está mirando:
+ * utils/escalaPrecio.precioCorrido). La MISMA cuenta para lo que se ve
+ * mientras se arrastra (puntos en lugares de la pantalla) y para lo que se
+ * guarda (puntos por día).
  */
-export function dibujoCorrido(d, que, correr, correrPrecio, dp = 0) {
+export function dibujoCorrido(d, que, correr, correrPrecio) {
   if (d.tipo === 'horizontal') return { ...d, precio: correrPrecio(d.precio) }
-  if (d.tipo === 'canal' && que === 'ancho') return { ...d, ancho: d.ancho + dp || d.ancho }
+  if (d.tipo === 'canal' && que === 'ancho') {
+    // El ancho nuevo, en la escala del canal: de su línea a donde quedó la punta.
+    const punta = puntaDelAncho(d)
+    const ancho = aEje(correrPrecio(punta.precio), d.escala) - aEje(precioEnLaRecta(d.a, d.b, punta.k, d.escala), d.escala)
+    const vale = Number.isFinite(ancho) && ancho !== 0 && (!esLog(d.escala) || Math.abs(ancho) <= ANCHO_LOG_MAXIMO)
+    return vale ? { ...d, ancho } : d
+  }
   if (d.tipo === 'posicion') return posicionCorrida(d, que, correr, correrPrecio)
   const mueve = (nombre) => que === 'todo' || que === nombre
   if (d.tipo === 'elliott' || d.tipo === 'pincel') return { ...d, puntos: d.puntos.map((p, n) => (mueve(n) ? correr(p) : p)) }
@@ -417,9 +437,6 @@ function antesQue(p, q) {
   if (p.mas !== q.mas) return p.mas < q.mas
   return (p.t ?? 0) < (q.t ?? 0)
 }
-
-/** Un precio corrido `dp`, que nunca llega a 0 (arrastrar una línea muy abajo la deja en el piso). */
-export const precioCorrido = (precio, dp) => Math.max(precio + dp, precio * 0.02)
 
 /** La distancia de (x, y) al segmento de (ax, ay) a (bx, by), todo en píxeles. */
 export function distanciaASegmento(x, y, ax, ay, bx, by) {

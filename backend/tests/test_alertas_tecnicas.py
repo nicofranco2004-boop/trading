@@ -907,6 +907,76 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertEqual(len(ev), 1)
         self.assertEqual(ev[0]["message"], "MSFT subió hasta tu línea de tendencia, en US$ 120,00")
 
+    # — tu línea dibujada en la escala logarítmica (Nico, 12/11) —
+    # La misma línea de 60 a 75 en 10 ruedas, seguida 10 ruedas más: en la
+    # escala de siempre pasa por 90 (sube 1,50 por rueda); dibujada en la
+    # logarítmica, por 93,75 (sube el mismo porcentaje: ×1,25 cada 10 ruedas).
+    # El aviso tiene que mirar la que se ve, no la otra. (Saltos de menos del
+    # 20 %: uno mayor espera a confirmarse, `_hasta_antes_del_salto`.)
+
+    def _tendencia(self, id, escala=None):
+        r = _ruedas(self.hoy, 30)
+        linea = {"id": id, "tipo": "tendencia", "a": {"d": r[-21].isoformat(), "mas": 0, "precio": 60},
+                 "b": {"d": r[-11].isoformat(), "mas": 0, "precio": 75}}
+        return {**linea, "escala": escala} if escala else linea
+
+    def test_tu_linea_logaritmica_avisa_en_su_recta_y_no_en_la_de_siempre(self):
+        # Ayer sube a 90,50 (de 89,60 a 91,41): toca la de siempre (90), no la logarítmica (93,75).
+        self.yahoo.precios["MSFT"] = lambda d: 90.5 if d >= self.ayer else 85.0
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(self._tendencia("lin"), self._tendencia("log", escala="log"))
+        self._crear_linea(dibujo="lin")
+        log = self._crear_linea(dibujo="log")
+        self._cron()
+        self.assertEqual(self._eventos(), [], "lo que cerró antes de pedirlo no avisa")
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT subió hasta tu línea de tendencia, en US$ 90,00"])
+        self.assertEqual(self._alerta(log["id"])["active"], 1, "la logarítmica sigue esperando")
+
+    def test_tu_linea_logaritmica_tocada_avisa_con_su_precio(self):
+        self.yahoo.precios["MSFT"] = lambda d: 93.75 if d >= self.ayer else 85.0
+        self._preparar_linea(self._tendencia("log", escala="log"), dibujo="log")
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT subió hasta tu línea de tendencia, en US$ 93,75"])
+        # «Mis alertas» muestra dónde está hoy con la misma cuenta.
+        self.assertAlmostEqual(tecnico.valor_de_linea(
+            [{"date": d.isoformat(), "close": 1.0} for d in _ruedas(self.hoy, 30)],
+            self._tendencia("x", escala="log"), 29), 93.75)
+
+    def test_tu_canal_logaritmico_avisa_con_su_borde(self):
+        # Plano en 95 y su paralela un 10 % más arriba (104,50), no 95 + 0,0953.
+        import math
+        canal = {**self._canal(ancho=math.log(1.1)), "escala": "log"}
+        self.yahoo.precios["MSFT"] = self._salta_ayer      # ayer: de 108,90 a 111,10
+        self._preparar_linea(canal, dibujo="c1", direction="either")
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT subió hasta el borde de arriba de tu canal, en US$ 104,50"])
+
+    def test_la_escala_se_guarda_solo_en_lineas_y_canales_y_lo_de_siempre_queda_igual(self):
+        import math
+        r = _ruedas(self.hoy, 30)
+        self._dibujar(self._tendencia("t1"), self._tendencia("t2", escala="log"),
+                      {**self._tendencia("t3"), "escala": "lineal"},
+                      {**self._horizontal(100), "escala": "log"},
+                      {**self._canal(ancho=math.log(1.2), id="c2"), "escala": "log"},
+                      {"id": "f1", "tipo": "fibonacci", "escala": "log",
+                       "a": {"d": r[-21].isoformat(), "mas": 0, "precio": 90}, "b": {"d": r[-11].isoformat(), "mas": 0, "precio": 110}})
+        guardados = {d["id"]: d for d in self.client.get("/api/tecnico/MSFT/dibujos?moneda=usd", headers=self.h).json()["dibujos"]}
+        self.assertEqual({k: d.get("escala") for k, d in guardados.items()},
+                         {"t1": None, "t2": "log", "t3": None, "h1": None, "c2": "log", "f1": None})
+        self.assertEqual(guardados["t1"], self._tendencia("t1"), "una línea de siempre se guarda igual que antes")
+        # Un canal logarítmico con un ancho absurdo no es un canal (e^25 = 72 mil millones de veces).
+        r2 = self.client.put("/api/tecnico/MSFT/dibujos?moneda=usd", headers=self.h,
+                             json={"dibujos": [{**self._canal(ancho=25.0, id="c3"), "escala": "log"}]})
+        self.assertEqual(r2.status_code, 422, r2.text)
+
     def test_si_moves_la_linea_el_aviso_la_sigue(self):
         self.yahoo.precios["MSFT"] = self._salta_ayer
         self._preparar_linea(self._horizontal(130))

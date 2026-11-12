@@ -15,7 +15,8 @@
 // 24/10): el precio, el promedio de 200 días y el volumen; el resto a un toque
 // desde «Indicadores» y los menús de Fibonacci y Elliott. Lo que cada uno prende
 // o apaga se guarda en el navegador (`rendi_grafico_capas`, como el tipo de
-// gráfico en `rendi_grafico_tipo`); «Volver a lo de fábrica» lo olvida.
+// gráfico en `rendi_grafico_tipo` y la escala en `rendi_grafico_escala`);
+// «Volver a lo de fábrica» lo olvida y vuelve a la escala de siempre.
 // El tipo de fábrica es VELAS (Nico, 02/11): el que nunca eligió ve velas; el
 // que tocó «Línea» la sigue viendo, porque eso quedó guardado.
 //
@@ -287,7 +288,7 @@ export function LeyendaIndicadores({ items, onAviso, deFabrica, onFabrica, ancho
           })}
           <li className="border-t border-line/60 mt-0.5 pt-0.5">
             <button type="button" data-capa="fabrica" onClick={onFabrica} disabled={deFabrica}
-              title={deFabrica ? `El gráfico ya está como al principio: la vista limpia y en ${NOMBRE_DEL_TIPO[TIPO_DE_FABRICA]}` : `Vuelve a la vista limpia y pasa el gráfico a ${NOMBRE_DEL_TIPO[TIPO_DE_FABRICA]}`}
+              title={deFabrica ? `El gráfico ya está como al principio: la vista limpia, en ${NOMBRE_DEL_TIPO[TIPO_DE_FABRICA]} y en la escala de siempre` : `Vuelve a la vista limpia y pasa el gráfico a ${NOMBRE_DEL_TIPO[TIPO_DE_FABRICA]}, en la escala de siempre (no logarítmica)`}
               className="w-full inline-flex items-center gap-1.5 min-h-9 sm:min-h-7 px-1.5 rounded text-ink-2 enabled:hover:text-ink-0 enabled:hover:bg-bg-2 disabled:opacity-50">
               <RotateCcw size={13} aria-hidden="true" />Volver a lo de fábrica
             </button>

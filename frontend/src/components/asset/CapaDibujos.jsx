@@ -18,8 +18,16 @@
 // LecturaTecnica los pasa de día a lugar) y los dibuja en un SVG de 0 a 100,
 // como las capas automáticas; los textos van en HTML encima (adentro del SVG
 // estirado se deformarían). Guardado y formato: utils/dibujos.js.
+//
+// La escala (Nico, 12/11): la línea de tendencia y el canal son rectos en la
+// escala en que se dibujaron (`escala` del dibujo) y se dibujan así en
+// cualquiera: mirados en la otra (`vista`), se ven curvos. Es la misma línea
+// mirada con otra regla, y es la que mira el aviso. Lo demás (horizontales,
+// Fibonacci, Elliott, posición, pincel, notas) son precios sueltos: van a su
+// precio en la escala que se mire.
 
 import { COLORES_DIBUJO, cuentasDePosicion, etiquetasDe, puntasDe } from '../../utils/dibujos'
+import { aEje, escalaDe, esLog, precioEnLaRecta, precioMasAncho } from '../../utils/escalaPrecio'
 import { pctConSigno } from '../../utils/cuantoSeMueve'
 import { extensionFibonacci, fibonacciAMano, nivelPct, rayas, rotuloNivel, rotulosQueEntran } from '../../utils/fibonacci'
 import { PRIORIDAD } from '../../utils/rotulos'
@@ -31,32 +39,91 @@ export const colorDe = (d) => {
   return c ? `rgb(var(--${c.token}))` : COLOR_DIBUJO
 }
 
+// Cuántos tramos lleva una recta mirada en la otra escala (se ve curva).
+const TRAMOS_DE_CURVA = 24
+
+/** Los puntos ([x, y] en lo que se ve, de 0 a 100) de la recta de a a b, recta
+ *  en `escala`, entre los lugares k1 y k2, corrida `mas` en el eje de su escala
+ *  (la paralela de un canal). Mirada en su misma escala es recta: dos puntos;
+ *  en la otra, una curva de TRAMOS_DE_CURVA tramos. */
+export function puntosDeLaRecta(a, b, k1, k2, escala, vista, pctX, pctY, mas = 0) {
+  const n = escalaDe(escala) === escalaDe(vista) ? 1 : TRAMOS_DE_CURVA
+  const out = []
+  for (let j = 0; j <= n; j++) {
+    const k = k1 + ((k2 - k1) * j) / n
+    out.push([pctX(k), pctY(precioMasAncho(precioEnLaRecta(a, b, k, escala), mas, escala))])
+  }
+  return out
+}
+
+// La recta de a a b seguida desde q hasta el borde derecho (hasta donde la
+// mira el aviso), con el último punto justo en el borde.
+function hastaElBorde(d, q, kFin, vista, pctX, pctY, mas = 0) {
+  const ps = puntosDeLaRecta(d.a, d.b, q.k, kFin, d.escala, vista, pctX, pctY, mas)
+  ps[ps.length - 1][0] = 100
+  return ps
+}
+
+// Una lista de puntos como trazos seguidos, cada uno con `datos` (id, tipo…).
+// Los de una curva (más de dos puntos) llevan `curva`: el mismo número para
+// todos los de esa curva, así se pueden juntar para dibujarla de un trazo
+// (`juntarCurvas`). Para tocarla, siguen sueltos.
+let curvas = 0
+function tramos(puntos, datos) {
+  const out = []
+  const curva = puntos.length > 2 ? ++curvas : null
+  for (let j = 1; j < puntos.length; j++) {
+    out.push({ ...datos, x1: puntos[j - 1][0], y1: puntos[j - 1][1], x2: puntos[j][0], y2: puntos[j][1], ...(curva ? { curva } : {}) })
+  }
+  return out
+}
+
+/** Los trazos con cada curva hecha uno solo, con todos sus `puntos`: una
+ *  punteada en pedacitos arrancaría el punteado de nuevo en cada uno y se
+ *  vería llena. Lo demás queda igual. */
+export function juntarCurvas(trazos) {
+  const out = [], abiertas = new Map()
+  for (const t of trazos) {
+    if (t.curva == null) { out.push(t); continue }
+    const g = abiertas.get(t.curva)
+    if (g) { g.puntos.push([t.x2, t.y2]); g.x2 = t.x2; g.y2 = t.y2; continue }
+    const nueva = { ...t, puntos: [[t.x1, t.y1], [t.x2, t.y2]] }
+    abiertas.set(t.curva, nueva)
+    out.push(nueva)
+  }
+  return out
+}
+
 /**
  * Los trazos de cada dibujo en lo que se ve (de 0 a 100), para dibujarlos y
  * para saber a cuál se le tocó encima: [{ id, tipo, x1, y1, x2, y2, precio? }].
  * Una horizontal va de borde a borde; un Fibonacci, el tramo y cada nivel
  * desde donde arranca hasta el borde derecho; un conteo, de onda a onda.
+ * `vista`: la escala del gráfico ('lineal' o 'log'); una línea de tendencia o
+ * un canal de la otra escala va en varios tramos (se ve curvo).
  */
-export function trazosDeDibujos(dibujos, pctX, pctY, extendidos = []) {
+export function trazosDeDibujos(dibujos, pctX, pctY, extendidos = [], vista = 'lineal') {
   const out = []
   for (const d of dibujos) {
     const desde = out.length
     if (d.tipo === 'horizontal') {
       out.push({ id: d.id, tipo: d.tipo, x1: 0, y1: pctY(d.precio), x2: 100, y2: pctY(d.precio), precio: d.precio })
     } else if (d.tipo === 'tendencia') {
-      out.push({ id: d.id, tipo: d.tipo, x1: pctX(d.a.k), y1: pctY(d.a.precio), x2: pctX(d.b.k), y2: pctY(d.b.precio) })
+      out.push(...tramos(puntosDeLaRecta(d.a, d.b, d.a.k, d.b.k, d.escala, vista, pctX, pctY), { id: d.id, tipo: d.tipo }))
       // Con un aviso, la línea sigue hacia la derecha, punteada: así la mira el
-      // aviso (backend/tecnico.valor_de_linea), en la misma dirección.
+      // aviso (backend/tecnico.valor_de_linea), en la misma dirección y en su escala.
       const [p, q] = d.a.k <= d.b.k ? [d.a, d.b] : [d.b, d.a]
       if (extendidos.includes(d.id) && q.k > p.k && pctX(q.k) < 100) {
-        const xq = pctX(q.k), yq = pctY(q.precio), xp = pctX(p.k), yp = pctY(p.precio)
-        out.push({ id: d.id, tipo: d.tipo, x1: xq, y1: yq, x2: 100, y2: yq + ((yq - yp) * (100 - xq)) / (xq - xp), correccion: true })
+        const kFin = p.k + ((100 - pctX(p.k)) / (pctX(q.k) - pctX(p.k))) * (q.k - p.k)
+        out.push(...tramos(hastaElBorde(d, q, kFin, vista, pctX, pctY), { id: d.id, tipo: d.tipo, correccion: true }))
       }
     } else if (d.tipo === 'canal') {
       // La de abajo (a → b), su paralela `ancho` más arriba (o más abajo) y la
-      // del medio, punteada, como el canal paralelo de TradingView.
+      // del medio, punteada, como el canal paralelo de TradingView. En un canal
+      // logarítmico la paralela multiplica (utils/escalaPrecio.precioMasAncho).
       for (const [mas, medio] of [[0, false], [d.ancho, false], [d.ancho / 2, true]]) {
-        out.push({ id: d.id, tipo: d.tipo, x1: pctX(d.a.k), y1: pctY(d.a.precio + mas), x2: pctX(d.b.k), y2: pctY(d.b.precio + mas), correccion: medio, medio })
+        out.push(...tramos(puntosDeLaRecta(d.a, d.b, d.a.k, d.b.k, d.escala, vista, pctX, pctY, mas),
+          { id: d.id, tipo: d.tipo, correccion: medio, medio }))
       }
       // Con un aviso, sus dos bordes siguen hacia la derecha, punteados: así
       // los mira el aviso (backend/tecnico.bordes_de_canal), como la tendencia.
@@ -64,8 +131,7 @@ export function trazosDeDibujos(dibujos, pctX, pctY, extendidos = []) {
       if (extendidos.includes(d.id) && q.k > p.k && pctX(q.k) < 100) {
         const kFin = p.k + ((100 - pctX(p.k)) / (pctX(q.k) - pctX(p.k))) * (q.k - p.k)
         for (const mas of [0, d.ancho]) {
-          const fin = p.precio + mas + ((q.precio - p.precio) * (kFin - p.k)) / (q.k - p.k)
-          out.push({ id: d.id, tipo: d.tipo, x1: pctX(q.k), y1: pctY(q.precio + mas), x2: 100, y2: pctY(fin), correccion: true })
+          out.push(...tramos(hastaElBorde(d, q, kFin, vista, pctX, pctY, mas), { id: d.id, tipo: d.tipo, correccion: true }))
         }
       }
     } else if (d.tipo === 'pincel') {
@@ -126,13 +192,14 @@ export function posicionBajo(dibujos, x, y, pctX, pctY) {
  * Dónde está tu línea en el lugar `k` (la última vela, la que mira el aviso):
  * un precio para una horizontal o una de tendencia, dos para un canal (sus
  * bordes). La recta sigue en la misma dirección después de su segundo punto,
- * como la mira el aviso. [] si no se puede saber.
+ * en su escala, como la mira el aviso (backend/tecnico.valor_de_linea). [] si
+ * no se puede saber.
  */
 export function preciosAlBorde(d, k) {
   if (d.tipo === 'horizontal') return [d.precio]
   if ((d.tipo !== 'tendencia' && d.tipo !== 'canal') || !d.a || !d.b || d.a.k === d.b.k) return []
-  const base = d.a.precio + ((d.b.precio - d.a.precio) * (k - d.a.k)) / (d.b.k - d.a.k)
-  return d.tipo === 'canal' ? [base, base + d.ancho] : [base]
+  const base = precioEnLaRecta(d.a, d.b, k, d.escala)
+  return d.tipo === 'canal' ? [base, precioMasAncho(base, d.ancho, d.escala)] : [base]
 }
 
 /**
@@ -140,37 +207,42 @@ export function preciosAlBorde(d, k) {
  * `cursor` dónde está el mouse: la línea, el Fibonacci o el conteo siguen al
  * mouse hasta el próximo toque.
  */
-export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo, cursor, pctX, pctY, precio, extendidos = [], colorNuevo = null, resultados = {} }) {
+export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo, cursor, pctX, pctY, precio, extendidos = [], colorNuevo = null, resultados = {}, escalaDePrecio = 'lineal' }) {
   // Lo que se está dibujando, como si ya estuviera: hasta el mouse (en el
-  // color que va a tener).
-  const enCursoSolo = trazo && cursor?.precio != null ? enCursoHasta(trazo, cursor) : null
+  // color que va a tener y en la escala que se está mirando).
+  const enCursoSolo = trazo && cursor?.precio != null ? enCursoHasta(trazo, cursor, escalaDePrecio) : null
   const enCurso = enCursoSolo && colorNuevo ? { ...enCursoSolo, color: colorNuevo } : enCursoSolo
   const todos = enCurso ? [...dibujos, enCurso] : dibujos
-  const trazos = trazosDeDibujos(todos, pctX, pctY, extendidos)
+  const trazos = trazosDeDibujos(todos, pctX, pctY, extendidos, escalaDePrecio)
   if (!trazos.length && !trazo) return null
   // Elegido, el más grueso; con el mouse encima (`resaltado`), un poco más.
   const grueso = (id) => (id === elegido ? 3 : id === resaltado ? 2.6 : 1.8)
   return (
     <div className="pointer-events-none absolute inset-0" aria-hidden="true">
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
-        {/* La franja de cada canal, apenas sombreada. */}
+        {/* La franja de cada canal, apenas sombreada: por su línea de ida y por
+            su paralela de vuelta (curvas, si el canal es de la otra escala). */}
         {todos.filter(d => d.tipo === 'canal').map(d => (
           <polygon key={`f-${d.id}`} fill={colorDe(d)} fillOpacity={d.id === elegido ? 0.12 : 0.07} stroke="none"
-            points={[[d.a.k, d.a.precio], [d.b.k, d.b.precio], [d.b.k, d.b.precio + d.ancho], [d.a.k, d.a.precio + d.ancho]]
-              .map(([k, p]) => `${pctX(k)},${pctY(p)}`).join(' ')} />
+            points={[...puntosDeLaRecta(d.a, d.b, d.a.k, d.b.k, d.escala, escalaDePrecio, pctX, pctY),
+              ...puntosDeLaRecta(d.a, d.b, d.b.k, d.a.k, d.escala, escalaDePrecio, pctX, pctY, d.ancho)]
+              .map(([x, y]) => `${x},${y}`).join(' ')} />
         ))}
         {todos.filter(d => d.tipo === 'posicion').map(d => (
           <CajaPosicion key={`p-${d.id}`} d={d} pctX={pctX} pctY={pctY} fuerte={d.id === elegido || d.id === resaltado} resultado={resultados[d.id]} />
         ))}
-        {trazos.filter(t => !t.oculto).map((t, k) => {
+        {juntarCurvas(trazos.filter(t => !t.oculto)).map((t, k) => {
           const provisorio = t.id === '__en_curso__'
           const punteado = provisorio || t.correccion || (t.nivel && !t.nivel.extremo)
-          return (
-            <line key={`${t.id}-${k}`} data-dibujo={provisorio ? undefined : t.id} data-tipo={t.tipo}
-              x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2} stroke={t.entrada ? COLOR_ENTRADA : t.color || COLOR_DIBUJO}
-              strokeWidth={t.nivel || t.medio ? (t.id === elegido || t.id === resaltado ? 1.8 : 1) : grueso(t.id)} strokeLinecap="round"
-              strokeDasharray={punteado ? '5 4' : undefined} opacity={t.nivel ? 0.85 : 1} vectorEffect="non-scaling-stroke" />
-          )
+          const comun = {
+            'data-dibujo': provisorio ? undefined : t.id, 'data-tipo': t.tipo, stroke: t.entrada ? COLOR_ENTRADA : t.color || COLOR_DIBUJO,
+            strokeWidth: t.nivel || t.medio ? (t.id === elegido || t.id === resaltado ? 1.8 : 1) : grueso(t.id), strokeLinecap: 'round',
+            strokeDasharray: punteado ? '5 4' : undefined, opacity: t.nivel ? 0.85 : 1, vectorEffect: 'non-scaling-stroke',
+          }
+          // Una línea o un canal de la otra escala: una curva, de un trazo.
+          return t.puntos
+            ? <polyline key={`${t.id}-${k}`} {...comun} fill="none" strokeLinejoin="round" points={t.puntos.map(([x, y]) => `${x},${y}`).join(' ')} />
+            : <line key={`${t.id}-${k}`} {...comun} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2} />
         })}
       </svg>
       {todos.filter(d => d.tipo === 'fibonacci').map(d => (
@@ -265,22 +337,30 @@ function RotulosPosicion({ d, pctX, pctY, precio, resultado }) {
 // Las herramientas de Elliott a mano y la forma que dibujan.
 const ELLIOTT = { impulso: 'impulso', correccion: 'correccion', elliott: undefined }
 
-/** Cuánto más arriba (o abajo) de la línea a → b está el punto c, en precio:
- *  el ancho del canal. Con a y b en el mismo lugar, contra el precio de a. */
-export function anchoDelCanal(a, b, c) {
-  const enC = b.k === a.k ? a.precio : a.precio + ((b.precio - a.precio) * (c.k - a.k)) / (b.k - a.k)
-  return c.precio - enC
+/** Cuánto más arriba (o abajo) de la línea a → b está el punto c, en el eje
+ *  de `escala`: el ancho del canal (plata en lineal; en log, el logaritmo de
+ *  cuánto multiplica). Con a y b en el mismo lugar, contra el precio de a. */
+export function anchoDelCanal(a, b, c, escala) {
+  return aEje(c.precio, escala) - aEje(precioEnLaRecta(a, b, c.k, escala), escala)
 }
 
-// Lo que se está dibujando, con el mouse como el próximo toque.
-function enCursoHasta(trazo, cursor) {
+/** La marca de escala de una línea o canal que se dibuja ahora, mirando en
+ *  `vista`: { escala: 'log' } o nada (la de siempre se guarda sin marca, como
+ *  todas las de antes). */
+export const marcaDeEscala = (vista) => (esLog(vista) ? { escala: 'log' } : {})
+
+// Lo que se está dibujando, con el mouse como el próximo toque, en la escala que se mira.
+function enCursoHasta(trazo, cursor, vista) {
   const ps = [...trazo.puntos, { k: cursor.k, precio: cursor.precio }]
   if (trazo.tipo in ELLIOTT) return ps.length >= 2 ? { id: '__en_curso__', tipo: 'elliott', forma: ELLIOTT[trazo.tipo], puntos: ps } : null
   if (ps.length < 2) return null
   if (trazo.tipo === 'extension') return { id: '__en_curso__', tipo: 'extension', a: ps[0], b: ps[1], c: ps[2] }
   // El canal: con dos toques, la línea de abajo; el tercero (el mouse) dice el ancho.
-  if (trazo.tipo === 'canal' && ps.length >= 3) return { id: '__en_curso__', tipo: 'canal', a: ps[0], b: ps[1], ancho: anchoDelCanal(ps[0], ps[1], ps[2]) || 1e-9 }
-  return { id: '__en_curso__', tipo: trazo.tipo === 'fibonacci' ? 'fibonacci' : 'tendencia', a: ps[0], b: ps[1] }
+  if (trazo.tipo === 'canal' && ps.length >= 3) {
+    return { id: '__en_curso__', tipo: 'canal', a: ps[0], b: ps[1], ancho: anchoDelCanal(ps[0], ps[1], ps[2], vista) || 1e-9, ...marcaDeEscala(vista) }
+  }
+  if (trazo.tipo === 'fibonacci') return { id: '__en_curso__', tipo: 'fibonacci', a: ps[0], b: ps[1] }
+  return { id: '__en_curso__', tipo: 'tendencia', a: ps[0], b: ps[1], ...marcaDeEscala(vista) }
 }
 
 // Los rótulos de tu extensión: cuánto del movimiento (a → b) se proyecta desde

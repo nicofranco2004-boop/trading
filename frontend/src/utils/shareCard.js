@@ -1515,7 +1515,14 @@ function pintarGrafico(ctx, spec) {
     ctx.lineWidth = t.ancho || 3
     ctx.lineCap = 'round'
     ctx.setLineDash(t.punteada ? [12, 9] : [])
-    linea(ctx, X(t.x1), Y(t.y1), X(t.x2), Y(t.y2))
+    // Una curva (una línea tuya de la otra escala, utils/imagenGrafico.js) va de
+    // un trazo: en pedacitos, el punteado arrancaría de nuevo en cada uno.
+    if (t.puntos) {
+      ctx.lineJoin = 'round'
+      ctx.beginPath()
+      t.puntos.forEach(([px, py], k) => (k ? ctx.lineTo(X(px), Y(py)) : ctx.moveTo(X(px), Y(py))))
+      ctx.stroke()
+    } else linea(ctx, X(t.x1), Y(t.y1), X(t.x2), Y(t.y2))
   }
   ctx.setLineDash([])
   ctx.globalAlpha = 1

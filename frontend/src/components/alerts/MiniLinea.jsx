@@ -5,11 +5,14 @@
 // entre medio— en su color, para reconocer cuál es sin abrir la ficha. Los
 // datos los arma el servidor con la misma cuenta que el aviso
 // (alerts_engine.resumen_de_dibujo): `serie` (cierres) y `lineas` (una lista
-// de precios por línea, en esos mismos días; null donde no se sabe).
+// de precios por línea, en esos mismos días; null donde no se sabe). Una
+// línea dibujada en la escala logarítmica (`escala: 'log'`) se dibuja en esa
+// escala, como en la ficha: recta, como la dibujaste (utils/escalaPrecio.js).
 //
 // Sistema visual: generación nueva — sin texto adentro, sólo trazo; el color
 // de tu dibujo es el de la ficha (CapaDibujos.colorDe), del tema.
 import { colorDe } from '../asset/CapaDibujos'
+import { armarEscala, cabeEnLaEscala, rangoConAire } from '../../utils/escalaPrecio'
 
 /** Los trazos en un cuadro de `ancho` × `alto`: { precio, lineas: [puntos…] } o null. */
 export function trazosDeMiniLinea(resumen, ancho, alto) {
@@ -17,12 +20,14 @@ export function trazosDeMiniLinea(resumen, ancho, alto) {
   const lineas = resumen?.lineas || []
   const n = serie.length
   if (n < 2) return null
-  const valores = [...serie, ...lineas.flat()].filter(v => v != null && Number.isFinite(v))
-  const lo = Math.min(...valores), hi = Math.max(...valores)
-  const margen = (hi - lo) * 0.08 || Math.abs(hi) * 0.02 || 1
-  const y = (v) => alto - ((v - (lo - margen)) / (hi - lo + 2 * margen)) * alto
+  const escala = resumen?.escala
+  const entra = (v) => v != null && cabeEnLaEscala(v, escala)
+  const valores = [...serie, ...lineas.flat()].filter(entra)
+  if (!valores.length) return null
+  const [lo, hi] = rangoConAire(Math.min(...valores), Math.max(...valores), escala, 0.08)
+  const y = armarEscala(lo, hi, alto, escala).y
   const x = (i) => (i / (n - 1)) * ancho
-  const puntos = (vs) => vs.map((v, i) => (v == null ? null : `${x(i).toFixed(1)},${y(v).toFixed(1)}`)).filter(Boolean)
+  const puntos = (vs) => vs.map((v, i) => (!entra(v) ? null : `${x(i).toFixed(1)},${y(v).toFixed(1)}`)).filter(Boolean)
   return { precio: puntos(serie), lineas: lineas.map(puntos) }
 }
 

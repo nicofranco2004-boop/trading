@@ -2355,7 +2355,10 @@ def resumen_de_dibujo(velas: list, d: dict, n: int = 60):
     # Seis cifras significativas, como la ficha: con decimales fijos una cripto
     # de centavos (PEPE a 0,0000098) quedaba en 0 o plana (auditoría 29/10).
     redondo = lambda x: None if x is None else float(f"{float(x):.6g}")
+    # La escala en que la dibujaste (la logarítmica sólo si lo es): el gráfico
+    # chico la dibuja en esa, recta como en la ficha (frontend MiniLinea).
     return {"id": d.get("id"), "tipo": d["tipo"], "color": d.get("color"),
+            **({"escala": "log"} if tecnico.es_log(d) else {}),
             "fecha": velas[ultimo]["date"], "ultimo": redondo(velas[ultimo]["close"]),
             "hoy": [redondo(x) for x in filas[-1]],
             "serie": [redondo(v["close"]) for v in velas[desde:]],

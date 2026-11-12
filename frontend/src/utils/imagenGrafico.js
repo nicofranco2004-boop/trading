@@ -8,6 +8,10 @@
 // dónde va cada cosa es la del gráfico (trazosDeDibujos, trazosDelFibonacci,
 // marcasDePrecio…), en lugares de 0 a 100, y utils/shareCard.js la pinta en el
 // canvas (pintarGrafico), oscura siempre (R8: el canvas no resuelve var()).
+// La escala de precios también es la de la pantalla, lineal o logarítmica
+// (`escalaDePrecio`, utils/escalaPrecio.js), con la misma regla de altura y
+// los mismos rótulos; en logarítmica el pie lo aclara, para que quien la recibe
+// no la lea como la de siempre.
 //
 // Privacidad: la imagen NO lleva nada de tu cartera. Esta función ni siquiera
 // recibe tu precio promedio, tus compras y ventas, tus montos ni tus avisos:
@@ -18,14 +22,15 @@
 // sacan acá abajo (`tuyos`), que es el único lugar por donde pasa la imagen.
 
 import { velaCompleta, haciaDondeVa, notaDeLaMoneda, ADX_CLAVE, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
-import { marcasDeFechas, marcasDePrecio } from './ejesGrafico'
+import { marcasDeFechas, marcasDePrecioEn } from './ejesGrafico'
+import { armarEscala, esLog, rangoConAire } from './escalaPrecio'
 import { extensionFibonacci, fibonacciAMano, nivelPct, rayas, rotuloNivel, rotulosQueEntran } from './fibonacci'
 import { rotuloOnda } from './elliott'
 import { cuentasDePosicion, etiquetasDe } from './dibujos'
 import { pctConSigno } from './cuantoSeMueve'
 import { PRIORIDAD, rotuloCorteFib, rotuloInvalidaElliott } from './rotulos'
 import { fechaDeHoy } from './shareCard'
-import { colorDe, trazosDeDibujos } from '../components/asset/CapaDibujos'
+import { colorDe, juntarCurvas, puntosDeLaRecta, trazosDeDibujos } from '../components/asset/CapaDibujos'
 import { INTERVALOS_POR_HORA, fechaHoraCorta, marcasDeHoras, primeraVelaDelDia } from './velasPorHora'
 import { posicion, rayasQueSeVen, trazosDelFibonacci } from '../components/asset/CapaFibonacci'
 
@@ -57,6 +62,7 @@ const pctTexto = (x) => `${x > 0 ? '+' : x < 0 ? '−' : ''}${Math.abs(x * 100).
  * @param {string} a.cada       '1h' | '4h' si son velas de horas (utils/velasPorHora.js); null en diarias y semanales
  * @param {number} a.huecos     los lugares vacíos de la derecha (el aire hacia el futuro)
  * @param {number} a.lo, a.hi   la escala de precios de la pantalla (abajo y arriba)
+ * @param {string} a.escalaDePrecio 'lineal' | 'log': la de la pantalla (utils/escalaPrecio.js)
  * @param {object} a.ver        las capas prendidas (BarraGrafico)
  * @param {Array}  a.dibujos    tus dibujos, ya ubicados en lo que se ve (con `k`)
  * @param {Function} a.precio   formatea un precio como la ficha («US$ 1,23»)
@@ -66,21 +72,19 @@ const pctTexto = (x) => `${x > 0 ? '+' : x < 0 ? '−' : ''}${Math.abs(x * 100).
  * @param {string} a.convertida, a.escala  de dónde sale el precio (los de GET /api/tecnico: `notaDeLaMoneda`)
  */
 export function specDelGrafico({
-  activo, moneda = 'usd', puntos = [], huecos = 0, lo, hi, ver = {}, tipo = 'linea', semanales = false, cada = null,
+  activo, moneda = 'usd', puntos = [], huecos = 0, lo, hi, escalaDePrecio = 'lineal', ver = {}, tipo = 'linea', semanales = false, cada = null,
   dibujos = [], fibonacci = null, elliott = null, eventos = [], convertida = null, escala = null, fechaDatos = null, ultimaFecha = null,
   precio = (x) => String(x), colores = {}, volAlto = 0.15, adxTope = 50, squeeze = {}, amontonados = null, now = new Date(),
 }) {
   if (!puntos?.length || !(puntos[puntos.length - 1]?.c > 0)) return null
   // La escala: la de la pantalla. Sin ella (no debería pasar), los cierres con aire.
-  if (!(Number.isFinite(lo) && Number.isFinite(hi) && hi > lo)) {
+  if (!(Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) || (esLog(escalaDePrecio) && !(lo > 0))) {
     const cs = puntos.map(p => p.c).filter(c => c > 0)
-    const a = Math.min(...cs), b = Math.max(...cs)
-    const m = (b - a) * 0.08 || b * 0.02 || 1
-    lo = a - m; hi = b + m
+    ;[lo, hi] = rangoConAire(Math.min(...cs), Math.max(...cs), escalaDePrecio, 0.08)
   }
   const lugares = puntos.length + Math.max(0, huecos || 0)
   const pctX = (i) => (lugares > 1 ? (i / (lugares - 1)) * 100 : 50)
-  const pctY = (val) => (1 - (val - lo) / (hi - lo)) * 100
+  const pctY = armarEscala(lo, hi, 100, escalaDePrecio).y
   const conVelas = tipo === 'velas'
   // Las medias son de 200 y 50 velas: días en diarias, horas en 1H.
   const unidad = cada === '4h' ? 'velas de 4 h' : cada ? 'horas' : 'días'
@@ -244,7 +248,8 @@ export function specDelGrafico({
   const tuyos = dibujos.filter(d => d && d.tipo !== 'nota')
   for (const d of tuyos.filter(d => d.tipo === 'canal')) {
     poligonos.push({ color: colorDe(d), alpha: 0.08,
-      puntos: [[d.a.k, d.a.precio], [d.b.k, d.b.precio], [d.b.k, d.b.precio + d.ancho], [d.a.k, d.a.precio + d.ancho]].map(([k, p]) => [pctX(k), pctY(p)]) })
+      puntos: [...puntosDeLaRecta(d.a, d.b, d.a.k, d.b.k, d.escala, escalaDePrecio, pctX, pctY),
+        ...puntosDeLaRecta(d.a, d.b, d.b.k, d.a.k, d.escala, escalaDePrecio, pctX, pctY, d.ancho)] })
   }
   // La posición: la franja del objetivo en verde y la del stop en rojo.
   for (const d of tuyos.filter(d => d.tipo === 'posicion')) {
@@ -254,8 +259,9 @@ export function specDelGrafico({
     }
   }
   // Los bordes invisibles (los de la caja de la posición: sirven para tocarla) no van.
-  for (const t of trazosDeDibujos(tuyos, pctX, pctY, []).filter(t => !t.oculto)) {
-    trazos.push({ x1: t.x1, y1: t.y1, x2: t.x2, y2: t.y2, color: t.color, ancho: t.nivel || t.medio ? 2 : 4,
+  // Una línea o un canal de la otra escala va curvo, de un trazo (`puntos`).
+  for (const t of juntarCurvas(trazosDeDibujos(tuyos, pctX, pctY, [], escalaDePrecio).filter(t => !t.oculto))) {
+    trazos.push({ x1: t.x1, y1: t.y1, x2: t.x2, y2: t.y2, ...(t.puntos ? { puntos: t.puntos } : {}), color: t.color, ancho: t.nivel || t.medio ? 2 : 4,
       punteada: !!(t.correccion || (t.nivel && !t.nivel.extremo)), alpha: t.nivel ? 0.85 : 1 })
   }
   for (const d of tuyos) {
@@ -290,7 +296,7 @@ export function specDelGrafico({
     }
   }
   // La referencia, sólo con los que se ven (uno fuera de la vista no se dibuja).
-  const aLaVista = trazosDeDibujos(tuyos, pctX, pctY, []).filter(cruzaLaVista)
+  const aLaVista = trazosDeDibujos(tuyos, pctX, pctY, [], escalaDePrecio).filter(cruzaLaVista)
   const vistos = tuyos.filter(d => aLaVista.some(t => t.id === d.id))
   if (vistos.length) leyenda.push({ nombre: vistos.length === 1 ? 'Tu dibujo' : 'Tus dibujos', color: colorDe(vistos[0]), forma: 'linea' })
 
@@ -304,7 +310,7 @@ export function specDelGrafico({
   const va = haciaDondeVa(puntos, conVelas)   // el mismo color que en la pantalla
   const colorDelDia = va > 0 ? colores.positivo : va < 0 ? colores.negativo : colores.precio
   const sinUS = (x) => precio(x).replace(/^US\$ /, '')
-  const ticks = marcasDePrecio(lo, hi, PX_ALTO_NOMINAL, PX_POR_PRECIO)
+  const ticks = marcasDePrecioEn(lo, hi, PX_ALTO_NOMINAL, escalaDePrecio, PX_POR_PRECIO)
   const enteros = ticks.every(t => Number.isInteger(t))
   const eje = ticks.map(t => ({ y: pctY(t), texto: enteros ? t.toLocaleString('es-AR') : sinUS(t) })).filter(t => t.y >= 0 && t.y <= 100)
   // Las etiquetas de color del costado: el último precio y tus horizontales.
@@ -370,6 +376,7 @@ export function specDelGrafico({
       : fechaDatos ? `Datos al cierre del ${fechaCorta(fechaDatos)}${ultimo.hoy
         ? `; la última vela ${semanales ? 'incluye hoy' : 'es la de hoy'}${ultimo.enCurso ? ', en curso' : ''}` : ''}.` : null,
     notaDeLaMoneda(convertida, moneda, escala) || null,
+    esLog(escalaDePrecio) ? 'Escala logarítmica: una suba del mismo porcentaje mide lo mismo en todo el gráfico.' : null,
     'Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.',
   ].filter(Boolean)
 

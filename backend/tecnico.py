@@ -35,6 +35,7 @@ dibujan en la pantalla con lo que ya tiene la ficha.
 from __future__ import annotations
 
 import copy
+import math
 import threading
 from bisect import bisect_right
 from collections import OrderedDict
@@ -1755,17 +1756,63 @@ def _indice_del_punto(velas: list, p: dict):
     return -max(1, habiles) + mas
 
 
+# El tope de un canal logarítmico: su paralela multiplica por e^ancho. Más de
+# e^20 (500 millones de veces) no es un canal, y e^700 ya no es un número.
+ANCHO_LOG_MAXIMO = 20
+
+
+def es_log(linea: dict) -> bool:
+    """¿La línea se dibujó en la escala logarítmica? Sin `escala` (todas las de
+    antes del 12/11), lineal."""
+    return linea.get("escala") == "log"
+
+
 def valor_de_linea(velas: list, linea: dict, i: int):
     """El precio de la línea en la vela `i`. Una horizontal, su precio; una de
     tendencia, la recta que pasa por sus dos puntos, también después de su
-    segundo punto (sigue en la misma dirección). None si no se puede saber."""
+    segundo punto (sigue en la misma dirección). None si no se puede saber.
+
+    Recta en la escala en que la dibujaste (`escala`, Nico 12/11): en la de
+    siempre sube la misma plata por vela; en la logarítmica, el mismo
+    porcentaje. La misma cuenta que la ficha (frontend
+    utils/escalaPrecio.precioEnLaRecta): el aviso mira lo que se ve."""
     if linea.get("tipo") == "horizontal":
         return linea.get("precio")
     a, b = linea.get("a") or {}, linea.get("b") or {}
     ia, ib = _indice_del_punto(velas, a), _indice_del_punto(velas, b)
     if ia is None or ib is None or ia == ib:
         return None
-    return a["precio"] + (b["precio"] - a["precio"]) * (i - ia) / (ib - ia)
+    t = (i - ia) / (ib - ia)
+    if es_log(linea):
+        if not (a.get("precio") or 0) > 0 or not (b.get("precio") or 0) > 0:
+            return None
+        ua, ub = math.log(a["precio"]), math.log(b["precio"])
+        u = ua + (ub - ua) * t
+        # Una recta muy empinada seguida muy lejos se va de los números: no se
+        # puede saber (ni mandar: «Mis alertas» no puede mostrar un infinito).
+        return math.exp(u) if u < _EXP_MAXIMO else None
+    return a["precio"] + (b["precio"] - a["precio"]) * t
+
+
+# Hasta dónde se puede elevar e sin que el número deje de existir (e^709 es el
+# último), dejando lugar para la paralela de un canal (× e^ANCHO_LOG_MAXIMO).
+_EXP_MAXIMO = 680
+
+
+def puntas_en_la_misma_vela(velas: list, linea: dict) -> bool:
+    """¿Las dos puntas de la línea caen en la misma vela (o alguna no se puede
+    ubicar)? Entonces no tiene inclinación para seguirla."""
+    ia, ib = _indice_del_punto(velas, linea.get("a") or {}), _indice_del_punto(velas, linea.get("b") or {})
+    return ia is None or ib is None or ia == ib
+
+
+def mitad_del_canal(abajo: float, arriba: float, canal: dict) -> float:
+    """La línea del medio de tu canal, la punteada de la ficha: en uno de la
+    escala de siempre, el promedio de los bordes; en uno logarítmico, el precio
+    que multiplica igual hacia los dos (la media geométrica)."""
+    if es_log(canal) and abajo > 0 and arriba > 0:
+        return math.sqrt(abajo * arriba)
+    return (abajo + arriba) / 2
 
 
 def toque_de_linea(velas: list, linea: dict, desde: str = None, pedida_el: str = None, ya_visto: dict = None):
@@ -1836,13 +1883,23 @@ def toque_de_linea(velas: list, linea: dict, desde: str = None, pedida_el: str =
 def bordes_de_canal(velas: list, canal: dict, i: int):
     """Los dos bordes de tu canal en la vela `i`: (abajo, arriba). El canal es
     su línea a → b (como una de tendencia, que sigue en la misma dirección
-    después de b) y la paralela `ancho` más arriba o más abajo, en precio: la
-    misma cuenta que la ficha (frontend utils/dibujos.js). None si no se puede."""
-    base = valor_de_linea(velas, {"tipo": "tendencia", "a": canal.get("a"), "b": canal.get("b")}, i)
+    después de b) y la paralela `ancho` más arriba o más abajo: la misma cuenta
+    que la ficha (frontend utils/escalaPrecio.precioMasAncho). En un canal
+    dibujado en la escala de siempre, `ancho` es plata; en uno logarítmico, el
+    logaritmo de cuánto multiplica (la paralela sube el mismo porcentaje).
+    None si no se puede."""
+    base = valor_de_linea(velas, {"tipo": "tendencia", "a": canal.get("a"), "b": canal.get("b"),
+                                  "escala": canal.get("escala")}, i)
     ancho = canal.get("ancho")
     if base is None or not isinstance(ancho, (int, float)) or not ancho:
         return None
-    return (min(base, base + ancho), max(base, base + ancho))
+    if es_log(canal):
+        if abs(ancho) > ANCHO_LOG_MAXIMO:
+            return None
+        otro = base * math.exp(ancho)
+    else:
+        otro = base + ancho
+    return (min(base, otro), max(base, otro))
 
 
 def salida_de_canal(velas: list, canal: dict, desde: str = None, borde: str = "either", modo: str = "toque",
@@ -1898,8 +1955,9 @@ def salida_de_canal(velas: list, canal: dict, desde: str = None, borde: str = "e
         if not (sube or baja):
             continue
         if sube and baja:
-            # Un día tan grande que tocó los dos: el del lado donde cerró.
-            sube = cierre >= (abajo + arriba) / 2
+            # Un día tan grande que tocó los dos: el del lado donde cerró
+            # (respecto de la línea del medio, en la escala del canal).
+            sube = cierre >= mitad_del_canal(abajo, arriba, canal)
         return {"fecha": v["date"], "sentido": "arriba" if sube else "abajo", "cierre": cierre,
                 "referencia": arriba if sube else abajo, "rsi": None, "minimo": bajo, "maximo": alto,
                 "adentro": abajo <= cierre <= arriba}
