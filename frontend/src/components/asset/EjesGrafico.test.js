@@ -132,7 +132,7 @@ describe('arrastrar los ejes del gráfico', () => {
     const corrido = grilla()
     expect(Math.max(...corrido)).toBeGreaterThan(Math.max(...achicado))
 
-    // «Automático» lo devuelve.
+    // «Auto» (Automático) lo devuelve.
     await clic(montado.contenedor, botonAuto())
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
     expect(grilla()).toEqual(antes)

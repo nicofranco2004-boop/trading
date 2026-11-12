@@ -8,7 +8,7 @@
 // · La fila de FECHAS (abajo): arrastrar hacia la izquierda acerca (menos días,
 //   velas más anchas); hacia la derecha aleja. El último día queda quieto.
 //   (Al revés de la primera versión: Nico lo pidió así, 23/10.)
-// · Doble click en cualquiera de los dos, o el botón «Automático»: vuelve a lo
+// · Doble click en cualquiera de los dos, o el botón «Auto»: vuelve a lo
 //   automático. Otro rango, moneda, tipo de gráfico o escala también.
 // · En la escala logarítmica (utils/escalaPrecio.js) estirar y correr se hacen
 //   en el eje de esa escala: correr multiplica en vez de sumar, así el borde de

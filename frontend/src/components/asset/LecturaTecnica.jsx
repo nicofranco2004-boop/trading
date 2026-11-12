@@ -2071,7 +2071,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // (`precioMano` = { lo, hi, comp } fijo, la pantalla y la imagen de «Compartir»
   // (ejesGrafico.empezarAMano); null = automático), y la fila de fechas
   // acerca o aleja. Con el precio a mano, arrastrar el gráfico también lo mueve
-  // para arriba y para abajo. Doble click o «Automático»: vuelve a automático;
+  // para arriba y para abajo. Doble click o «Auto»: vuelve a automático;
   // otro rango, moneda, tipo de gráfico o escala (`reinicioPrecio`) también:
   // un rango hecho en lineal (que puede bajar de cero) no se mira en log.
   const [precioMano, setPrecioMano] = useState(null)
@@ -2565,7 +2565,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               if (onMover && Math.abs(frac) * puntos.length >= 1) { onMover(frac); a.x = e.clientX }
               // También para arriba y para abajo, hasta donde quieras aunque no
               // haya precios ahí, como TradingView (Nico, 29/10). Arrastrar en
-              // vertical deja el precio «a mano» (vuelve con «Automático» o
+              // vertical deja el precio «a mano» (vuelve con «Auto» o
               // doble click en los precios); en automático hace falta moverse
               // 12 px para arriba o abajo, así un arrastre de costado con el
               // pulso torcido no lo saca de automático.

@@ -91,6 +91,8 @@ function porRol(nodo, rol, etiqueta) {
   }
   return null
 }
+// «Auto» (Automático): el botón que vuelve el precio y las fechas a automático.
+const botonAuto = () => todos(montado.contenedor, n => n.nodeName === 'BUTTON' && n.getAttribute?.('data-capa') === 'automatico')[0] || null
 function todos(nodo, ok) {
   const out = [], pila = [nodo]
   while (pila.length) {
@@ -228,8 +230,8 @@ describe('medir entre dos puntos (como la regla de TradingView)', () => {
     await evento('mouseup', grafico(), { clientX: 300, clientY: 100 })
     await redibujar()
     expect(status()).toContain(EMPEZAR)
-    // Se movió: ya no hay un rango elegido y aparece «Automático».
-    expect(buscarBoton(montado.contenedor, 'Automático')).not.toBeNull()
+    // Se movió: ya no hay un rango elegido y aparece «Auto» (Automático).
+    expect(botonAuto()).not.toBeNull()
   })
 
   it('con el dedo: un toque quieto marca; deslizar no', async () => {
@@ -333,7 +335,7 @@ describe('en el celular (un gráfico angosto, Nico 29/10)', () => {
     expect(n).toBe(71)   // ~3 meses de mercado
     expect(await primerDia()).toContain(`, el ${fecha(puntos[700 - n].d)}. Ahora tocá el otro punto.`)
     // Termina hoy: el último día se ve, y a la derecha está el aire de siempre.
-    expect(texto(montado.contenedor)).not.toContain('Automático')
+    expect(botonAuto()).toBeNull()
     // El menú ofrece lo reciente, con cuánto es, y «Todo».
     const ops = await opcionesDeLaVista(montado.contenedor)
     // Cuánto es, por las fechas que abarca: en esta prueba hay un punto por día de
