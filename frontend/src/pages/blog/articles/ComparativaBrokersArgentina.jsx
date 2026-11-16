@@ -14,11 +14,6 @@ export default function ComparativaBrokersArgentina() {
   return (
     <BlogPost
       slug="comparativa-brokers-argentina"
-      title="Cocos vs IOL vs Balanz vs Bull: qué broker AR conviene en 2026"
-      description="Comparativa honesta de los 4 brokers más populares en Argentina: comisiones, catálogo, app, soporte. Cuál elegir según tu perfil de inversor."
-      publishedAt="2026-05-24"
-      category="Brokers AR"
-      readTime="10 min"
       related={RELATED}
     >
       <p>

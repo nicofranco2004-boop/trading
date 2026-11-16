@@ -13,7 +13,7 @@ Rendi está en español (Argentina) y cobra en pesos. Funciona en la web y se in
 - Alfa y beta contra el S&P 500 (con R²), e Information Ratio.
 - Ratio de Calmar, volatilidad anualizada y drawdown máximo (pico a valle).
 - Concentración de cartera (peso de los 3 activos más grandes) y distribución por tipo de activo y por geografía (EE.UU., Argentina, cripto, cash).
-- Win rate y P&L por operación, lote por lote, con FIFO automático (el criterio que pide AFIP/ARCA).
+- Win rate y P&L por operación, lote por lote, con FIFO automático (cada venta se descuenta del lote más viejo).
 - Perfil de inversor: un test que después se cruza con tu cartera real (horizonte declarado vs composición, drawdown tolerado vs drawdown real).
 - Detectores de comportamiento: overtrading, compras por FOMO, aversión a la pérdida, anchoring, rachas, entre otros.
 - Análisis fundamental: cada acción y CEDEAR en dos ejes, negocio (qué tan sólida es la empresa) y precio (cara o atractiva hoy).
@@ -25,6 +25,7 @@ Rendi está en español (Argentina) y cobra en pesos. Funciona en la web y se in
 - Las operaciones en pesos se pasan a dólares al tipo de cambio de su fecha, no al de hoy.
 - Cobros de dividendos y cupones, alertas de precio, de variación y técnicas, Novedades (noticias y eventos de tus activos), resumen diario del mercado.
 - Export CSV con FIFO aplicado para el contador.
+- Impuestos: Rendi da la ganancia de cada venta para el contador; no arma la declaración. Para una persona que vive en Argentina, vender CEDEARs y acciones argentinas en BYMA no paga Ganancias (está exento); sí pagan los dividendos y la ganancia de vender cripto o de vender en un broker del exterior. Los CEDEARs cuentan para Bienes Personales.
 - Mervall-E AI: preguntas guiadas en todos los planes; chat libre con memoria en Pro. Un botón "Analizar" en cada pantalla arma un informe con tus datos.
 - Plan Asesor para asesores financieros que llevan carteras de clientes.
 
@@ -45,7 +46,7 @@ Rendi está en español (Argentina) y cobra en pesos. Funciona en la web y se in
 - [Guía para asesores](https://rendi.finance/guia/asesores)
 - [CEDEARs con FIFO](https://rendi.finance/cedears)
 - [Bonos argentinos](https://rendi.finance/bonos-argentinos)
-- [Cripto y AFIP](https://rendi.finance/afip-cripto)
+- [Cripto e impuestos (ARCA)](https://rendi.finance/afip-cripto)
 - [Cocos Capital](https://rendi.finance/brokers/cocos), [IOL](https://rendi.finance/brokers/iol), [Binance](https://rendi.finance/brokers/binance)
 - [Blog](https://rendi.finance/blog)
 - [Términos](https://rendi.finance/terminos), [Privacidad](https://rendi.finance/privacidad), [Reembolso](https://rendi.finance/reembolso)

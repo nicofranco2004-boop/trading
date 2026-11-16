@@ -3,7 +3,7 @@
 import BlogPost from '../../../components/blog/BlogPost'
 
 const RELATED = [
-  { to: '/blog/fifo-cedears-argentina', label: 'Cómo funciona el FIFO en CEDEARs', desc: 'El criterio fiscal que AFIP exige y cómo automatizarlo.' },
+  { to: '/blog/fifo-cedears-argentina', label: '¿Los CEDEARs pagan Ganancias?', desc: 'Qué paga impuesto y qué no, y para qué sirve el FIFO.' },
   { to: '/blog/comparativa-brokers-argentina', label: 'Cocos vs IOL vs Balanz vs Bull', desc: 'Comparativa honesta de los 4 brokers más populares.' },
   { to: '/', label: 'Ver demo de Rendi', desc: 'Tracker multi-broker con P&L real en USD.' },
 ]
@@ -12,11 +12,6 @@ export default function PnlRealUsdBlue() {
   return (
     <BlogPost
       slug="pnl-real-usd-blue-argentina"
-      title="P&L real en USD blue: por qué tus pesos te engañan"
-      description="La diferencia entre 'ganaste 50% en pesos' y 'ganaste 5% en dólares'. Cómo medir tu rendimiento real cuando operás en un país con inflación alta."
-      publishedAt="2026-05-24"
-      category="P&L y rendimiento"
-      readTime="6 min"
       related={RELATED}
     >
       <p>

@@ -42,7 +42,7 @@ import { cupoDe } from '../../data/prueba'
 //   · "20 análisis por semana" en Plus, cuando son 6;
 //   · "sin límite de análisis" en Pro, cuando son 60 por semana;
 //   · "calendario de cobros" y "carpeta de impuestos", que son ROADMAP del
-//     catálogo (`Tax helper AFIP`) y el propio catálogo avisa que NUNCA van
+//     catálogo (`Ayuda para impuestos (ARCA)`) y el propio catálogo avisa que NUNCA van
 //     mezcladas con las features activas.
 // Nada de eso produce un error: se cobra y después el producto no cumple.
 //

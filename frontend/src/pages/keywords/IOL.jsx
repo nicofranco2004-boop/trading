@@ -2,6 +2,7 @@
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
 import { PASO_CREAR_CUENTA } from '../../data/prueba'
+import { FIFO_PARA_QUE, CSV_CONTADOR } from '../../data/impuestos'
 
 const FEATURES = [
   {
@@ -13,8 +14,8 @@ const FEATURES = [
     desc: 'IOL opera mayormente en pesos. Rendi pasa cada operación al dólar MEP de su fecha y calcula el P&L real en USD — no la ilusión nominal en ARS.',
   },
   {
-    title: 'FIFO automático para tu declaración AFIP',
-    desc: 'Cada venta descuenta del lote más viejo primero (FIFO, criterio fiscal AR). Exportás el consolidado anual para presentar a AFIP / ARCA sin armar Excels.',
+    title: 'FIFO automático: la ganancia de cada venta',
+    desc: `${FIFO_PARA_QUE} ${CSV_CONTADOR}`,
   },
   {
     title: 'Multi-broker: combiná IOL + Cocos + Binance',
@@ -53,12 +54,12 @@ export default function IOL() {
     <KeywordLanding
       kicker="Tracker para IOL Invertí Online"
       h1="Seguí tu cartera de IOL en USD real, con bonos AR y FIFO automático"
-      intro="IOL te muestra el monto en pesos. Rendi pasa cada operación al dólar MEP de su fecha, soporta el catálogo completo (acciones AR, CEDEARs, bonos canje 2020, CER) y calcula tu FIFO automático para AFIP."
+      intro="IOL te muestra el monto en pesos. Rendi pasa cada operación al dólar MEP de su fecha, soporta el catálogo completo (acciones AR, CEDEARs, bonos canje 2020, CER) y calcula la ganancia de cada venta con FIFO automático."
       features={FEATURES}
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
       metaTitle="Tracker IOL Invertí Online — Rendi | P&L real en USD"
-      metaDescription="Seguí tu cartera de IOL en USD real con Rendi. Bonos AR (AL30, GD30, TX26), CEDEARs, acciones Merval. FIFO automático para AFIP, Mervall-E AI, multi-broker."
+      metaDescription="Seguí tu cartera de IOL en dólares con Rendi: bonos (AL30, GD30, TX26), CEDEARs y acciones del Merval. La ganancia de cada venta con FIFO y Mervall-E AI."
       canonicalPath="/brokers/iol"
     />
   )

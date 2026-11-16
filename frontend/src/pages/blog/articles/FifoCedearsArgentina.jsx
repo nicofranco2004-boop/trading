@@ -1,160 +1,219 @@
 // /blog/fifo-cedears-argentina
-// Target query: "FIFO CEDEARs argentina", "cómo declarar CEDEARs AFIP",
-// "FIFO criterio fiscal cedears"
+// Target query: "cedears pagan ganancias", "cedears exentos ganancias",
+// "FIFO CEDEARs argentina" (las tres primeras salen en el autocompletado de
+// Google; "fifo cedears" a secas, no).
+//
+// ⚠️ Hasta el 16/11/2026 esta nota decía lo contrario de la ley: calculaba un
+// 15 % de Ganancias sobre la venta de CEDEARs, amenazaba con «ajuste + multa»,
+// decía que la declaración vence en abril y ponía el CEDEAR de NVIDIA a
+// US$ 110-180 (el precio de la ACCIÓN: con ratio 24, cada CEDEAR vale 1/24).
+// Las frases sobre impuestos salen de data/impuestos.js; las fechas y el título,
+// de data/blogPosts.js (si se corrige el contenido, se actualiza `updatedAt`).
 
 import BlogPost from '../../../components/blog/BlogPost'
+import { VENTA_EXENTA, CRIPTO_PAGA, NO_ES_ASESORAMIENTO } from '../../../data/impuestos'
+
+const LEY_GANANCIAS = 'https://servicios.infoleg.gob.ar/infolegInternet/anexos/330000-334999/332890/texact.htm'
+const CPCECABA = 'https://www.consejo.org.ar/herramientas-profesionales/gerencia-tecnica/los-cedear-en-el-impuesto-a-las-ganancias'
+const ARCA_CRIPTO = 'https://www.afip.gob.ar/economia-digital/criptoactivos/impuesto-a-las-ganancias.asp'
+const ARCA_GANANCIAS_Y_BIENES = 'https://www.arca.gob.ar/gananciasYBienes/'
 
 const RELATED = [
+  { to: '/cedears', label: 'Tus CEDEARs en dólares, con FIFO automático', desc: 'Cómo Rendi calcula el valor de tus CEDEARs en dólares y la ganancia de cada venta.' },
+  { to: '/afip-cripto', label: 'Cripto e impuestos', desc: 'La ganancia de tu cripto con FIFO, para tu contador.' },
   { to: '/blog/pnl-real-usd-blue-argentina', label: 'P&L real en USD blue: por qué tus pesos te engañan', desc: 'Cómo medir tu rendimiento real cuando operás en un país con inflación alta.' },
-  { to: '/cedears', label: 'Tracker de CEDEARs con FIFO automático', desc: 'Cómo Rendi calcula el valor real de tus CEDEARs en USD.' },
-  { to: '/blog/comparativa-brokers-argentina', label: 'Cocos vs IOL vs Balanz vs Bull en 2026', desc: 'Comparativa honesta para elegir el broker AR que mejor te conviene.' },
 ]
 
 export default function FifoCedearsArgentina() {
   return (
     <BlogPost
       slug="fifo-cedears-argentina"
-      title="Cómo funciona el FIFO en CEDEARs (criterio fiscal AR)"
-      description="Por qué AFIP / ARCA exige FIFO, cómo se aplica al vender un CEDEAR, errores comunes que cuestan caro en la declaración y cómo automatizarlo sin armar Excels."
-      publishedAt="2026-05-24"
-      category="FIFO y AFIP"
-      readTime="8 min"
       related={RELATED}
     >
       <p>
-        Si invertís en CEDEARs desde Argentina y declarás ganancias a AFIP / ARCA, vas a chocar
-        tarde o temprano con la palabra <strong>FIFO</strong>. Suena a jerga, pero entenderla bien te
-        puede ahorrar miles de pesos en impuestos mal calculados — o evitar que tu contador
-        te cobre un extra por armar la planilla a mano.
+        <strong>La respuesta corta: por venderlos, no; por los dividendos, sí.</strong> {VENTA_EXENTA}
       </p>
 
       <p>
-        En este artículo: qué es FIFO, por qué AFIP lo exige, cómo se aplica al vender un CEDEAR
-        (con un ejemplo concreto), errores que vemos seguido y cómo automatizarlo para no
-        depender de Excels que se rompen al moverse una celda.
+        En esta nota: qué condiciones tiene esa exención, qué sí paga impuesto cuando
+        invertís en CEDEARs, para qué sirve entonces el FIFO (con un ejemplo con números)
+        y en qué casos sí cambia lo que pagás.
       </p>
 
-      <h2>Qué es FIFO y por qué AFIP lo exige</h2>
+      <h2>Por qué vender CEDEARs no paga Ganancias</h2>
       <p>
-        FIFO significa <strong>First In, First Out</strong> — "el primero que entra es el
-        primero que sale". Cuando vendés un activo del cual tenés varios lotes comprados
-        en distintas fechas, AFIP / ARCA asume que estás vendiendo los del lote
-        <em> más viejo</em> primero. No el más nuevo, no un promedio, no el que más te conviene
-        fiscalmente. El más viejo.
+        Lo dice el <a href={LEY_GANANCIAS} target="_blank" rel="noopener noreferrer">artículo 26, inciso u,
+        de la Ley de Impuesto a las Ganancias</a>, vigente desde 2018: si vivís en Argentina,
+        lo que ganás al vender acciones o certificados de depósito de acciones (eso es un
+        CEDEAR de una empresa) está exento. Los CEDEARs de ETF, como SPY o QQQ, entran por
+        otro párrafo del mismo inciso, el que exime lo que cotiza en un mercado autorizado
+        por la Comisión Nacional de Valores: es la lectura habitual, aunque no hay un
+        pronunciamiento oficial específico. El Consejo Profesional de Ciencias Económicas de
+        CABA <a href={CPCECABA} target="_blank" rel="noopener noreferrer">lo explica igual</a>.
       </p>
-
       <p>
-        ¿Por qué? Porque ese criterio es estándar contable internacional y evita que el
-        contribuyente "elija" qué lote vender para minimizar impuesto. Si te dejaran elegir,
-        siempre venderías el lote con mayor costo (menor ganancia declarable). FIFO te
-        obliga a tributar sobre la ganancia real acumulada en el tiempo.
+        Tiene requisitos, y si invertís como persona a través de un broker argentino,
+        normalmente los cumplís:
+      </p>
+      <ul>
+        <li>Que el CEDEAR o la acción tenga oferta pública autorizada por la Comisión Nacional de Valores, o que la vendas en un mercado autorizado por ella, como BYMA, que es donde operan Cocos, IOL, Balanz y el resto.</li>
+        <li>Que no operes como empresa ni como comisionista: si la operación es de una sociedad o de un negocio a tu nombre, las reglas son otras.</li>
+      </ul>
+      <p>
+        <strong>¿Y lo de noviembre de 2026?</strong> El Gobierno incluyó en un proyecto de
+        ley un impuesto del 15 % a la venta de CEDEARs comprados desde fines de octubre, y lo
+        retiró el 4 de noviembre sin que llegara a votarse. Al 16 de noviembre de 2026, la exención
+        sigue igual. Si el proyecto vuelve al Congreso, actualizamos esta nota.
       </p>
 
-      <h2>Ejemplo concreto: vendés 30 NVDA.BA</h2>
-      <p>Supongamos que compraste CEDEARs de NVIDIA en tres momentos distintos:</p>
+      <h2>Qué sí paga impuesto</h2>
+      <ul>
+        <li>
+          <strong>Los dividendos de tus CEDEARs.</strong> Cuentan como ganancia del exterior:
+          se suman a tus otros ingresos y pagan según la escala del impuesto, que va del 5 %
+          al 35 %. Lo que ya te retuvieron en el país de origen se puede descontar, con un tope.
+        </li>
+        <li>
+          <strong>Los dividendos de acciones argentinas.</strong> La empresa te retiene un 7 %
+          antes de pagarte. Si no estás inscripto en Ganancias, con esa retención ya cumpliste.
+        </li>
+        <li>
+          <strong>Bienes Personales.</strong> Tener CEDEARs cuenta para el impuesto anual sobre
+          tu patrimonio: se suman a tus bienes con su precio al 31 de diciembre, y pagás sólo si
+          el total supera el mínimo que fija la ley. Las acciones argentinas no las sumás vos
+          (el impuesto lo paga la propia empresa), y los bonos del Tesoro como AL30 o GD30 están
+          exentos.
+        </li>
+        <li>
+          <strong>La cripto.</strong> {CRIPTO_PAGA} No va por escala: es un porcentaje fijo de la
+          ganancia, 5 % si operás en pesos comunes (sin ajuste por inflación ni por dólar) y 15 %
+          si operás en dólares; si la ganancia se considera del exterior, 15 % siempre
+          (<a href={ARCA_CRIPTO} target="_blank" rel="noopener noreferrer">ARCA, la ex AFIP, lo explica acá</a>).
+        </li>
+        <li>
+          <strong>Las acciones y los ETF de un broker del exterior.</strong> Si comprás y vendés
+          en Charles Schwab u otro broker de afuera, la venta no tiene la exención de la bolsa
+          argentina: paga 15 % sobre la ganancia.
+        </li>
+      </ul>
+
+      <h2>Entonces, ¿para qué sirve el FIFO en CEDEARs?</h2>
+      <p>
+        FIFO quiere decir <em>first in, first out</em>: «el primero que entra es el primero
+        que sale». En castellano se dice PEPS: «primero entrado, primero salido». Si compraste
+        lo mismo en varias veces, cada compra es un «lote»; cuando vendés, el FIFO descuenta la
+        venta del lote más viejo primero.
+      </p>
+      <p>
+        Si la venta está exenta, el método no cambia ningún impuesto. Lo que cambia es
+        <strong> cuánto creés que ganaste en cada venta</strong>. Y eso importa para decidir:
+        si esa operación te salió bien, si te conviene vender lo que queda, cuánto rindió tu
+        cartera en el año.
+      </p>
+
+      <h3>Un ejemplo con números</h3>
+      <p>
+        Compraste CEDEARs de NVIDIA en tres momentos. Los precios son <strong>por CEDEAR</strong>,
+        en dólares: el ratio de NVIDIA es 24, así que cada CEDEAR vale una veinticuatroava parte
+        de la acción que cotiza en Nueva York.
+      </p>
 
       <table>
         <thead>
-          <tr><th>Fecha compra</th><th>Cantidad</th><th>Precio unitario (USD)</th><th>Costo total</th></tr>
+          <tr><th>Fecha de compra</th><th>Cantidad</th><th>Precio por CEDEAR</th><th>Costo</th></tr>
         </thead>
         <tbody>
-          <tr><td>15-mar-2025</td><td>20</td><td>$110</td><td>$2.200</td></tr>
-          <tr><td>10-jun-2025</td><td>20</td><td>$130</td><td>$2.600</td></tr>
-          <tr><td>5-sep-2025</td><td>20</td><td>$150</td><td>$3.000</td></tr>
+          <tr><td>15-mar-2025</td><td>20</td><td>US$ 5</td><td>US$ 100</td></tr>
+          <tr><td>10-jun-2025</td><td>20</td><td>US$ 6</td><td>US$ 120</td></tr>
+          <tr><td>5-sep-2025</td><td>20</td><td>US$ 7</td><td>US$ 140</td></tr>
         </tbody>
       </table>
 
       <p>
-        En total tenés <strong>60 CEDEARs de NVDA.BA</strong> con un costo total de USD 7.800
-        (promedio: USD 130).
-      </p>
-
-      <p>
-        Hoy vendés <strong>30 CEDEARs</strong> a USD 180. Cobraste USD 5.400. ¿Cuánto declarás
-        como ganancia? <strong>Depende del criterio que uses</strong>:
+        Tenés 60 CEDEARs que te costaron US$ 360 (US$ 6 de promedio). Hoy vendés 30 a US$ 8
+        y cobrás US$ 240. ¿Cuánto ganaste con esa venta? Depende de qué lotes digas que vendiste:
       </p>
 
       <ul>
-        <li><strong>FIFO (correcto AFIP)</strong>: vendés los 20 del lote más viejo ($110) y 10 del segundo ($130). Costo: 20×110 + 10×130 = $3.500. Ganancia: 5.400 − 3.500 = <strong>USD 1.900</strong>.</li>
-        <li><strong>LIFO (Last In, First Out)</strong>: vendés los 20 más nuevos ($150) y 10 del medio ($130). Costo: 20×150 + 10×130 = $4.300. Ganancia: 5.400 − 4.300 = USD 1.100.</li>
-        <li><strong>Promedio ponderado</strong>: costo $130 × 30 = $3.900. Ganancia: $1.500.</li>
+        <li><strong>FIFO (los más viejos primero)</strong>: los 20 de US$ 5 y 10 de US$ 6. Costo: 20 × 5 + 10 × 6 = US$ 160. Ganancia: <strong>US$ 80</strong>.</li>
+        <li><strong>Los más nuevos primero</strong>: los 20 de US$ 7 y 10 de US$ 6. Costo: US$ 200. Ganancia: US$ 40.</li>
+        <li><strong>Precio promedio</strong>: 30 × US$ 6 = US$ 180. Ganancia: US$ 60.</li>
       </ul>
 
       <p>
-        La diferencia entre FIFO y LIFO es de <strong>USD 800 de ganancia declarada</strong>.
-        Si la alícuota efectiva es 15%, son USD 120 de diferencia en impuestos. Si AFIP te
-        cruza la información de tu broker y vos declaraste con otro criterio, te puede ajustar
-        + multa + intereses.
+        La misma venta parece haber ganado el doble o la mitad según el método. Cuando
+        vendas todo, las tres cuentas terminan en el mismo total; lo que cambia es cómo se
+        reparte entre una venta y otra. FIFO es el criterio más usado y el que te permite
+        comparar una venta con otra sin trampas.
       </p>
 
-      <h2>Errores comunes (que pagás caro)</h2>
-
-      <h3>1. Usar el precio promedio</h3>
+      <h2>Dónde el FIFO sí cambia lo que pagás</h2>
       <p>
-        Es lo más intuitivo y lo que mucha gente hace cuando arma la planilla en Excel: divide
-        el costo total por la cantidad total y ya. Pero <strong>no es FIFO</strong>. AFIP no
-        acepta promedio ponderado para acciones, CEDEARs o cripto.
+        En lo que sí paga impuesto. La Ley de Ganancias no usa las palabras FIFO ni PEPS. Dice
+        que lo que vendés corresponde a «las adquisiciones más antiguas de su misma especie y
+        calidad», o sea, a tus compras más viejas de ese mismo activo. Lo dice con todas las
+        letras para las ventas de acciones que pagan impuesto (por ejemplo, acciones que no
+        cotizan en bolsa). Para la cripto y para lo que comprás en un broker del exterior, la
+        ley no lo dice tan claro para una persona. Igual, descontar del lote más viejo es la
+        forma prudente y la más usada. Conviene que lo hables con tu contador.
       </p>
 
-      <h3>2. Ignorar las comisiones de compra</h3>
+      <h2>Errores comunes</h2>
+
+      <h3>1. Creer que vender CEDEARs paga Ganancias</h3>
       <p>
-        Las comisiones del broker forman parte del <strong>costo de adquisición</strong>.
-        Si compraste 20 NVDA.BA a $110 con $10 de comisión, tu costo unitario es $110.50, no
-        $110. Olvidarte de sumarlas hace que pagues más impuesto del que corresponde.
+        Es el más caro: lleva a pagar de más, o a no vender por miedo a un impuesto que no
+        existe. Si vendés en BYMA y vivís en Argentina, la ganancia de la venta está exenta.
       </p>
 
-      <h3>3. Mezclar CEDEARs con el subyacente</h3>
+      <h3>2. Mirar el precio de la acción en vez del CEDEAR</h3>
       <p>
-        Si tenés NVDA.BA (CEDEAR) en Cocos y NVDA real (acción USA) en Schwab,
-        <strong>no son el mismo activo fiscal</strong>. FIFO se aplica por instrumento, no
-        por subyacente. Tus 20 NVDA.BA del 15-mar y tus 10 NVDA del 20-mar son lotes
-        independientes.
+        Un CEDEAR es una fracción de la acción. Con ratio 20 (el de Apple), hacen falta 20
+        CEDEARs para tener una acción: el precio de la acción se divide por el ratio, no se
+        multiplica. Lo mismo con los dividendos: cada CEDEAR cobra la parte que le toca.
       </p>
 
-      <h3>4. No registrar los dividendos</h3>
+      <h3>3. Olvidarte de las comisiones</h3>
       <p>
-        Los dividendos de CEDEARs pagan en ARS al MEP. Olvidarte de registrarlos a tiempo
-        en el cost basis correcto cambia el cálculo del lote y rompe el FIFO.
+        Las comisiones del broker son parte del costo. Si compraste 20 CEDEARs a US$ 5 y
+        pagaste US$ 1 de comisión, cada uno te costó US$ 5,05. Sin sumarlas, tu ganancia
+        parece más grande de lo que fue.
       </p>
 
-      <h2>Cómo automatizarlo</h2>
-
+      <h3>4. Mezclar el CEDEAR con la acción de afuera</h3>
       <p>
-        Hacer FIFO manualmente en Excel con 50+ operaciones al año es un dolor de cabeza.
-        Cada compra suma una fila al inventario, cada venta tiene que cruzar con el lote más
-        viejo, hay que rastrear si el lote ya se consumió parcialmente, las comisiones se
-        agregan al costo, los dividendos van aparte. Una celda rota = todo el cálculo
-        comprometido.
+        Si tenés CEDEARs de NVIDIA en Cocos y acciones de NVIDIA en Schwab, son dos cosas
+        distintas: se cuentan por separado y no pagan lo mismo. Vender el CEDEAR en BYMA está
+        exento; vender la acción en Schwab paga 15 % sobre la ganancia.
       </p>
 
+      <h3>5. No registrar los dividendos</h3>
       <p>
-        En <a href="/">Rendi</a> el FIFO está automatizado de raíz:
+        Pagan Ganancias, y si no los anotás tu rendimiento real queda más bajo de lo que fue.
+        BYMA los paga en dólares, aunque algunos brokers te los acreditan en pesos.
       </p>
 
+      <h2>Cuándo vence la declaración</h2>
+      <p>
+        La declaración anual de Ganancias y Bienes Personales vence, como regla, a mitad del
+        año siguiente: en junio, según la terminación de tu CUIT. ARCA suele
+        prorrogarla; en 2026, por ejemplo, el pago se corrió a fines de julio.
+        Chequeá la fecha en <a href={ARCA_GANANCIAS_Y_BIENES} target="_blank" rel="noopener noreferrer">su sitio</a>.
+      </p>
+
+      <h2>Cómo lo hace Rendi</h2>
       <ul>
-        <li>Cada compra crea un <strong>lote</strong> con su fecha + costo + comisión.</li>
-        <li>Cuando vendés, el sistema busca el lote más viejo no consumido y descuenta la cantidad de ahí. Si la venta es mayor al lote, pasa al siguiente.</li>
-        <li>El P&L realizado se calcula automáticamente: precio de venta menos cost basis del lote consumido (incluyendo comisiones).</li>
-        <li>Al cierre del año exportás un CSV con todas las ventas, FIFO aplicado, ganancia/pérdida realizada en USD. Listo para tu contador.</li>
+        <li>Cada compra crea un <strong>lote</strong> con su fecha, su costo y su comisión, y queda pasada al dólar MEP de ese día.</li>
+        <li>Cuando vendés, Rendi descuenta del lote más viejo que todavía tenga cantidad, empezando por los de la moneda en que vendés; si la venta es más grande, sigue con el siguiente.</li>
+        <li>La ganancia de cada venta queda calculada, en pesos y en dólares, comisiones incluidas.</li>
+        <li>Con los planes Plus y Pro exportás un CSV con todas las ventas, lote por lote. Rendi no arma la declaración: te da los números para que tu contador la arme.</li>
       </ul>
-
       <p>
-        Lo mismo aplica a <a href="/cedears">CEDEARs</a>, acciones AR, bonos y
-        <a href="/afip-cripto"> cripto</a> (que también requiere FIFO desde 2018).
-      </p>
-
-      <h2>Conclusión</h2>
-
-      <p>
-        FIFO no es opcional: es el criterio que AFIP / ARCA usa para auditar tu declaración
-        de inversiones. Aplicarlo bien evita ajustes y multas, y te da claridad sobre
-        cuánto realmente ganaste con cada operación.
+        Lo mismo para <a href="/cedears">CEDEARs</a>, acciones argentinas, bonos y <a href="/afip-cripto">cripto</a>.
       </p>
 
       <p>
-        Si todavía estás armando tu planilla en Excel, andá probando una herramienta
-        especializada. El tiempo que te ahorra en abril (cuando vence la declaración) compensa
-        muchas veces el costo de la suscripción.
+        <em>{NO_ES_ASESORAMIENTO}</em>
       </p>
     </BlogPost>
   )

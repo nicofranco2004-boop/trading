@@ -2,7 +2,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Página /blog que lista todos los artículos publicados con metadata. Cada
 // post vive en pages/blog/articles/{slug}.jsx — para agregar uno nuevo,
-// crear el archivo + agregar entry al array POSTS de abajo + ruta en
+// crear el archivo + agregar su entrada en data/blogPosts.js + ruta en
 // App.jsx + sumar al sitemap.
 //
 // Estrategia editorial: contenido pillar que rankea long-tail AR. Cada
@@ -13,42 +13,17 @@ import { Link } from 'react-router-dom'
 import { ArrowRight, Calendar } from 'lucide-react'
 import CabeceraPublica from '../components/CabeceraPublica'
 import PageMeta from '../components/PageMeta'
+import { POSTS } from '../data/blogPosts'
 
-// Source of truth de los posts publicados. Mantener sincronizado con los
-// archivos en pages/blog/articles/ y con sitemap.xml.
-const POSTS = [
-  {
-    slug: 'fifo-cedears-argentina',
-    title: 'Cómo funciona el FIFO en CEDEARs (criterio fiscal AR)',
-    excerpt: 'Por qué AFIP exige FIFO, cómo se aplica al vender un CEDEAR, errores comunes que cuestan caro en la declaración y cómo automatizarlo sin armar Excels.',
-    category: 'FIFO y AFIP',
-    publishedAt: '2026-05-24',
-    readTime: '8 min',
-  },
-  {
-    slug: 'pnl-real-usd-blue-argentina',
-    title: 'P&L real en USD blue: por qué tus pesos te engañan',
-    excerpt: 'La diferencia entre "ganaste 50% en pesos" y "ganaste 5% en dólares". Cómo medir tu rendimiento real cuando operás en un país con inflación alta.',
-    category: 'P&L y rendimiento',
-    publishedAt: '2026-05-24',
-    readTime: '6 min',
-  },
-  {
-    slug: 'comparativa-brokers-argentina',
-    title: 'Cocos vs IOL vs Balanz vs Bull: qué broker AR conviene en 2026',
-    excerpt: 'Comparativa honesta de los 4 brokers más populares en Argentina: comisiones, catálogo, app, soporte. Cuál elegir según tu perfil.',
-    category: 'Brokers AR',
-    publishedAt: '2026-05-24',
-    readTime: '10 min',
-  },
-]
+// Los posts publicados salen de data/blogPosts.js, la misma lista que usa cada
+// artículo: así el título y la descripción del índice no se separan de los suyos.
 
 export default function Blog() {
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Blog de Rendi — Tracker de inversiones Argentina"
-        description="Artículos sobre FIFO en CEDEARs, P&L real en dólares, AFIP cripto, comparativas de brokers argentinos. Contenido para inversores AR multi-broker."
+        description="Artículos sobre impuestos y FIFO en CEDEARs, tu ganancia real en dólares, cripto y comparativas de brokers argentinos. Para inversores con varios brokers."
         canonical="/blog"
       />
 
@@ -64,7 +39,7 @@ export default function Blog() {
             Aprende a invertir mejor desde Argentina
           </h1>
           <p className="text-base text-ink-2 leading-relaxed max-w-2xl">
-            Artículos sobre FIFO en CEDEARs, P&L real en dólares, AFIP cripto,
+            Artículos sobre FIFO en CEDEARs, P&L real en dólares, cripto e impuestos (ARCA),
             comparativas de brokers. Para inversores argentinos que quieren entender
             qué pasa con su plata.
           </p>
@@ -92,7 +67,7 @@ export default function Blog() {
                     {p.title}
                   </h2>
                   <p className="text-sm text-ink-2 leading-relaxed mb-3">
-                    {p.excerpt}
+                    {p.description}
                   </p>
                   <div className="inline-flex items-center gap-1.5 text-xs text-data-violet font-medium">
                     Leer artículo

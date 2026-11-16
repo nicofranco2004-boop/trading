@@ -129,6 +129,6 @@ export const PRO_FEATURES = {
   // mezcladas con las features activas.
   roadmap: [
     'AI Hub: exploración libre sobre tu portfolio',
-    'Tax helper AFIP: cálculo FIFO + reporte fiscal',
+    'Ayuda para impuestos (ARCA): el reporte fiscal para tu declaración',
   ],
 }

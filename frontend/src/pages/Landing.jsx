@@ -370,7 +370,7 @@ function Pricing() {
 function GuiasPorBroker() {
   const guias = [
     ['/brokers/cocos', 'Cocos Capital'], ['/brokers/iol', 'IOL Inversiones'], ['/brokers/binance', 'Binance y cripto'],
-    ['/cedears', 'CEDEARs'], ['/bonos-argentinos', 'Bonos argentinos'], ['/afip-cripto', 'AFIP y cripto'],
+    ['/cedears', 'CEDEARs'], ['/bonos-argentinos', 'Bonos argentinos'], ['/afip-cripto', 'Cripto e impuestos'],
   ]
   return (
     <section id="para-tu-broker" className="max-w-[1180px] mx-auto px-4 sm:px-6 pb-4">

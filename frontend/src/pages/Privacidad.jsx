@@ -374,7 +374,7 @@ export default function Privacidad() {
               mandamos montos, cantidades ni operaciones.
             </li>
             <li>
-              NO compartimos tu información con tu broker, AFIP, ARCA ni ningún ente
+              NO compartimos tu información con tu broker, ARCA (ex AFIP) ni ningún ente
               regulatorio, salvo orden judicial o requerimiento legal válido al que estemos
               obligados a responder.
             </li>
@@ -554,7 +554,7 @@ export default function Privacidad() {
             Los usamos <strong className="text-ink-0">exclusivamente para prestarte el
             servicio</strong>: mostrarte tu portafolio, calcular resultados, generar reportes
             y alimentar a Mervall-E AI cuando se lo pedís. No los vendemos, no los usamos para
-            publicidad ni los compartimos con tu broker, AFIP, ARCA ni reguladores, salvo
+            publicidad ni los compartimos con tu broker, ARCA (ex AFIP) ni reguladores, salvo
             orden judicial. Vos mantenés la propiedad de tu información y podés exportarla o
             pedir su eliminación cuando quieras.
           </p>

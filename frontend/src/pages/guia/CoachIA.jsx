@@ -125,7 +125,7 @@ export default function CoachIA() {
         <li>"¿Por qué bajó mi cartera este mes específicamente?"</li>
         <li>"Recordá que el AL30 lo tengo en IOL, no en Cocos."</li>
         <li>"Compará mi exposición a tech vs el S&amp;P 500."</li>
-        <li>"Si mañana vendo NVDA, ¿cuánto declaro a AFIP?"</li>
+        <li>"Si mañana vendo mis NVDA, ¿cuánto gano en dólares con cada lote?"</li>
       </ul>
 
       <h2>Follow-ups (solo Pro)</h2>

@@ -2,8 +2,9 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Componente con doble propósito:
 //   1. Contenido útil para el usuario que está evaluando si suscribirse.
-//   2. SEO: el JSON-LD FAQPage genera "rich snippets" en Google que ocupan
-//      2-3x el espacio en SERP y aumentan CTR drásticamente.
+//   2. SEO: el JSON-LD FAQPage. Ojo: Google dejó de mostrar las preguntas
+//      frecuentes como resultado enriquecido en 2023 (salvo sitios de gobierno
+//      y salud). El bloque queda porque no hace daño y sale del mismo array.
 //
 // Mantener el array `FAQS` sincronizado entre el render y el JSON-LD (lo
 // generamos del mismo array para no duplicar).
@@ -16,6 +17,7 @@
 import { useState } from 'react'
 import { Helmet } from 'react-helmet-async'
 import { ChevronDown } from 'lucide-react'
+import { FIFO_PARA_QUE, VENTA_EXENTA, LO_QUE_SI_PAGA, CSV_CONTADOR } from '../../data/impuestos'
 // Los precios NO se escriben acá: se importan de `data/pricing.js`, que es la
 // copia del frontend. Estaban a mano ("Plus $5.990 / Pro $13.990") y se habrían
 // quedado en el número viejo el día que cambiaran los precios — con el
@@ -70,8 +72,8 @@ export const FAQS = [
     a: 'Rendi pasa cada operación en pesos al dólar MEP del día en que ocurrió, no al de hoy. Eso te da un P&L real en USD que refleja qué pasó con tu poder de compra, no solo con el monto nominal en pesos. Para fechas anteriores a 2018, cuando no hay serie del MEP, usa el blue de ese día.',
   },
   {
-    q: '¿Cómo funciona el FIFO automático para AFIP / ARCA?',
-    a: 'Cuando vendés un activo, Rendi descuenta automáticamente del lote más viejo primero (First In, First Out — el criterio fiscal que usa AFIP / ARCA en Argentina). El resultado: cada venta tiene su costo de adquisición correcto y el P&L declarable queda calculado sin que tengas que hacer planillas. Exportás el CSV consolidado para pasárselo a tu contador.',
+    q: '¿Cómo funciona el FIFO automático? ¿Sirve para mis impuestos?',
+    a: `${FIFO_PARA_QUE} ¿Y para tus impuestos? Depende de qué vendas. ${VENTA_EXENTA} ${LO_QUE_SI_PAGA} ${CSV_CONTADOR}`,
   },
   {
     q: '¿Funciona con CEDEARs, bonos argentinos y criptomonedas?',

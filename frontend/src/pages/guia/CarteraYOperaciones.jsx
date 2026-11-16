@@ -2,6 +2,7 @@
 
 import GuidePage from '../../components/guide/GuidePage'
 import AdvisorNote from '../../components/guide/AdvisorNote'
+import { VENTA_EXENTA, LO_QUE_SI_PAGA, NO_ES_ASESORAMIENTO } from '../../data/impuestos'
 
 export default function CarteraYOperaciones() {
   return (
@@ -76,16 +77,20 @@ export default function CarteraYOperaciones() {
         <li><strong>Amortización</strong>: devolución parcial de capital de un bono. Rendi separa qué parte es capital (no es ganancia) y qué parte es renta.</li>
       </ul>
 
-      <h2>FIFO al vender (criterio fiscal AR)</h2>
+      <h2>FIFO al vender</h2>
       <p>
         Cuando vendés un activo que tenés en varios lotes (compras distintas), Rendi
         aplica <strong>FIFO automático</strong> — descuenta primero del lote más viejo.
-        Esto es lo que AFIP/ARCA exige para calcular tu ganancia declarable.
+        Así sabés cuánto ganaste de verdad en cada venta. Si compraste el mismo activo en
+        pesos y en dólares, primero descuenta de las compras en la moneda en que vendés.
       </p>
       <p>
-        Ejemplo: compraste 20 NVDA.BA a $110 (lote 1) y 20 a $130 (lote 2). Vendés 30
-        a $180. Rendi consume los 20 del lote 1 + 10 del lote 2. Costo base: $3.500.
-        Ganancia realizada: $5.400 - $3.500 = <strong>$1.900</strong>.
+        Ejemplo: compraste 20 CEDEARs de NVIDIA a US$ 5 (lote 1) y 20 a US$ 6 (lote 2).
+        Vendés 30 a US$ 8. Rendi consume los 20 del lote 1 + 10 del lote 2. Costo:
+        20 × 5 + 10 × 6 = US$ 160. Ganancia de esa venta: US$ 240 − US$ 160 = <strong>US$ 80</strong>.
+      </p>
+      <p>
+        ¿Y los impuestos? {VENTA_EXENTA} {LO_QUE_SI_PAGA} {NO_ES_ASESORAMIENTO}
       </p>
 
       <h2>Bonos AR (AL30, GD30, TX26, etc.)</h2>
@@ -108,8 +113,8 @@ export default function CarteraYOperaciones() {
         Cargás el ticker con sufijo <code>.BA</code>. Rendi:
       </p>
       <ul>
-        <li>Levanta el precio del subyacente en NYSE/NASDAQ.</li>
-        <li>Aplica el ratio de conversión actualizado (1 NVDA.BA = X NVDA real).</li>
+        <li>Toma el precio del CEDEAR en BYMA, en pesos, y lo pasa a dólares al MEP del día.</li>
+        <li>Usa el ratio de conversión (cuántos CEDEARs equivalen a una acción: NVDA es 24 a 1) para repartir cada dividendo: cada CEDEAR cobra la parte que le toca.</li>
         <li>Calcula tu valor real en USD, no la ilusión nominal en pesos.</li>
       </ul>
 
