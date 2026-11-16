@@ -87,6 +87,7 @@ from ..tickers_cd import strip_cd_suffix, KNOWN_CD_TICKERS, BR_DOLLAR_LEG
 from typing import List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
+from ..caminos import camino
 
 
 # Headers que identifican un export de IOL. Si aparecen al menos 3, asumimos IOL.
@@ -510,7 +511,7 @@ class IolParser(Parser):
     is_supported = True
     platform = "iol"
     platform_label = "IOL (InvertirOnline)"
-    export_label = "Mi Cuenta → Movimientos → Detalle de Movimientos"
+    export_label = camino("iol", "movimientos")
     tenencia_format = "iol_tenencia"
 
     def can_handle(self, headers: List[str]) -> bool:
@@ -554,7 +555,8 @@ class IolParser(Parser):
             result.parse_errors.append(RowError(
                 0, None, "IOL_HEADERS_MISMATCH",
                 "Este archivo no parece un export de Movimientos de IOL. "
-                "Bajalo desde IOL → Mi Cuenta → Movimientos → Movimientos Históricos.",
+                f"Bajalo desde la web de IOL, en {camino('iol', 'movimientos')} "
+                "(abajo, «Descargar movimientos históricos»).",
             ))
             return result
 

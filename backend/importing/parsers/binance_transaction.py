@@ -35,6 +35,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
+from ..caminos import camino
 
 
 # Quote assets ESTABLES — siempre actúan como quote en cualquier par donde
@@ -116,7 +117,7 @@ class BinanceTransactionHistoryParser(Parser):
     is_supported = True
     platform = "binance"
     platform_label = "Binance"
-    export_label = "Asset History → Transaction History (completo)"
+    export_label = f"{camino('binance', 'movimientos')} (completo)"
 
     def can_handle(self, headers: List[str]) -> bool:
         norm = {_norm_header(h) for h in headers}

@@ -62,6 +62,7 @@ import re
 from typing import List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
+from ..caminos import camino
 
 
 # Headers requeridos — chequeamos al menos 3 de estos.
@@ -184,7 +185,7 @@ class SchwabParser(Parser):
     is_supported = True
     platform = "schwab"
     platform_label = "Charles Schwab"
-    export_label = "History → Export CSV"
+    export_label = f"{camino('schwab', 'movimientos')} (CSV)"
 
     def can_handle(self, headers: List[str]) -> bool:
         norm = {_norm_header(h) for h in headers}
@@ -220,7 +221,7 @@ class SchwabParser(Parser):
             result.parse_errors.append(RowError(
                 0, None, "SCHWAB_HEADERS_MISMATCH",
                 "Este archivo no parece un export oficial de Charles Schwab. "
-                "Bajalo desde Schwab → Accounts → History → Export CSV.",
+                f"Bajalo desde schwab.com, en {camino('schwab', 'movimientos')}, con el ícono de export (CSV).",
             ))
             return result
 

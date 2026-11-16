@@ -11,15 +11,19 @@
  */
 import { describe, it, expect } from 'vitest'
 import { resolverFaltaTenencia } from './ImportWizard.jsx'
+import { BROKER_GUIDES, pasosDeLaFoto } from './BrokerInstructions'
 
-// Forma real de /imports/parsers/grouped.
+// Forma real de /imports/parsers/grouped. Dónde bajar la foto ya no viene
+// del servidor (era una copia que se había separado de la guía): sale de
+// BROKER_GUIDES.
 const GRUPOS = [
-  { platform: 'generic', platform_label: 'Genérico', tenencia_format: null, tenencia_label: null },
-  { platform: 'cocos', platform_label: 'Cocos Capital', tenencia_format: 'cocos_tenencia', tenencia_label: 'Inversiones → Estado de cuenta → Exportar' },
-  { platform: 'balanz', platform_label: 'Balanz', tenencia_format: 'balanz_tenencia', tenencia_label: 'Mi cuenta → Resumen de cuenta (PDF)' },
-  { platform: 'balanz_internacional', platform_label: 'Balanz Internacional', tenencia_format: null, tenencia_label: null },
-  { platform: 'binance', platform_label: 'Binance', tenencia_format: null, tenencia_label: null },
+  { platform: 'generic', platform_label: 'Genérico', tenencia_format: null },
+  { platform: 'cocos', platform_label: 'Cocos Capital', tenencia_format: 'cocos_tenencia' },
+  { platform: 'balanz', platform_label: 'Balanz', tenencia_format: 'balanz_tenencia' },
+  { platform: 'balanz_internacional', platform_label: 'Balanz Internacional', tenencia_format: null },
+  { platform: 'binance', platform_label: 'Binance', tenencia_format: null },
 ]
+const guia = (id) => BROKER_GUIDES.find(g => g.id === id)
 const BASE = { isSpecificParser: true, tenenciaFile: null }
 
 describe('resolverFaltaTenencia', () => {
@@ -27,8 +31,10 @@ describe('resolverFaltaTenencia', () => {
     const r = resolverFaltaTenencia(GRUPOS, 'cocos', BASE)
     expect(r).toEqual({
       broker: 'Cocos Capital',
-      label: 'Inversiones → Estado de cuenta → Exportar',
+      pasos: pasosDeLaFoto(guia('cocos')),
+      pasoEnLaGuia: 2,
     })
+    expect(r.pasos.join(' ')).toContain('Descargar portfolio')
   })
 
   it('no dice nada si YA subieron la foto', () => {
@@ -59,7 +65,7 @@ describe('resolverFaltaTenencia', () => {
     // movimientos y una sola foto.
     const r = resolverFaltaTenencia(GRUPOS, 'balanz', BASE)
     expect(r.broker).toBe('Balanz')
-    expect(r.label).toContain('Resumen de cuenta')
+    expect(r.pasos.join(' ')).toContain('Posición consolidada')
   })
 
   it('falla CERRADO con datos incompletos', () => {
@@ -70,8 +76,8 @@ describe('resolverFaltaTenencia', () => {
     expect(resolverFaltaTenencia(GRUPOS, 'inexistente', BASE)).toBeNull()
   })
 
-  it('sin instrucciones igual avisa, sin la linea de "donde bajarla"', () => {
-    const grupos = [{ platform: 'x', platform_label: 'X', tenencia_format: 'x_tenencia', tenencia_label: null }]
-    expect(resolverFaltaTenencia(grupos, 'x', BASE)).toEqual({ broker: 'X', label: null })
+  it('sin guía igual avisa, sin la linea de "donde bajarla"', () => {
+    const grupos = [{ platform: 'x', platform_label: 'X', tenencia_format: 'x_tenencia' }]
+    expect(resolverFaltaTenencia(grupos, 'x', BASE)).toEqual({ broker: 'X', pasos: [], pasoEnLaGuia: null })
   })
 })

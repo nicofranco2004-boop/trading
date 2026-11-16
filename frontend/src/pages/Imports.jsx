@@ -456,12 +456,7 @@ export default function Imports() {
           brokerMatch={/ppi/i}
           accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           fileLabel="Estado de Cuenta (Excel)"
-          fileHint={[
-            'Entrá a tu cuenta de PPI desde la web.',
-            'Quedate en la pantalla principal, donde aparece tu cartera.',
-            'Arriba a la derecha, tocá el botón Exportar.',
-            'Elegí Excel (no PDF) y descargá el archivo.',
-          ]}
+          guiaId="ppi"
           format="ppi"
           docLabel="el Estado de Cuenta"
         />
@@ -476,11 +471,7 @@ export default function Imports() {
           brokerMatch={/cocos/i}
           accept=".csv,text/csv"
           fileLabel="Estado de Cuenta (CSV)"
-          fileHint={[
-            'Entrá a tu cuenta de Cocos desde la WEB.',
-            'Andá a Portfolio y arriba tocá “Descargar portfolio”.',
-            'Elegí la fecha más reciente y descargá el CSV.',
-          ]}
+          guiaId="cocos"
           format="cocos"
           docLabel="el Estado de Cuenta"
         />
@@ -495,12 +486,7 @@ export default function Imports() {
           brokerMatch={/ieb/i}
           accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           fileLabel="Portafolio (Excel)"
-          fileHint={[
-            'Entrá al homebanking web de IEB (hb.iebmas.com.ar). ⚠️ Desde la WEB, no la app.',
-            'Andá a Portafolio.',
-            'Seleccioná la moneda Pesos.',
-            'Descargá el Excel y subílo acá tal cual, sin abrirlo ni convertirlo.',
-          ]}
+          guiaId="ieb"
           format="ieb"
           docLabel="el Portafolio"
         />
@@ -515,11 +501,7 @@ export default function Imports() {
           brokerMatch={/iol/i}
           accept=".pdf,application/pdf"
           fileLabel="Resumen de Cuenta (PDF)"
-          fileHint={[
-            'Iniciá sesión en IOL (invertironline.com) desde la WEB.',
-            'Andá a Mi Cuenta → Estado de Cuenta.',
-            'Bajá hasta el final, a “Detalle de Saldos”, y tocá el botón verde para descargar el PDF.',
-          ]}
+          guiaId="iol"
           format={null}
           docLabel="el Resumen de Cuenta"
         />

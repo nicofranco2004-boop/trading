@@ -12,6 +12,12 @@ class Parser(ABC):
     display_name: str = ""
     # Si False, aparece en la UI como "Próximamente" y no procesa.
     is_supported: bool = True
+    # ¿Se ofrece en la lista de exports (el wizard, la tanda del asesor)? Un
+    # lector puede estar soportado SÓLO para reconocer el archivo y explicar por
+    # qué no sirve: el de «Resultados» de Balanz se detecta para decir «bajá
+    # Movimientos», pero ofrecerlo era invitar a subir algo que se rechaza (la
+    # tanda del asesor lo mostraba como opción hasta el 16/11/2026).
+    se_ofrece: bool = True
     # Agrupación a 2 niveles en el wizard:
     #   platform: "generic" | "binance" | "cocos" | "balanz"
     #   platform_label: cómo se muestra el nivel 1 en el dropdown

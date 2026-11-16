@@ -100,6 +100,17 @@ function InviuLogo({ size = 18 }) {
 
 // Diccionario broker → contenido. El user va a actualizar `steps` y `summary`
 // cuando mande los ejemplos reales.
+//
+// Es la ÚNICA copia de los caminos del menú de cada broker en el frontend: el
+// aviso «falta la foto» del asistente, el modal de la foto sola
+// (TenenciaUpload) y la tanda del asesor los leen de acá. Los textos del
+// servidor que nombran un camino lo leen de `backend/importing/caminos.py`, y
+// `backend/tests/test_caminos.py` se pone rojo si ese camino deja de estar,
+// letra por letra, en los pasos de su broker acá. Corregir un camino es
+// corregirlo acá y, si el servidor lo nombra, en caminos.py.
+//
+// `pasosComunes`: los pasos que sirven para los dos archivos (entrar desde la
+// web). Van también cuando se pide sólo la foto (`pasosDeLaFoto`).
 const BROKERS = [
   {
     id: 'cocos',
@@ -107,6 +118,7 @@ const BROKERS = [
     // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
     // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
     pasosFoto: [1],
+    pasosComunes: [],
     pasosSoloAsistente: [2],
     Logo: CocosLogo,
     summary: 'Subí dos archivos juntos: el historial de Movimientos (reconstruye tu cartera y tu P&L) + el Estado de Cuenta / Portfolio (completa las posiciones que ya tenías de antes).',
@@ -123,6 +135,7 @@ const BROKERS = [
     // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
     // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
     pasosFoto: [2],
+    pasosComunes: [],
     pasosSoloAsistente: [3],
     Logo: BalanzLogo,
     summary: 'Subí dos archivos juntos: el export de Movimientos (reconstruye tu historial, tu P&L y tu efectivo) + el Resumen de Cuenta / Posición consolidada (PDF), que fija tus tenencias y tu saldo de HOY exactos.',
@@ -140,6 +153,7 @@ const BROKERS = [
     // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
     // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
     pasosFoto: [],
+    pasosComunes: [],
     pasosSoloAsistente: [2],
     Logo: BalanzLogo,
     summary: 'Tu cuenta del EXTERIOR (Balanz Capital International, en dólares, donde comprás acciones de EE.UU. reales). Subí el export de Movimientos y reconstruimos tu cartera, tu P&L y tu efectivo en USD.',
@@ -156,6 +170,7 @@ const BROKERS = [
     // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
     // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
     pasosFoto: [],
+    pasosComunes: [],
     pasosSoloAsistente: [2],
     Logo: BinanceLogo,
     summary: 'Usamos el Historial de transacciones completo para reconstruir cripto y caja stable.',
@@ -172,6 +187,7 @@ const BROKERS = [
     // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
     // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
     pasosFoto: [],
+    pasosComunes: [],
     pasosSoloAsistente: [3],
     Logo: SchwabLogo,
     summary: 'Usamos el export de History (transacciones) en formato CSV.',
@@ -189,6 +205,7 @@ const BROKERS = [
     // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
     // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
     pasosFoto: [2],
+    pasosComunes: [],
     pasosSoloAsistente: [3],
     Logo: BullMarketLogo,
     summary: 'Subí la Cuenta Corriente (Excel) + la Tenencia valorizada (PDF), todo junto, y armamos tu cartera completa.',
@@ -206,6 +223,7 @@ const BROKERS = [
     // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
     // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
     pasosFoto: [2],
+    pasosComunes: [0],
     pasosSoloAsistente: [3],
     Logo: IolLogo,
     summary: 'Subí dos archivos juntos: el Detalle de Movimientos (reconstruye tu historial y tu efectivo) + el Resumen de Cuenta (PDF), que fija tus tenencias y tu saldo de HOY.',
@@ -223,13 +241,14 @@ const BROKERS = [
     // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
     // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
     pasosFoto: [2],
+    pasosComunes: [0],
     pasosSoloAsistente: [3],
     Logo: IebLogo,
     summary: 'Subí dos archivos juntos: el export de "Toda la actividad" (Movimientos) + el "Portafolio" (Excel) — reconstruimos tus operaciones y ajustamos tus posiciones y saldos a la foto de hoy.',
     steps: [
       'Entrá al homebanking web de IEB (hb.iebmas.com.ar) e iniciá sesión. ⚠️ Tiene que ser desde la WEB, no desde la app.',
       'Movimientos: andá a Actividad → Toda la actividad (Movimientos totales). En "Desde" poné la fecha más antigua posible (idealmente desde que abriste la cuenta) y en "Hasta" hoy, y descargá el .xlsx (guardalo tal cual, sin abrirlo ni convertirlo).',
-      'Portafolio (tu tenencia de hoy): andá a Portafolio, seleccioná la moneda Pesos y descargá el Excel.',
+      'Portafolio (tu tenencia de hoy): andá a Portafolio, seleccioná la moneda Pesos y descargá el Excel (guardalo tal cual, sin abrirlo ni convertirlo).',
       'Subí los dos Excel juntos acá, tal cual, sin abrirlos ni convertirlos — los acomodamos solos (el Portafolio completa lo que el historial no alcanza y pone el costo real).',
     ],
     parserNote: 'Importamos compras y ventas (en pesos y en dólares MEP/cable), dividendos, renta y amortización de bonos, comisiones, compra/venta de dólar (MEP) y el interés de tus cauciones. El Portafolio es la foto de HOY y MANDA: completa las posiciones que ya tenías de antes con su costo real (PPP), cierra tu efectivo a la foto y ajusta lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si el ajuste tocaría más de la mitad de tu cartera lo frenamos y sólo completamos. ¿Ya importaste antes? Alcanza con volver a subir el Portafolio. Por ahora, las cauciones y las transferencias de títulos quedan para revisar a mano.',
@@ -240,13 +259,14 @@ const BROKERS = [
     // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
     // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
     pasosFoto: [2],
+    pasosComunes: [0],
     pasosSoloAsistente: [3],
     Logo: PpiLogo,
     summary: 'Subí dos archivos juntos: el export de Movimientos (Excel) + el Estado de Cuenta (Excel) — reconstruimos tu cartera y completamos las posiciones que ya tenías de antes.',
     steps: [
       'Entrá a tu cuenta de PPI desde la WEB (Portfolio Personal). ⚠️ Desde la web, no la app.',
       'Movimientos: andá a Actividad → Todos los movimientos, filtrá desde que abriste la cuenta hasta hoy y tocá Exportar → Excel (.xlsx).',
-      'Estado de Cuenta: en la pantalla principal —donde ves tu cartera— tocá Exportar arriba a la derecha y elegí Excel.',
+      'Estado de Cuenta: en la pantalla principal —donde ves tu cartera— tocá Exportar arriba a la derecha y elegí Excel (no PDF).',
       'Subí los dos Excel juntos acá — los acomodamos solos (el Estado de Cuenta completa lo que el historial no alcanza).',
     ],
     parserNote: 'Importamos compras y ventas (en pesos y en dólares MEP/cable), suscripciones y rescates de FCI, dividendos, renta y amortización de bonos, comisiones y retenciones, depósitos y retiros, y el interés de tus cauciones. Las sub-cuentas en dólares se consolidan en una sola. El Estado de Cuenta es tu foto de HOY y MANDA: completa las posiciones con su costo real, cierra tu efectivo a la foto y ajusta lo que quedó de más o de menos (cerrando a costo, sin inventar ganancias). Por seguridad, si tocaría más de la mitad de tu cartera lo frenamos. ¿Ya importaste antes? Subí solo el Estado de Cuenta con el botón “Estado de Cuenta PPI”. Por ahora, las operaciones de dólar SPOT y las transferencias de títulos entrantes quedan para revisar a mano.',
@@ -257,6 +277,7 @@ const BROKERS = [
     // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
     // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
     pasosFoto: [2],
+    pasosComunes: [0],
     pasosSoloAsistente: [3],
     Logo: InviuLogo,
     summary: 'Subí dos archivos juntos: el Reporte de cuenta corriente (reconstruye tu historial, tu P&L y tu efectivo) + el Portfolio (tu foto de tenencias de HOY, que fija tus posiciones y saldos exactos).',
@@ -274,6 +295,16 @@ const BROKERS = [
 // (pages/AdvisorImports) muestra los mismos pasos en su panel "¿Cómo lo
 // descargo?". Si se corrige un paso acá, se corrige en los dos lugares.
 export const BROKER_GUIDES = BROKERS
+
+// Los pasos para bajar SÓLO la foto de tenencia: los comunes (entrar desde la
+// web) y los de la foto, en orden. Los usan el aviso del asistente cuando la
+// foto falta (ImportWizard) y el modal de la foto sola (TenenciaUpload). Un
+// broker sin foto devuelve [].
+export function pasosDeLaFoto(guia, sujeto = 'vos') {
+  if (!(guia?.pasosFoto || []).length) return []
+  const deLaFoto = new Set([...(guia.pasosComunes || []), ...guia.pasosFoto])
+  return pasosPara(guia, sujeto).filter((_, i) => deLaFoto.has(i))
+}
 
 // Los pasos están escritos para el dueño de la cuenta ("tu cuenta", "desde que
 // abriste"). El asesor los lee sobre la cuenta de un CLIENTE: misma guía, otra

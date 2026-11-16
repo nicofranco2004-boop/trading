@@ -64,6 +64,7 @@ import re
 from typing import Dict, List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError, omitted_row_error
+from ..caminos import camino
 
 
 def _norm_header(h: str) -> str:
@@ -229,7 +230,7 @@ class PpiParser(Parser):
             result.parse_errors.append(RowError(
                 0, None, "PPI_HEADERS_MISMATCH",
                 "Este archivo no coincide con el export de Movimientos de PPI. "
-                "Bajalo desde la web de PPI (Mi cuenta → Movimientos) en Excel."))
+                f"Bajalo desde la web de PPI ({camino('ppi', 'movimientos')}) en Excel."))
             return result
 
         def _g(row, field_name):

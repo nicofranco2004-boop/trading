@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../utils/api'
+import { BROKER_GUIDES, pasosDeLaFoto } from './BrokerInstructions'
 
 // Los motivos de `importing/proyeccion.py` (no se pudo llevar a la fecha de la foto).
 // Lo archivado va aparte: no es «algo posterior», y lo que hay que hacer es otra cosa.
@@ -12,10 +13,13 @@ export const TEXTO_CAJA_AL_CONFIRMAR = ('El efectivo no lo ajustamos: cambió de
   + 'subiste la foto (entró o salió plata). El resto se aplicó. Si querés que el efectivo '
   + 'quede como dice la foto, volvé a subirla.')
 
-// Completar la cartera con la "Tenencia valorizada" (PDF) de Bull Market — la
-// foto de posiciones. Reconcilia contra lo ya importado de la Cuenta Corriente:
-// completa SOLO lo que falta (comprado antes de la ventana de la CC), sin
-// duplicar. Backend: POST /imports/tenencia/preview → confirm con session_id.
+// Completar la cartera con la FOTO de posiciones de un broker (nació para la
+// "Tenencia valorizada" de Bull Market; hoy la abren PPI, Cocos, IEB e IOL desde
+// Importaciones). Reconcilia contra lo ya importado: completa SOLO lo que falta,
+// sin duplicar. Backend: POST /imports/tenencia/preview → confirm con session_id.
+//
+// Cómo bajar la foto sale de la guía del broker (`guiaId` → BROKER_GUIDES), no
+// de un texto propio: los cuatro modales tenían los pasos copiados a mano.
 export default function TenenciaUpload({
   onClose, onConfirmed,
   title = 'Completá tu cartera con la Tenencia',
@@ -23,7 +27,7 @@ export default function TenenciaUpload({
   brokerMatch = /bull/i,
   accept = 'application/pdf,.pdf',
   fileLabel = 'Tenencia valorizada (PDF)',
-  fileHint = 'Bull Market WEB → Mi Cuenta → Otras consultas → Tenencia Valorizada a una Fecha → Acceder. No tiene botón de descarga: guardá la página como PDF con Ctrl+P (Windows) o Cmd+P (Mac) → “Guardar como PDF”.',
+  guiaId = 'bullmarket',   // id en BROKER_GUIDES: de ahí salen los pasos para bajar la foto
   format = null,
   docLabel = 'la Tenencia',   // para la copia: "leer {docLabel}", "no están en {docLabel}", etc.
 }) {
@@ -35,6 +39,7 @@ export default function TenenciaUpload({
   const [preview, setPreview] = useState(null)   // { session_id, to_seed[], matched, ... }
   const [done, setDone] = useState(false)
   const [cajaAlConfirmar, setCajaAlConfirmar] = useState(null)
+  const pasos = pasosDeLaFoto(BROKER_GUIDES.find(g => g.id === guiaId))
 
   useEffect(() => {
     api.get('/brokers').then(bs => {
@@ -126,13 +131,9 @@ export default function TenenciaUpload({
             <input type="file" accept={accept}
                    onChange={e => setFile(e.target.files?.[0] || null)}
                    className="w-full mb-1 text-sm text-ink-2 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-bg-3 file:text-ink-1 file:text-sm" />
-            {Array.isArray(fileHint) ? (
-              <ol className="text-xs text-ink-3 mb-4 list-decimal pl-4 space-y-0.5">
-                {fileHint.map((s, i) => <li key={i}>{s}</li>)}
-              </ol>
-            ) : (
-              <p className="text-xs text-ink-3 mb-4">{fileHint}</p>
-            )}
+            <ol className="text-xs text-ink-3 mb-4 list-decimal pl-4 space-y-0.5">
+              {pasos.map((s, i) => <li key={i}>{s}</li>)}
+            </ol>
 
             {error && <p className="text-sm text-rendi-warn mb-3">{error}</p>}
             <div className="flex justify-end gap-2">

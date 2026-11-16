@@ -89,6 +89,7 @@ import re
 from typing import List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
+from ..caminos import camino
 from .. import saldo_anterior as _saldo_anterior
 
 
@@ -433,7 +434,7 @@ class BullMarketParser(Parser):
             result.parse_errors.append(RowError(
                 0, None, "BULLMARKET_HEADERS_MISMATCH",
                 "Este archivo no parece un export de Bull Market. Bajá la Cuenta "
-                "Corriente (Mi Cuenta → Cuenta Corriente → Exportar) o el resumen "
+                f"Corriente ({camino('bullmarket', 'movimientos')}, botón Exportar) o el resumen "
                 "de Movimientos.",
             ))
             return result

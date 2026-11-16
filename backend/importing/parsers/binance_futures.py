@@ -27,6 +27,7 @@ from collections import defaultdict
 from typing import List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
+from ..caminos import camino
 
 
 _REQUIRED = {"symbol", "side", "price", "quantity", "amount", "fee", "realized_profit"}
@@ -79,7 +80,7 @@ class BinanceFuturesTradeHistoryParser(Parser):
     is_supported = False
     platform = "binance"
     platform_label = "Binance"
-    export_label = "Futures → Trade History"
+    export_label = camino("binance", "futuros")
 
     def can_handle(self, headers: List[str]) -> bool:
         norm = {_norm_header(h) for h in headers}

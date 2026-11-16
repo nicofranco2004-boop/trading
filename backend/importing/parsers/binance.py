@@ -31,6 +31,7 @@ import re
 from typing import List, Optional, Tuple
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
+from ..caminos import camino
 
 
 # Quote assets conocidos de Binance, ordenados por longitud descendente para
@@ -105,7 +106,7 @@ class BinanceParser(Parser):
     is_supported = True
     platform = "binance"
     platform_label = "Binance"
-    export_label = "Spot → Trade History"
+    export_label = camino("binance", "spot")
 
     def can_handle(self, headers: List[str]) -> bool:
         norm = {(h or "").strip().lower() for h in headers}

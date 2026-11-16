@@ -53,6 +53,7 @@ from datetime import date
 from typing import Dict, List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
+from ..caminos import camino
 from ..maturity import is_bond_like_name, maturity_from_name, synth_letra_ticker
 
 
@@ -358,7 +359,7 @@ class CocosParser(Parser):
     is_supported = True
     platform = "cocos"
     platform_label = "Cocos Capital"
-    export_label = "Actividad → Movimientos"
+    export_label = camino("cocos", "movimientos")
     tenencia_format = "cocos_tenencia"
 
     def can_handle(self, headers: List[str]) -> bool:
@@ -400,7 +401,7 @@ class CocosParser(Parser):
             result.parse_errors.append(RowError(
                 0, None, "COCOS_HEADERS_MISMATCH",
                 "Este archivo no parece un export oficial de Cocos. "
-                "Bajalo desde https://app.cocos.capital → Actividad → Movimientos.",
+                f"Bajalo desde app.cocos.capital, en {camino('cocos', 'movimientos')}.",
             ))
             return result
 

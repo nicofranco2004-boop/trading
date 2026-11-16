@@ -35,6 +35,7 @@ import re
 from typing import Dict, List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
+from ..caminos import camino
 
 
 def _norm_header(h: str) -> str:
@@ -180,7 +181,7 @@ class BalanzParser(Parser):
     is_supported = True
     platform = "balanz"
     platform_label = "Balanz"
-    export_label = "Operaciones → Órdenes → Exportar"
+    export_label = camino("balanz", "ordenes")
     tenencia_format = "balanz_tenencia"
 
     def can_handle(self, headers: List[str]) -> bool:
@@ -223,7 +224,7 @@ class BalanzParser(Parser):
                 0, None, "BALANZ_HEADERS_MISMATCH",
                 f"Este archivo no coincide con el export de Órdenes de Balanz. "
                 f"Faltan columnas para: {', '.join(missing)}. Exportá desde "
-                f"Operaciones → Órdenes. Si tu export tiene otra estructura, usá "
+                f"{camino('balanz', 'ordenes')}. Si tu export tiene otra estructura, usá "
                 f"el template genérico de Rendi."))
             return result
 

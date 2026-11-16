@@ -46122,6 +46122,7 @@ from importing import recompute_backfill as _import_recompute
 from importing import tenencia as _import_tenencia
 from importing import proyeccion as _import_proyeccion
 from importing import excel as _import_excel
+from importing.caminos import camino as _camino_del_broker
 from importing import schema as _import_schema
 from importing.parsers.registry import get_parser as _get_parser
 import wallbit as _wallbit
@@ -46514,8 +46515,8 @@ def import_tenencia_preview(
         except ValueError as ex:
             raise HTTPException(400, str(ex))
         if not _import_tenencia.looks_like_ppi_tenencia(rows):
-            raise HTTPException(400, "Este Excel no parece el Estado de Cuenta de PPI "
-                                     "(Mi cuenta → Estado de cuenta).")
+            raise HTTPException(400, "Este Excel no parece el Estado de Cuenta de PPI. "
+                                     f"Para bajarlo: {_camino_del_broker('ppi', 'foto')}.")
         snap = _import_tenencia.parse_ppi_tenencia(rows)
         parser_format, default_name = "ppi_tenencia", "EstadoDeCuenta.xlsx"
         broker_hint = "Importá primero los Movimientos de PPI."
@@ -46541,8 +46542,8 @@ def import_tenencia_preview(
         # que Bull Market — las CEDEARs de Cocos cotizan en pesos bajo el broker padre.
         text = _import_pipeline._decode_csv(data) or ""
         if not _import_tenencia.looks_like_cocos_tenencia(text):
-            raise HTTPException(400, "Este CSV no parece el Estado de Cuenta de Cocos "
-                                     "(Inversiones → Estado de cuenta → Exportar).")
+            raise HTTPException(400, "Este CSV no parece el Estado de Cuenta de Cocos. "
+                                     f"Para bajarlo: {_camino_del_broker('cocos', 'foto')}.")
         snap = _import_tenencia.parse_cocos_tenencia(text)
         parser_format, default_name = "cocos_tenencia", "EstadoDeCuenta.csv"
         broker_hint = "Importá primero los Movimientos de Cocos."

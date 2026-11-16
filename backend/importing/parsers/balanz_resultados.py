@@ -36,6 +36,7 @@ import io
 from typing import Dict, List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError, omitted_row_error
+from ..caminos import camino
 
 
 def _norm_header(h: str) -> str:
@@ -145,9 +146,12 @@ class BalanzResultadosParser(Parser):
     format_id = "balanz_resultados"
     display_name = "Balanz — Resultados"
     is_supported = True
+    # Soportado sólo para RECONOCERLO y redirigir a Movimientos (ver parse): no
+    # se ofrece en la lista de exports.
+    se_ofrece = False
     platform = "balanz"
     platform_label = "Balanz"
-    export_label = "Actividad → Resultados"
+    export_label = camino("balanz", "resultados")
     tenencia_format = "balanz_tenencia"
 
     def can_handle(self, headers: List[str]) -> bool:
@@ -188,8 +192,8 @@ class BalanzResultadosParser(Parser):
         if not (all(cols.get(f) for f in _REQUIRED) and any(cols.get(d) for d in _DISCRIMINATORS)):
             result.parse_errors.append(RowError(
                 0, None, "BALANZ_RES_HEADERS_MISMATCH",
-                "Este archivo no coincide con el reporte de Resultados de Balanz "
-                "(Actividad → Resultados). Asegurate de subir el Excel completo."))
+                "Este archivo no es un export de Balanz que importemos. Bajá el de "
+                f"MOVIMIENTOS: en Balanz web (no la app), {camino('balanz', 'movimientos')}."))
             return result
 
         # ── BLOQUEADO: el export de Resultados NO se importa ──────────────────
@@ -204,7 +208,7 @@ class BalanzResultadosParser(Parser):
             "Subiste el export de «Resultados» de Balanz. Ese no lo importamos: no "
             "incluye tus depósitos ni retiros, así que tu capital aportado y tu "
             "rendimiento quedarían mal. Bajá el export de MOVIMIENTOS — en Balanz web "
-            "(no la app) andá a Actividad → Movimientos, descargá todos los años y "
+            f"(no la app) andá a {camino('balanz', 'movimientos')}, descargá todos los años y "
             "subí ese."))
         return result
 
@@ -217,8 +221,8 @@ class BalanzResultadosParser(Parser):
                 0, None, "BALANZ_RES_NO_PRICES",
                 "Este export de Balanz no incluye precios, así que no podemos "
                 "reconstruir posiciones ni P&L. Exportá el EXCEL de Resultados "
-                "(Actividad → Resultados → Excel/.xlsx), que sí trae los precios "
-                "de compra y venta — o usá el export de Operaciones → Órdenes."))
+                f"({camino('balanz', 'resultados')}, en .xlsx), que sí trae los precios "
+                f"de compra y venta — o usá el export de {camino('balanz', 'ordenes')}."))
             return result
 
         def _g(row, field_name):

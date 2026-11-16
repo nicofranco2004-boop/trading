@@ -2096,28 +2096,19 @@ def reconstruct_csv_from_batch(conn, *, uid: int, batch_id: str) -> Optional[byt
 def parser_options() -> List[Dict[str, Any]]:
     """Lista plana — back-compat para clientes viejos."""
     return [
-        {"id": p.format_id, "label": p.display_name, "supported": p.is_supported}
+        {"id": p.format_id, "label": p.display_name,
+         "supported": p.is_supported and p.se_ofrece}
         for p in list_parsers()
     ]
 
 
-# Dónde encuentra cada persona la foto de tenencia en su broker. Es el texto que
-# el wizard muestra cuando alguien importa movimientos y NO la trajo — que es el
-# 42,2% de la gente elegible (117 de 277 usuarios no subieron ninguna). Sin la
-# foto no hay contra qué verificar el import, así que el mejor chequeo del
-# sistema simplemente no corre.
-#
-# Cocos es el que más pierde por lejos: 68 usuarios elegibles sin foto, el 53%
-# de todo lo que se pierde, con apenas 42% de cobertura.
-TENENCIA_LABELS = {
-    "cocos_tenencia": "Inversiones → Estado de cuenta → Exportar",
-    "balanz_tenencia": "Mi cuenta → Resumen de cuenta (PDF)",
-    "iol_tenencia": "Mi cuenta → Estado de cuenta (PDF)",
-    "bullmarket_tenencia": "Mi cuenta → Otras consultas → Tenencia valorizada (PDF)",
-    "ppi_tenencia": "Mi cuenta → Estado de cuenta (Excel)",
-    "ieb_tenencia": "Portafolio → Exportar (Excel)",
-    "inviu_tenencia": "Tenencias → Exportar (Excel)",
-}
+# Dónde bajar la foto de tenencia NO viaja desde acá. Hasta el 16/11/2026 había
+# un TENENCIA_LABELS con el camino de cada broker, que el wizard mostraba cuando
+# alguien importaba movimientos sin la foto. Era una copia a mano de la guía de
+# la app (BROKER_GUIDES) y se había separado: a Balanz lo mandaba a «Mi cuenta →
+# Resumen de cuenta» con la guía diciendo «Actividad → Reportes → Posición
+# consolidada» en la misma pantalla. Ahora el wizard lo lee de la guía; acá sólo
+# se declara SI el broker tiene foto (`tenencia_format`).
 
 
 def parser_options_grouped() -> List[Dict[str, Any]]:
@@ -2142,8 +2133,9 @@ def parser_options_grouped() -> List[Dict[str, Any]]:
     for p in list_parsers():
         # Solo incluimos parsers soportados — los que están en desarrollo no
         # aparecen ni como "próximamente". Si volvemos a habilitar uno, flipear
-        # is_supported a True en la clase del parser y aparece solo.
-        if not p.is_supported:
+        # is_supported a True en la clase del parser y aparece solo. Tampoco los
+        # que se reconocen sólo para rechazarlos (`se_ofrece`, ver base.py).
+        if not p.is_supported or not p.se_ofrece:
             continue
         if p.platform not in grouped:
             grouped[p.platform] = {
@@ -2157,7 +2149,6 @@ def parser_options_grouped() -> List[Dict[str, Any]]:
                 # con el que el wizard ya decide si acepta un PDF
                 # (`allowPdf` mira platform, no format_id).
                 "tenencia_format": None,
-                "tenencia_label": None,
             }
         grouped[p.platform]["exports"].append({
             "id": p.format_id,
@@ -2166,8 +2157,6 @@ def parser_options_grouped() -> List[Dict[str, Any]]:
         })
         if p.tenencia_format and not grouped[p.platform]["tenencia_format"]:
             grouped[p.platform]["tenencia_format"] = p.tenencia_format
-            grouped[p.platform]["tenencia_label"] = TENENCIA_LABELS.get(
-                p.tenencia_format)
     # Orden: generic primero, después binance, después el resto
     order = {"generic": 0, "binance": 1, "balanz": 2, "cocos": 3}
     return sorted(grouped.values(), key=lambda g: order.get(g["platform"], 99))

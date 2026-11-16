@@ -35,6 +35,7 @@ import re
 from typing import Dict, List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError, omitted_row_error
+from ..caminos import camino
 
 
 def _norm_header(h: str) -> str:
@@ -254,7 +255,7 @@ class BalanzMovimientosParser(Parser):
     is_supported = True
     platform = "balanz"
     platform_label = "Balanz"
-    export_label = "Actividad → Movimientos (recomendado)"
+    export_label = f"{camino('balanz', 'movimientos')} (recomendado)"
     tenencia_format = "balanz_tenencia"
 
     def can_handle(self, headers: List[str]) -> bool:
@@ -293,7 +294,7 @@ class BalanzMovimientosParser(Parser):
             result.parse_errors.append(RowError(
                 0, None, "BALANZ_MOV_HEADERS_MISMATCH",
                 "Este archivo no coincide con el export de Movimientos de Balanz "
-                "(Actividad → Movimientos). Asegurate de subir ese Excel — no el de "
+                f"({camino('balanz', 'movimientos')}). Asegurate de subir ese Excel — no el de "
                 "Resultados ni el de Órdenes."))
             return result
 

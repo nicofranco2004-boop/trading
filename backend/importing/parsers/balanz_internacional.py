@@ -34,6 +34,7 @@ from typing import List, Optional
 
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError, omitted_row_error
+from ..caminos import camino
 # Reusamos los helpers PUROS del parser local (mismo formato de columnas) sin tocarlo.
 from .balanz_movimientos import (
     _norm_header, _norm_ccy, _num, _resolve_columns, _REQUIRED, _is_tax,
@@ -130,7 +131,7 @@ class BalanzInternacionalParser(Parser):
     # del broker queda USD por plataforma.
     platform = "balanz_internacional"
     platform_label = "Balanz Internacional"
-    export_label = "Actividad → Movimientos (exterior, USD)"
+    export_label = f"{camino('balanz_internacional', 'movimientos')} (exterior, USD)"
 
     # NO autodetecta: el export internacional tiene EXACTAMENTE las mismas columnas
     # que el Movimientos local → indistinguible por headers. La selección es
@@ -169,7 +170,7 @@ class BalanzInternacionalParser(Parser):
             result.parse_errors.append(RowError(
                 0, None, "BALANZ_INTL_HEADERS_MISMATCH",
                 "Este archivo no coincide con el export de Movimientos de Balanz "
-                "(Actividad → Movimientos). Subí ese Excel de tu cuenta Internacional."))
+                f"({camino('balanz_internacional', 'movimientos')}). Subí ese Excel de tu cuenta Internacional."))
             return result
 
         def _g(row, field_name):

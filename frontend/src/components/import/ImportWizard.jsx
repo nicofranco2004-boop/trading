@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { X, Upload, AlertTriangle, CheckCircle2, Download, FileText, Loader2, Save, Trash2, RotateCcw, Info } from 'lucide-react'
 import InfoTooltip from '../InfoTooltip'
-import BrokerInstructions from './BrokerInstructions'
+import BrokerInstructions, { BROKER_GUIDES, pasosDeLaFoto } from './BrokerInstructions'
 import WallbitConnect from './WallbitConnect'
 import { api, pedirAlServidor } from '../../utils/api'
 import { whatsappUrl } from '../../utils/support'
@@ -138,7 +138,7 @@ function looksLikeCocosTenenciaCsv(headerLine) {
 /**
  * ¿Hay que sugerirle a esta persona que suba la foto de tenencia?
  *
- * Devuelve `{label, broker}` para el aviso, o null si no corresponde.
+ * Devuelve `{broker, pasos, pasoEnLaGuia}` para el aviso, o null si no corresponde.
  *
  * Está afuera del componente y exportada para poder testear la DECISIÓN, que es
  * donde puede haber un error: la caja azul es trivial, elegir cuándo mostrarla
@@ -149,13 +149,26 @@ function looksLikeCocosTenenciaCsv(headerLine) {
  *
  * Por eso la capacidad se lee de `parserGroups` (que viene del backend, donde
  * está la verdad) y no de ese dict.
+ *
+ * Y DÓNDE bajarla sale de la guía (BROKER_GUIDES), la misma que el Paso de
+ * subida muestra abajo. Antes venía del servidor (TENENCIA_LABELS), una copia a
+ * mano que se desincronizó: a Balanz lo mandaba a «Mi cuenta → Resumen de
+ * cuenta» con la guía diciendo «Actividad → Reportes → Posición consolidada»
+ * en la misma pantalla, y a Cocos a «Inversiones → Estado de cuenta».
  */
 export function resolverFaltaTenencia(parserGroups, platform,
                                       { isSpecificParser, tenenciaFile }) {
   if (!isSpecificParser || tenenciaFile) return null
   const g = (parserGroups || []).find(x => x.platform === platform)
   if (!g?.tenencia_format) return null
-  return { label: g.tenencia_label || null, broker: g.platform_label || platform }
+  const guia = BROKER_GUIDES.find(b => b.id === platform)
+  return {
+    broker: g.platform_label || platform,
+    pasos: pasosDeLaFoto(guia),
+    // El número (desde 1) del paso de la foto en la guía, para señalarlo
+    // cuando la guía está en pantalla en vez de repetirlo.
+    pasoEnLaGuia: guia?.pasosFoto?.length ? guia.pasosFoto[0] + 1 : null,
+  }
 }
 
 // Como compara nombres de broker el importador del servidor (`importing/pipeline.py`):
@@ -1517,11 +1530,25 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
 // Después del Paso 0 ya sabemos origen + broker + moneda. Acá solo: resumen de
 // lo elegido (con "Cambiar"), instrucciones de descarga (rama broker) o template
 // (rama propia), y el dropzone de archivos.
+// Los pasos de la guía para bajar la foto, dentro del aviso azul.
+function PasosDeLaFoto({ pasos }) {
+  if (!pasos?.length) return null
+  return (
+    <div className="text-xs text-ink-2 mt-1.5">
+      Cómo bajarla:
+      <ul className="list-disc pl-4 mt-0.5 space-y-0.5">
+        {pasos.map((p, i) => <li key={i}>{p}</li>)}
+      </ul>
+    </div>
+  )
+}
+
 function UploadStep({ faltaTenencia = null, sourceType, platform, format, parserGroups = [], files, setFiles,
                       downloadTemplate, inputRef, importMode, singleBroker,
                       effectiveCurrency, isArsContext, useCurrencyRouting, onBack }) {
   const [fileError, setFileError] = useState(null)
   const isSpecific = sourceType === 'broker' && format && format !== 'rendi_generic'
+  const conGuia = isSpecific && platform !== 'generic'
   const brokerLabel = (parserGroups || []).find(g => g.platform === platform)?.platform_label || platform
 
   // Acumula files (no reemplaza). Dedup por (name, size). Sin auto-detección:
@@ -1615,17 +1642,17 @@ function UploadStep({ faltaTenencia = null, sourceType, platform, format, parser
                 Si subís los dos juntos comparamos el import contra la{' '}
                 <span className="font-medium text-ink-1">tenencia</span> y te avisamos
                 si algo no coincide. Podés arrastrarlos al mismo tiempo.
-                {faltaTenencia.label && (
-                  <> Dónde bajarla:{' '}
-                    <span className="font-medium text-ink-1">{faltaTenencia.label}</span>.</>
+                {conGuia && faltaTenencia.pasoEnLaGuia && (
+                  <> Cómo bajarla: <span className="font-medium text-ink-1">paso {faltaTenencia.pasoEnLaGuia}</span> de la guía de abajo.</>
                 )}
               </p>
+              {!conGuia && <PasosDeLaFoto pasos={faltaTenencia.pasos} />}
             </div>
           </div>
         </div>
       )}
       {/* Instrucciones de descarga del broker (rama broker) */}
-      {isSpecific && platform !== 'generic' && (
+      {conGuia && (
         <BrokerInstructions lockBrokerId={platform} />
       )}
 
@@ -2431,11 +2458,10 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
                 archivo el import entra igual, pero{' '}
                 <span className="font-medium text-ink-1">no hay contra qué chequearlo</span>.
               </p>
-              {faltaTenencia.label && (
+              <PasosDeLaFoto pasos={faltaTenencia.pasos} />
+              {faltaTenencia.pasos.length > 0 && (
                 <p className="text-xs text-ink-2 mt-1.5">
-                  Dónde bajarla:{' '}
-                  <span className="font-medium text-ink-1">{faltaTenencia.label}</span>
-                  . Podés arrastrarla junto con este archivo, o subirla después.
+                  Podés arrastrarla junto con este archivo, o subirla después.
                 </p>
               )}
             </div>

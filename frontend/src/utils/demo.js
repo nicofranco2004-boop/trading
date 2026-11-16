@@ -3050,39 +3050,45 @@ export function handleDemoRequest(method, path, body) {
     // Parsers agrupados — alimentan el grid de brokers del Paso 0 del wizard.
     // Mismo shape que parser_options_grouped() del backend. Sin esto, en demo
     // el grid de "elegí tu broker" quedaría vacío.
+    //
+    // Los exports van por su NOMBRE, sin el camino del menú: el camino lo dice
+    // la guía (BROKER_GUIDES) y, en los textos del servidor, importing/caminos.py.
+    // Esta copia tenía caminos viejos y ofrecía el export de «Resultados» de
+    // Balanz, que el servidor rechaza (BALANZ_RESULTADOS_NO_SOPORTADO) y ya no
+    // ofrece. Si el broker tiene foto lo dice `tenencia_format`; dónde bajarla,
+    // la guía.
     if (basePath === '/imports/parsers/grouped') {
       return [
-        { platform: 'generic', platform_label: 'Genérico (cualquier broker)', tenencia_format: null, tenencia_label: null, exports: [
+        { platform: 'generic', platform_label: 'Genérico (cualquier broker)', tenencia_format: null, exports: [
           { id: 'rendi_generic', label: 'Template Rendi', supported: true },
         ] },
-        { platform: 'binance', platform_label: 'Binance', tenencia_format: null, tenencia_label: null, exports: [
-          { id: 'binance', label: 'Spot → Trade History', supported: true },
-          { id: 'binance_transaction_history', label: 'Asset History → Transaction History (completo)', supported: true },
+        { platform: 'binance', platform_label: 'Binance', tenencia_format: null, exports: [
+          { id: 'binance', label: 'Spot Trade History', supported: true },
+          { id: 'binance_transaction_history', label: 'Transaction History (completo)', supported: true },
         ] },
-        { platform: 'balanz', platform_label: 'Balanz', tenencia_format: 'balanz_tenencia', tenencia_label: 'Mi cuenta → Resumen de cuenta (PDF)', exports: [
-          { id: 'balanz_movimientos', label: 'Actividad → Movimientos (recomendado)', supported: true },
-          { id: 'balanz', label: 'Operaciones → Órdenes → Exportar', supported: true },
-          { id: 'balanz_resultados', label: 'Actividad → Resultados', supported: true },
+        { platform: 'balanz', platform_label: 'Balanz', tenencia_format: 'balanz_tenencia', exports: [
+          { id: 'balanz_movimientos', label: 'Movimientos (recomendado)', supported: true },
+          { id: 'balanz', label: 'Órdenes', supported: true },
         ] },
-        { platform: 'cocos', platform_label: 'Cocos Capital', tenencia_format: 'cocos_tenencia', tenencia_label: 'Inversiones → Estado de cuenta → Exportar', exports: [
-          { id: 'cocos', label: 'Actividad → Movimientos', supported: true },
+        { platform: 'cocos', platform_label: 'Cocos Capital', tenencia_format: 'cocos_tenencia', exports: [
+          { id: 'cocos', label: 'Movimientos', supported: true },
         ] },
-        { platform: 'ppi', platform_label: 'PPI (Portafolio Personal)', tenencia_format: 'ppi_tenencia', tenencia_label: 'Mi cuenta → Estado de cuenta (Excel)', exports: [
+        { platform: 'ppi', platform_label: 'PPI (Portafolio Personal)', tenencia_format: 'ppi_tenencia', exports: [
           { id: 'ppi', label: 'Movimientos (Excel)', supported: true },
         ] },
-        { platform: 'iol', platform_label: 'IOL (InvertirOnline)', tenencia_format: 'iol_tenencia', tenencia_label: 'Mi cuenta → Estado de cuenta (PDF)', exports: [
-          { id: 'iol', label: 'Mi Cuenta → Movimientos → Detalle de Movimientos', supported: true },
+        { platform: 'iol', platform_label: 'IOL (InvertirOnline)', tenencia_format: 'iol_tenencia', exports: [
+          { id: 'iol', label: 'Detalle de Movimientos', supported: true },
         ] },
-        { platform: 'schwab', platform_label: 'Charles Schwab', tenencia_format: null, tenencia_label: null, exports: [
-          { id: 'schwab', label: 'History → Export CSV', supported: true },
+        { platform: 'schwab', platform_label: 'Charles Schwab', tenencia_format: null, exports: [
+          { id: 'schwab', label: 'History (CSV)', supported: true },
         ] },
-        { platform: 'bullmarket', platform_label: 'Bull Market', tenencia_format: 'bullmarket_tenencia', tenencia_label: 'Mi cuenta → Otras consultas → Tenencia valorizada (PDF)', exports: [
+        { platform: 'bullmarket', platform_label: 'Bull Market', tenencia_format: 'bullmarket_tenencia', exports: [
           { id: 'bullmarket', label: 'Cuenta Corriente (Excel) o Movimientos (CSV)', supported: true },
         ] },
-        { platform: 'ieb', platform_label: 'IEB · Invertir en Bolsa', tenencia_format: 'ieb_tenencia', tenencia_label: 'Portafolio → Exportar (Excel)', exports: [
+        { platform: 'ieb', platform_label: 'IEB · Invertir en Bolsa', tenencia_format: 'ieb_tenencia', exports: [
           { id: 'ieb', label: 'Movimientos', supported: true },
         ] },
-        { platform: 'inviu', platform_label: 'inviu', tenencia_format: 'inviu_tenencia', tenencia_label: 'Tenencias → Exportar (Excel)', exports: [
+        { platform: 'inviu', platform_label: 'inviu', tenencia_format: 'inviu_tenencia', exports: [
           { id: 'inviu', label: 'Reporte de cuenta corriente (Excel)', supported: true },
         ] },
       ]

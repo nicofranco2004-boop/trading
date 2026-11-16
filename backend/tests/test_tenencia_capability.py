@@ -20,7 +20,8 @@ poder usar.
 import unittest
 
 from importing.parsers.registry import list_parsers, get_parser
-from importing.pipeline import parser_options_grouped, TENENCIA_LABELS
+from importing.pipeline import parser_options_grouped
+from tests import _guia_de_la_app as guia
 
 # Los siete brokers con parser de foto, y el formato que produce cada uno.
 # Si alguien agrega un parser de foto nuevo y no toca esta lista, el test avisa.
@@ -54,7 +55,7 @@ class TenenciaCapabilityTest(unittest.TestCase):
         g = next(x for x in parser_options_grouped()
                  if x["platform"] == "balanz_internacional")
         self.assertIsNone(g["tenencia_format"])
-        self.assertIsNone(g["tenencia_label"])
+        self.assertEqual(guia.pasos_de_la_foto()["balanz_internacional"], [])
 
     def test_los_tres_exports_de_balanz_comparten_la_misma_foto(self):
         # Balanz tiene tres formatos de movimientos y UNA sola foto. Por eso la
@@ -65,17 +66,22 @@ class TenenciaCapabilityTest(unittest.TestCase):
 
     def test_toda_foto_declarada_tiene_instrucciones(self):
         # Un aviso que dice "traé la foto" sin decir de dónde bajarla no sirve.
+        # Dónde bajarla lo dice la guía de la app (su paso de la foto,
+        # `pasosFoto`); hasta el 16/11/2026 lo decía una copia acá
+        # (TENENCIA_LABELS) que se había separado de la guía.
+        foto = guia.pasos_de_la_foto()
         for g in parser_options_grouped():
             if g["tenencia_format"]:
-                self.assertTrue(g["tenencia_label"],
-                                f"{g['platform']} declara foto pero no tiene "
-                                f"instrucciones en TENENCIA_LABELS")
+                self.assertTrue(foto.get(g["platform"]),
+                                f"{g['platform']} declara foto pero su guía en "
+                                f"BrokerInstructions.jsx no marca el paso (pasosFoto)")
 
     def test_no_sobran_instrucciones(self):
-        # Al revés: una etiqueta para un formato que nadie declara es letra
-        # muerta que alguien va a leer como si estuviera vivo.
-        declarados = {p.tenencia_format for p in list_parsers() if p.tenencia_format}
-        self.assertEqual(set(TENENCIA_LABELS) - declarados, set())
+        # Al revés: una guía que explica una foto que el servidor no lee es
+        # letra muerta que alguien va a leer como si estuviera viva.
+        con_foto = {g["platform"] for g in parser_options_grouped() if g["tenencia_format"]}
+        explicadas = {gid for gid, pasos in guia.pasos_de_la_foto().items() if pasos}
+        self.assertEqual(explicadas - con_foto, set())
 
     def test_el_default_del_contrato_es_sin_foto(self):
         # Falla CERRADO: un parser nuevo no pide una foto que nadie escribió.
