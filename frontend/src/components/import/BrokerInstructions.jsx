@@ -301,6 +301,18 @@ export function pasosPara(guia, sujeto = 'vos') {
   return steps.map(s => _A_CLIENTE.reduce((acc, [re, rep]) => acc.replace(re, rep), s))
 }
 
+// Los pasos para leer FUERA del asistente de importación: la tanda del asesor
+// (pages/AdvisorImports) y las landings públicas de cada broker (pages/keywords).
+// Se saltean los que hablan de la caja de subida del asistente ("subí… acá"), y
+// cada paso dice si es el de la FOTO de tenencia de hoy.
+export function pasosDeDescarga(guia, sujeto = 'vos') {
+  const soloAsistente = guia?.pasosSoloAsistente || []
+  const foto = guia?.pasosFoto || []
+  return pasosPara(guia, sujeto)
+    .map((texto, i) => ({ texto, esFoto: foto.includes(i), i }))
+    .filter(p => !soloAsistente.includes(p.i))
+}
+
 // lockBrokerId: si viene, el widget queda fijo a ese broker (sin chips ni
 // selector) — lo usa el Paso 0 del wizard, donde el broker ya fue elegido.
 export default function BrokerInstructions({ defaultBrokerId = 'cocos', lockBrokerId = null }) {

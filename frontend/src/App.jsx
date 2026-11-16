@@ -118,6 +118,9 @@ const Privacidad = COMPONENTES_PUBLICOS['/privacidad']
 // sin login. Lazy porque solo se cargan cuando alguien viene de Google.
 const LandingCocos = COMPONENTES_PUBLICOS['/brokers/cocos']
 const LandingIOL = COMPONENTES_PUBLICOS['/brokers/iol']
+const LandingBalanz = COMPONENTES_PUBLICOS['/brokers/balanz']
+const LandingBullMarket = COMPONENTES_PUBLICOS['/brokers/bull-market']
+const LandingPPI = COMPONENTES_PUBLICOS['/brokers/ppi']
 const LandingBinance = COMPONENTES_PUBLICOS['/brokers/binance']
 const LandingCedears = COMPONENTES_PUBLICOS['/cedears']
 const LandingBonosAR = COMPONENTES_PUBLICOS['/bonos-argentinos']
@@ -329,6 +332,9 @@ function AppRoutes() {
       {/* SEO landings + blog — también duplicadas abajo para flow no-auth */}
       <Route path="/brokers/cocos" element={<LandingCocos />} />
       <Route path="/brokers/iol" element={<LandingIOL />} />
+      <Route path="/brokers/balanz" element={<LandingBalanz />} />
+      <Route path="/brokers/bull-market" element={<LandingBullMarket />} />
+      <Route path="/brokers/ppi" element={<LandingPPI />} />
       <Route path="/brokers/binance" element={<LandingBinance />} />
       <Route path="/cedears" element={<LandingCedears />} />
       <Route path="/bonos-argentinos" element={<LandingBonosAR />} />
@@ -422,6 +428,9 @@ function Layout() {
               Cada una rankea para una keyword AR-específica. */}
           <Route path="/brokers/cocos" element={<LandingCocos />} />
           <Route path="/brokers/iol" element={<LandingIOL />} />
+          <Route path="/brokers/balanz" element={<LandingBalanz />} />
+          <Route path="/brokers/bull-market" element={<LandingBullMarket />} />
+          <Route path="/brokers/ppi" element={<LandingPPI />} />
           <Route path="/brokers/binance" element={<LandingBinance />} />
           <Route path="/cedears" element={<LandingCedears />} />
           <Route path="/bonos-argentinos" element={<LandingBonosAR />} />

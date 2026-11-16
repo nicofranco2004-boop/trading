@@ -30,7 +30,7 @@ import { leerDe, guardarDe } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
-import { BROKER_GUIDES, pasosPara } from '../components/import/BrokerInstructions'
+import { BROKER_GUIDES, pasosDeDescarga } from '../components/import/BrokerInstructions'
 import { ReconcileStep, decisionesPendientes, tickersAprobados } from '../components/import/ImportWizard'
 import {
   correrTanda, filaLista, faltante, archivoAceptado, plural, ESTADO, EXTENSIONES, fusionarFotosLocales,
@@ -536,10 +536,10 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
             <button type="button" className="text-ink-2 hover:text-ink-0" aria-label="Cerrar la guía" onClick={() => setGuiaAbierta(false)}><X size={14} aria-hidden="true" /></button>
           </div>
           <ol className="mt-2 pl-5 list-decimal space-y-1.5 text-[13px] text-ink-1 max-w-[78ch]">
-            {pasosPara(guia, 'cliente').map((s, i) => (guia.pasosSoloAsistente || []).includes(i) ? null : (
+            {pasosDeDescarga(guia, 'cliente').map(({ texto, esFoto, i }) => (
               <li key={i}>
-                {s}
-                {(guia.pasosFoto || []).includes(i) && (
+                {texto}
+                {esFoto && (
                   <span className="ml-1.5 inline-block align-middle text-[10px] font-medium text-data-violet bg-data-violet/10 rounded px-1.5 py-0.5">
                     la foto también va en la fila
                   </span>

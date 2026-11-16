@@ -7,6 +7,8 @@ import { CTA_PRUEBA } from '../../../data/prueba'
 const RELATED = [
   { to: '/brokers/cocos', label: 'Tracker para Cocos Capital', desc: 'Si ya estás en Cocos, así sumás otros brokers a tu tracking.' },
   { to: '/brokers/iol', label: 'Tracker para IOL Invertí Online', desc: 'IOL con FIFO automático y bonos AR.' },
+  { to: '/brokers/balanz', label: 'Movimientos de Balanz', desc: 'Cómo bajar tu historial de Balanz (el reporte de Resultados no sirve).' },
+  { to: '/brokers/bull-market', label: 'Movimientos de Bull Market', desc: 'Cuenta Corriente, Tenencia valorizada y el histórico por mail.' },
   { to: '/blog/pnl-real-usd-blue-argentina', label: 'P&L real en USD blue', desc: 'Cómo medir tu performance real, sin la trampa de los pesos.' },
 ]
 

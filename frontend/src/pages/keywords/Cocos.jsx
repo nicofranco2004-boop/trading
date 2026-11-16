@@ -3,15 +3,24 @@
 // Target query: "tracker cocos capital", "seguir cartera cocos", "P&L cocos"
 // Intent: usuario de Cocos buscando manera de ver su cartera consolidada con
 // otros brokers (porque Cocos solo muestra Cocos).
+//
+// Los pasos para bajar los archivos salen de la guía de la app (ver
+// components/landing/landingDeBroker.js): acá no se escribe ningún camino del
+// menú de Cocos.
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
-import { PASO_CREAR_CUENTA, cupoDe } from '../../data/prueba'
+import { guiaDeBroker, descargaDe, comoFuncionaDe } from '../../components/landing/landingDeBroker'
+import { cupoDe } from '../../data/prueba'
 import { PRO_FEATURES, CUPO_CHAT } from '../../data/planCatalog'
+import { RENDI_Y_LOS_IMPUESTOS } from '../../data/impuestos'
+import { otrasGuiasDeBrokers } from '../../data/guiasDeBrokers'
+
+const GUIA = guiaDeBroker('cocos')
 
 const FEATURES = [
   {
-    title: 'Importá tu CSV de Cocos Capital en 30 segundos',
-    desc: 'Descargá desde Cocos los Movimientos (Actividad → Descargar Movimientos) y el Estado de Cuenta (Portfolio → Descargar portfolio) y subí ambos a Rendi. Reconocemos automáticamente acciones AR, CEDEARs, bonos y FCI.',
+    title: 'Importá tus archivos de Cocos Capital en 30 segundos',
+    desc: 'Subís los Movimientos y el Estado de Cuenta juntos. Reconocemos automáticamente acciones AR, CEDEARs, bonos y FCI.',
   },
   {
     title: 'P&L real en USD, no pesos nominales',
@@ -23,8 +32,9 @@ const FEATURES = [
   },
   {
     title: 'FIFO automático para CEDEARs y acciones',
-    desc: 'Cuando vendés desde Cocos, Rendi aplica FIFO (criterio fiscal AR) y calcula tu P&L declarable. Exportás el CSV para tu contador / AFIP.',
+    desc: 'Cuando vendés desde Cocos, Rendi descuenta del lote más viejo primero y te muestra cuánto ganaste en cada venta, en pesos y en dólares.',
   },
+  RENDI_Y_LOS_IMPUESTOS,
   {
     title: 'Soporte completo de bonos AR (AL30, GD30, TX26)',
     desc: 'Bonos canje 2020 y CER con metadata de cupones y amortizaciones. Cocos muestra el precio; Rendi te dice qué porcentaje es capital y qué es renta.',
@@ -35,31 +45,13 @@ const FEATURES = [
   },
 ]
 
-const HOW_STEPS = [
-  // El paso 1 es el mismo en las seis landings y sale de `data/prueba.js`:
-  // decía que el plan Free alcanzaba para empezar, y el Free ya no existe
-  // para quien se registra.
-  { n: 1, ...PASO_CREAR_CUENTA },
-  {
-    n: 2,
-    title: 'Descargá tus dos archivos de Cocos',
-    desc: 'En Cocos web: 1) los Movimientos (Actividad → Descargar Movimientos) — compras, ventas, dividendos y depósitos; y 2) el Estado de Cuenta (Portfolio → "Descargar portfolio" → fecha más reciente → CSV) — tu tenencia actual. Subís los dos juntos.',
-  },
-  {
-    n: 3,
-    title: 'Importá los CSV en Rendi',
-    desc: 'En /imports subís los archivos. Rendi mapea automáticamente los campos (asset, fecha, cantidad, precio, comisión, moneda), reconstruye tus operaciones y completa tu tenencia actual con el Estado de Cuenta — sin duplicar.',
-  },
-  {
-    n: 4,
-    title: 'Ves tu cartera consolidada en USD',
-    desc: 'Dashboard con P&L en pesos y USD, gráfico de evolución, top performers, allocation. Si sumás otros brokers, todo queda en un solo lugar.',
-  },
-]
+const HOW_STEPS = comoFuncionaDe(GUIA, {
+  title: 'Ves tu cartera consolidada en USD',
+  desc: 'Dashboard con P&L en pesos y USD, gráfico de evolución, top performers, allocation. Si sumás otros brokers, todo queda en un solo lugar.',
+})
 
 const RELATED = [
-  { to: '/brokers/iol', label: 'Tracker IOL' },
-  { to: '/brokers/binance', label: 'Tracker Binance' },
+  ...otrasGuiasDeBrokers('/brokers/cocos'),
   { to: '/cedears', label: 'CEDEARs con FIFO' },
   { to: '/bonos-argentinos', label: 'Bonos AR' },
   { to: '/planes', label: 'Ver planes' },
@@ -70,7 +62,8 @@ export default function Cocos() {
     <KeywordLanding
       kicker="Tracker para Cocos Capital"
       h1="Seguí tu cartera de Cocos en USD real, con FIFO automático"
-      intro="Cocos te muestra tu cartera en pesos. Rendi la consolida con tus otros brokers (IOL, Balanz, Schwab, Binance) y te muestra el P&L real en dólares (al MEP de cada fecha), con FIFO automático para AFIP y Mervall-E AI con memoria."
+      intro="Cocos te muestra tu cartera en pesos. Rendi la consolida con tus otros brokers (IOL, Balanz, Schwab, Binance) y te muestra el P&L real en dólares (al MEP de cada fecha), con FIFO automático y Mervall-E AI con memoria."
+      descarga={descargaDe(GUIA, 'Son dos archivos: tus Movimientos (lo que compraste, vendiste y cobraste) y el Estado de Cuenta (lo que tenés hoy).')}
       features={FEATURES}
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}

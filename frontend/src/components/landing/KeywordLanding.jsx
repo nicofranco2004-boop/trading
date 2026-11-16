@@ -6,8 +6,12 @@
 //
 //   • <PageMeta> con title/description únicos por landing
 //   • H1 keyword-rich
+//   • (opcional) "Cómo descargar tus movimientos de X" — los pasos de la guía
+//     de la app (BROKER_GUIDES), con su HowTo schema. Ver landingDeBroker.js.
+//   • (opcional) "Errores típicos" — lo propio de cada broker, para que dos
+//     landings de broker no sean la misma página con otro nombre.
 //   • Bloque "Lo que te da Rendi" (lista bullet) — keywords AR
-//   • Bloque "Cómo funciona" — pasos (refuerza el HowTo schema)
+//   • Bloque "Cómo funciona" — pasos
 //   • CTA prominente a /login?mode=register
 //   • Footer con links a otras landings + planes (internal linking)
 //
@@ -28,7 +32,7 @@
 //   />
 
 import { Link } from 'react-router-dom'
-import { ArrowRight, Check, Sparkles } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Check, Sparkles } from 'lucide-react'
 import CabeceraPublica, { SoloVisitantes } from '../CabeceraPublica'
 import PageMeta from '../PageMeta'
 // Los botones dicen la prueba, no "gratis" a secas: con el paso de abajo, que
@@ -40,7 +44,10 @@ export default function KeywordLanding({
   kicker,
   h1,
   intro,
+  descarga,        // {titulo, bajada?, pasos: [{texto, esFoto}]} — opcional
+  errores,         // [{title, desc}] — opcional
   features,        // [{title, desc}]
+  featuresTitle = 'Lo que te da Rendi',
   howSteps,        // [{n, title, desc}]
   relatedLinks,    // [{to, label}]
   metaTitle,
@@ -69,6 +76,14 @@ export default function KeywordLanding({
     ],
   } : null
 
+  // Los mismos pasos que se leen en la página, para buscadores y robots de IA.
+  const howToSchema = descarga ? {
+    '@context': 'https://schema.org',
+    '@type': 'HowTo',
+    'name': descarga.titulo,
+    'step': descarga.pasos.map((p, i) => ({ '@type': 'HowToStep', 'position': i + 1, 'text': p.texto })),
+  } : null
+
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0 overflow-x-hidden">
       <PageMeta
@@ -80,6 +95,12 @@ export default function KeywordLanding({
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbSchema) }}
+        />
+      )}
+      {howToSchema && (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(howToSchema) }}
         />
       )}
 
@@ -128,11 +149,64 @@ export default function KeywordLanding({
           </div>
         </section>
 
+        {/* Cómo descargar — los pasos de la guía de la app, numerados */}
+        {descarga && descarga.pasos.length > 0 && (
+          <section className="mb-16">
+            <h2 className="text-2xl md:text-3xl font-semibold tracking-tight mb-3 text-ink-0">
+              {descarga.titulo}
+            </h2>
+            {descarga.bajada && (
+              <p className="text-sm md:text-base text-ink-2 leading-relaxed mb-8 max-w-2xl">{descarga.bajada}</p>
+            )}
+            <ol className="space-y-5">
+              {descarga.pasos.map((p, i) => (
+                <li key={i} className="flex items-start gap-4">
+                  <span className="tabular text-[12px] flex-shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-full bg-data-violet/15 text-data-violet font-semibold">
+                    {i + 1}
+                  </span>
+                  <div className="flex-1 min-w-0 pt-0.5">
+                    <p className="text-[15px] text-ink-1 leading-relaxed">{p.texto}</p>
+                    {p.esFoto && (
+                      <span className="mt-2 inline-block text-[11px] font-medium text-data-violet bg-data-violet/10 rounded px-1.5 py-0.5">
+                        Tu foto de hoy: fija lo que tenés
+                      </span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
+
+        {/* Errores típicos — triángulo ámbar */}
+        {errores && errores.length > 0 && (
+          <section className="mb-16">
+            <h2 className="text-2xl md:text-3xl font-semibold tracking-tight mb-8 text-ink-0">
+              Errores típicos (y cómo evitarlos)
+            </h2>
+            <ul className="space-y-4">
+              {errores.map((e, i) => (
+                <li key={i} className="flex items-start gap-3">
+                  <AlertTriangle
+                    size={18}
+                    strokeWidth={2}
+                    className="text-rendi-warn flex-shrink-0 mt-0.5"
+                  />
+                  <div>
+                    <h3 className="text-base font-medium text-ink-0 mb-0.5">{e.title}</h3>
+                    <p className="text-sm text-ink-2 leading-relaxed">{e.desc}</p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         {/* Features — bullet list con check verde */}
         {features && features.length > 0 && (
           <section className="mb-16">
             <h2 className="text-2xl md:text-3xl font-semibold tracking-tight mb-8 text-ink-0">
-              Lo que te da Rendi
+              {featuresTitle}
             </h2>
             <ul className="space-y-4">
               {features.map((f, i) => (

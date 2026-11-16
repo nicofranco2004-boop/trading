@@ -46,7 +46,7 @@ Rendi está en español (Argentina) y cobra en pesos. Funciona en la web y se in
 - [CEDEARs con FIFO](https://rendi.finance/cedears)
 - [Bonos argentinos](https://rendi.finance/bonos-argentinos)
 - [Cripto y AFIP](https://rendi.finance/afip-cripto)
-- [Cocos Capital](https://rendi.finance/brokers/cocos), [IOL](https://rendi.finance/brokers/iol), [Binance](https://rendi.finance/brokers/binance)
+- Cómo descargar tus movimientos de cada broker: [Cocos Capital](https://rendi.finance/brokers/cocos), [IOL](https://rendi.finance/brokers/iol), [Balanz](https://rendi.finance/brokers/balanz), [Bull Market](https://rendi.finance/brokers/bull-market), [PPI](https://rendi.finance/brokers/ppi), [Binance](https://rendi.finance/brokers/binance)
 - [Blog](https://rendi.finance/blog)
 - [Términos](https://rendi.finance/terminos), [Privacidad](https://rendi.finance/privacidad), [Reembolso](https://rendi.finance/reembolso)
 

@@ -35,7 +35,7 @@ const HOW_STEPS = [
   // decía que el plan Free alcanzaba para empezar, y el Free ya no existe
   // para quien se registra.
   { n: 1, ...PASO_CREAR_CUENTA },
-  { n: 2, title: 'Cargá tu historial de operaciones', desc: 'Exportás el CSV de Binance (Wallet → Transaction History) o cargás manualmente. Rendi reconoce los pares y los precia al dólar del día.' },
+  { n: 2, title: 'Cargá tu historial de operaciones', desc: 'Exportás el historial de transacciones de Binance (el paso a paso está en nuestra guía de Binance) o cargás manualmente. Rendi reconoce los pares y los precia al dólar del día.' },
   { n: 3, title: 'Rendi aplica FIFO automático', desc: 'Cuando vendés (o convertís) un token, Rendi descuenta del lote más viejo primero y calcula el cost basis al precio de adquisición original.' },
   { n: 4, title: 'Exportás el consolidado anual', desc: 'En diciembre / al cierre fiscal, descargás el CSV con todas tus operaciones, FIFO aplicado, ganancia neta declarable. Tu contador lo lee directo.' },
 ]

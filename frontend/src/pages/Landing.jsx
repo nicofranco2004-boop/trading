@@ -43,6 +43,7 @@ import VideoRendi from '../components/landing/VideoRendi'
 // El botón de la prueba es el MISMO texto en la home, las landings de SEO, el
 // blog y la guía.
 import { CTA_PRUEBA, cupoDe } from '../data/prueba'
+import { GUIAS_DE_BROKERS } from '../data/guiasDeBrokers'
 import { useAlVerse } from '../hooks/useAlVerse'
 
 // El demo se abre con una carga completa (no con el router): arranca la app
@@ -363,13 +364,15 @@ function Pricing() {
 }
 
 // ─── Guías por broker ────────────────────────────────────────────────────────
-// Para SEO, no sólo para el visitante: las seis landings de palabras clave
-// quedaban huérfanas sin un link desde la portada, que es la página con más
-// autoridad del dominio. No sacar sin dejarlas enlazadas en otro lado.
+// Para SEO, no sólo para el visitante: las landings de palabras clave quedaban
+// huérfanas sin un link desde la portada, que es la página con más autoridad
+// del dominio. No sacar sin dejarlas enlazadas en otro lado. Las de broker
+// salen de la lista única (data/guiasDeBrokers.js): una landing de broker nueva
+// aparece acá sola.
 
 function GuiasPorBroker() {
   const guias = [
-    ['/brokers/cocos', 'Cocos Capital'], ['/brokers/iol', 'IOL Inversiones'], ['/brokers/binance', 'Binance y cripto'],
+    ...GUIAS_DE_BROKERS.map(g => [g.to, g.nombre]),
     ['/cedears', 'CEDEARs'], ['/bonos-argentinos', 'Bonos argentinos'], ['/afip-cripto', 'AFIP y cripto'],
   ]
   return (

@@ -1,7 +1,15 @@
 // /brokers/iol — keyword landing para "tracker IOL Invertí Online"
+//
+// Los pasos para bajar los archivos salen de la guía de la app (ver
+// components/landing/landingDeBroker.js): acá no se escribe ningún camino del
+// menú de IOL.
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
-import { PASO_CREAR_CUENTA } from '../../data/prueba'
+import { guiaDeBroker, descargaDe, comoFuncionaDe } from '../../components/landing/landingDeBroker'
+import { RENDI_Y_LOS_IMPUESTOS } from '../../data/impuestos'
+import { otrasGuiasDeBrokers } from '../../data/guiasDeBrokers'
+
+const GUIA = guiaDeBroker('iol')
 
 const FEATURES = [
   {
@@ -13,9 +21,10 @@ const FEATURES = [
     desc: 'IOL opera mayormente en pesos. Rendi pasa cada operación al dólar MEP de su fecha y calcula el P&L real en USD — no la ilusión nominal en ARS.',
   },
   {
-    title: 'FIFO automático para tu declaración AFIP',
-    desc: 'Cada venta descuenta del lote más viejo primero (FIFO, criterio fiscal AR). Exportás el consolidado anual para presentar a AFIP / ARCA sin armar Excels.',
+    title: 'FIFO automático en cada venta',
+    desc: 'Cada venta descuenta del lote más viejo primero (FIFO). Ves cuánto ganaste en cada una, en pesos y en dólares, sin armar Excels.',
   },
+  RENDI_Y_LOS_IMPUESTOS,
   {
     title: 'Multi-broker: combiná IOL + Cocos + Binance',
     desc: 'Rendi soporta múltiples brokers en simultáneo. Ves tu cartera total consolidada, no fragmentada plataforma por plataforma.',
@@ -30,19 +39,13 @@ const FEATURES = [
   },
 ]
 
-const HOW_STEPS = [
-  // El paso 1 es el mismo en las seis landings y sale de `data/prueba.js`:
-  // decía que el plan Free alcanzaba para empezar, y el Free ya no existe
-  // para quien se registra.
-  { n: 1, ...PASO_CREAR_CUENTA },
-  { n: 2, title: 'Exportá tu historial de IOL', desc: 'En IOL: Mi Cuenta → Movimientos → Detalle de Movimientos. Elegí desde el inicio de tu cuenta hasta hoy y, abajo de todo, “Descargar movimientos históricos” (.xls).' },
-  { n: 3, title: 'Importá el .xls en Rendi', desc: 'Mapeamos automáticamente los campos de IOL (asset, fecha, cantidad, precio, broker). Verificá la previa antes de confirmar.' },
-  { n: 4, title: 'Ves tu cartera en USD + insights', desc: 'Dashboard con KPIs, gráfico de evolución, allocation por activo, top 5. Tu cartera real en USD, no en pesos.' },
-]
+const HOW_STEPS = comoFuncionaDe(GUIA, {
+  title: 'Ves tu cartera en USD + insights',
+  desc: 'Dashboard con KPIs, gráfico de evolución, allocation por activo, top 5. Tu cartera real en USD, no en pesos.',
+})
 
 const RELATED = [
-  { to: '/brokers/cocos', label: 'Tracker Cocos Capital' },
-  { to: '/brokers/binance', label: 'Tracker Binance' },
+  ...otrasGuiasDeBrokers('/brokers/iol'),
   { to: '/bonos-argentinos', label: 'Bonos AR' },
   { to: '/cedears', label: 'CEDEARs con FIFO' },
   { to: '/planes', label: 'Ver planes' },
@@ -53,12 +56,13 @@ export default function IOL() {
     <KeywordLanding
       kicker="Tracker para IOL Invertí Online"
       h1="Seguí tu cartera de IOL en USD real, con bonos AR y FIFO automático"
-      intro="IOL te muestra el monto en pesos. Rendi pasa cada operación al dólar MEP de su fecha, soporta el catálogo completo (acciones AR, CEDEARs, bonos canje 2020, CER) y calcula tu FIFO automático para AFIP."
+      intro="IOL te muestra el monto en pesos. Rendi pasa cada operación al dólar MEP de su fecha, soporta el catálogo completo (acciones AR, CEDEARs, bonos canje 2020, CER) y aplica FIFO automático en cada venta."
+      descarga={descargaDe(GUIA, 'Son dos archivos, los dos desde la web de IOL: el Detalle de Movimientos (tu historial) y el Resumen de Cuenta (lo que tenés hoy).')}
       features={FEATURES}
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
       metaTitle="Tracker IOL Invertí Online — Rendi | P&L real en USD"
-      metaDescription="Seguí tu cartera de IOL en USD real con Rendi. Bonos AR (AL30, GD30, TX26), CEDEARs, acciones Merval. FIFO automático para AFIP, Mervall-E AI, multi-broker."
+      metaDescription="Seguí tu cartera de IOL en USD real con Rendi. Bonos AR (AL30, GD30, TX26), CEDEARs, acciones Merval. FIFO automático, Mervall-E AI, multi-broker."
       canonicalPath="/brokers/iol"
     />
   )

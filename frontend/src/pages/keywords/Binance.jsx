@@ -1,8 +1,16 @@
 // /brokers/binance — keyword landing para "tracker Binance Argentina"
+//
+// Los pasos para bajar el historial salen de la guía de la app (ver
+// components/landing/landingDeBroker.js): acá no se escribe ningún camino del
+// menú de Binance.
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
-import { PASO_CREAR_CUENTA, cupoDe } from '../../data/prueba'
+import { guiaDeBroker, descargaDe, comoFuncionaDe } from '../../components/landing/landingDeBroker'
+import { cupoDe } from '../../data/prueba'
 import { PRO_FEATURES, CUPO_CHAT } from '../../data/planCatalog'
+import { otrasGuiasDeBrokers } from '../../data/guiasDeBrokers'
+
+const GUIA = guiaDeBroker('binance')
 
 const FEATURES = [
   {
@@ -31,20 +39,14 @@ const FEATURES = [
   },
 ]
 
-const HOW_STEPS = [
-  // El paso 1 es el mismo en las seis landings y sale de `data/prueba.js`:
-  // decía que el plan Free alcanzaba para empezar, y el Free ya no existe
-  // para quien se registra.
-  { n: 1, ...PASO_CREAR_CUENTA },
-  { n: 2, title: 'Exportá tu historial de Binance', desc: 'En Binance: Wallet → Transaction History → Export. Descargás el CSV con todas las trades, deposits, withdrawals, dividends, staking.' },
-  { n: 3, title: 'Importá el CSV o cargá manual', desc: 'Subí el CSV en /imports o cargá las posiciones más relevantes manualmente. Rendi reconoce los pares y los precia automático.' },
-  { n: 4, title: 'Ves tu portfolio crypto en USD', desc: 'Dashboard con valor live, P&L, allocation por token. Si sumás brokers tradicionales, ves el mix completo.' },
-]
+const HOW_STEPS = comoFuncionaDe(GUIA, {
+  title: 'Ves tu portfolio crypto en USD',
+  desc: 'Dashboard con valor live, P&L, allocation por token. Si sumás brokers tradicionales, ves el mix completo.',
+})
 
 const RELATED = [
   { to: '/afip-cripto', label: 'AFIP cripto + FIFO' },
-  { to: '/brokers/cocos', label: 'Tracker Cocos' },
-  { to: '/brokers/iol', label: 'Tracker IOL' },
+  ...otrasGuiasDeBrokers('/brokers/binance'),
   { to: '/planes', label: 'Ver planes' },
 ]
 
@@ -54,6 +56,7 @@ export default function Binance() {
       kicker="Tracker para Binance Argentina"
       h1="Seguí tu portfolio crypto de Binance, con FIFO AFIP automático"
       intro="Binance te muestra balances en cripto y USDT. Rendi convierte tu portfolio a dólares, aplica FIFO automático (criterio fiscal AR) y te permite combinar crypto con CEDEARs, bonos AR y acciones en un solo dashboard."
+      descarga={descargaDe(GUIA, 'Es un solo archivo: el historial completo de transacciones de tu cuenta.')}
       features={FEATURES}
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
