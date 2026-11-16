@@ -108,6 +108,10 @@ function PersonalDashboard() {
   // recálculo: con `lastUpdated` solo, una cuenta sin nada que cotizar quedaba
   // en "Recalculando…" para siempre (auditoría 2026-10-09).
   const [totalListo, setTotalListo] = useState(false)
+  // Hay un pedido de precios en viaje. Mientras tanto el encabezado dice
+  // «Buscando precios…» en el lugar donde después va «Precios de hace…»: sin
+  // ese renglón, al llegar los precios aparecía y bajaba toda la pantalla 30 px.
+  const [pidiendoPrecios, setPidiendoPrecios] = useState(false)
   const [range, setRange] = useState('1M')
   // Sólo para decidir si se ofrece el puente a la tira semanal de Reportes, que
   // es material de Plus/Pro. El hook cachea a nivel módulo y en localStorage: el
@@ -233,12 +237,15 @@ function PersonalDashboard() {
     // Sin nada que cotizar (sólo efectivo o plazos fijos), el total ya es el de
     // verdad. `lastUpdated` no se toca acá: dice cuándo llegaron precios.
     if (!all) { setTotalListo(true); return }
+    setPidiendoPrecios(true)
     try {
       const data = await api.get(`/prices?symbols=${all}`)
       setPrices(data)
       setLastUpdated(new Date())
       setTotalListo(true)
-    } catch {}
+    } catch {} finally {
+      setPidiendoPrecios(false)
+    }
   }
 
   const tcValuacion = pickFinancialRate(dolar, valuationDollar) || config.tc_blue || 1415
@@ -895,11 +902,15 @@ function PersonalDashboard() {
   // siempre, al lado de un dato que nadie volvía a pedir).
   // Sin ningún precio en la respuesta (proveedor caído) no hay "Precios de
   // hace…": la misma regla que Cartera (hayPrecios).
-  const meta = lastUpdated && hayPrecios(prices)
+  // Mientras viajan los primeros precios, «Buscando precios…» en el MISMO lugar
+  // (como Cartera del celular): el renglón existe desde el primer cuadro y no
+  // empuja la pantalla al llegar (CLS, auditoría 16/11/2026). Si después no
+  // llega ningún precio, el renglón se va: es el caso raro, no el de todos los días.
+  const meta = (lastUpdated && hayPrecios(prices)) || (pidiendoPrecios && !lastUpdated)
     ? (
       <span className="inline-flex items-center gap-2 flex-wrap">
         {sesionFdh && <EstadoSesion datos={fdh} />}
-        <PreciosEnVivo actualizado={lastUpdated} />
+        <PreciosEnVivo actualizado={lastUpdated} actualizando={pidiendoPrecios} />
       </span>
     )
     : null

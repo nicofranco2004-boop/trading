@@ -40,16 +40,34 @@ export default function YearReturnLine({ modo, className = '' }) {
   const moneda = currency === 'ARS' ? 'ars' : 'usd'
   const { current, loading, refreshing } = useReportYears('global', modo, moneda)
 
+  // La puerta al detalle no depende del número: va igual en el esqueleto.
+  const puertaAlDetalle = (
+    <Link
+      to="/reportes"
+      className="text-[11.5px] text-rendi-accent hover:text-rendi-accent/80 inline-flex items-center gap-0.5 transition-colors font-medium whitespace-nowrap"
+    >
+      Ver año por año <ArrowRight size={11} strokeWidth={1.75} />
+    </Link>
+  )
+
   // ⚠️ EL HUECO SE RESERVA DESDE EL PRIMER INSTANTE. El número del año necesita el
   // valor VIVO de la cartera, y bajar los precios tarda unos segundos la primera
   // vez (medido: 6,2 s con el caché frío, 0,0 s después). Sin este esqueleto la
   // card aparecía de golpe varios segundos tarde y empujaba todo lo de abajo.
+  // Y DEL MISMO ALTO que la card con número: sin el pie y con las pastillas más
+  // bajas medía 102 px contra 136, y al llegar el número bajaba 34 px lo que
+  // estaba abajo (medido en el inicio del celular, 16/11/2026). Las pastillas
+  // (Veredicto) miden 26 px: 11 px de letra con su interlineado, más relleno y borde.
   if (loading && !current) {
     return (
-      <div className={`h-full bg-bg-1 border border-line rounded-xl px-4 py-3.5 ${className}`}>
+      <div className={`h-full bg-bg-1 border border-line rounded-xl px-4 py-3.5 flex flex-col ${className}`}>
         <div className="text-[12px] text-ink-3 leading-none font-medium">Este año</div>
         <div className="mt-2 h-[22px] w-24 rounded bg-bg-2 esqueleto" />
-        <div className="mt-2.5 h-[20px] w-32 rounded-full bg-bg-2 esqueleto" />
+        <div className="mt-2.5 h-[26px] w-32 rounded-full bg-bg-2 esqueleto" />
+        <div className="flex items-center justify-between gap-2 flex-wrap mt-auto pt-2.5">
+          <span className="h-[11px] w-28 rounded bg-bg-2 esqueleto" />
+          {puertaAlDetalle}
+        </div>
       </div>
     )
   }
@@ -119,12 +137,7 @@ export default function YearReturnLine({ modo, className = '' }) {
             : current.basis === 'contable' ? 'de tu historia importada'
             : 'medido a mercado'}
         </span>
-        <Link
-          to="/reportes"
-          className="text-[11.5px] text-rendi-accent hover:text-rendi-accent/80 inline-flex items-center gap-0.5 transition-colors font-medium whitespace-nowrap"
-        >
-          Ver año por año <ArrowRight size={11} strokeWidth={1.75} />
-        </Link>
+        {puertaAlDetalle}
       </div>
     </div>
   )
