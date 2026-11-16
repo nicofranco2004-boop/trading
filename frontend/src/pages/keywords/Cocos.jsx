@@ -12,7 +12,6 @@ import KeywordLanding from '../../components/landing/KeywordLanding'
 import { guiaDeBroker, descargaDe, comoFuncionaDe } from '../../components/landing/landingDeBroker'
 import { cupoDe } from '../../data/prueba'
 import { PRO_FEATURES, CUPO_CHAT } from '../../data/planCatalog'
-import { RENDI_Y_LOS_IMPUESTOS } from '../../data/impuestos'
 import { otrasGuiasDeBrokers } from '../../data/guiasDeBrokers'
 
 const GUIA = guiaDeBroker('cocos')
@@ -32,9 +31,8 @@ const FEATURES = [
   },
   {
     title: 'FIFO automático para CEDEARs y acciones',
-    desc: 'Cuando vendés desde Cocos, Rendi descuenta del lote más viejo primero y te muestra cuánto ganaste en cada venta, en pesos y en dólares.',
+    desc: 'Cuando vendés desde Cocos, Rendi aplica FIFO (criterio fiscal AR) y calcula tu P&L declarable. Exportás el CSV para tu contador / AFIP.',
   },
-  RENDI_Y_LOS_IMPUESTOS,
   {
     title: 'Soporte completo de bonos AR (AL30, GD30, TX26)',
     desc: 'Bonos canje 2020 y CER con metadata de cupones y amortizaciones. Cocos muestra el precio; Rendi te dice qué porcentaje es capital y qué es renta.',
@@ -62,9 +60,9 @@ export default function Cocos() {
     <KeywordLanding
       kicker="Tracker para Cocos Capital"
       h1="Seguí tu cartera de Cocos en USD real, con FIFO automático"
-      intro="Cocos te muestra tu cartera en pesos. Rendi la consolida con tus otros brokers (IOL, Balanz, Schwab, Binance) y te muestra el P&L real en dólares (al MEP de cada fecha), con FIFO automático y Mervall-E AI con memoria."
-      descarga={descargaDe(GUIA, 'Son dos archivos: tus Movimientos (lo que compraste, vendiste y cobraste) y el Estado de Cuenta (lo que tenés hoy).')}
+      intro="Cocos te muestra tu cartera en pesos. Rendi la consolida con tus otros brokers (IOL, Balanz, Schwab, Binance) y te muestra el P&L real en dólares (al MEP de cada fecha), con FIFO automático para AFIP y Mervall-E AI con memoria."
       features={FEATURES}
+      descarga={descargaDe(GUIA, 'Son dos archivos: tus Movimientos (lo que compraste, vendiste y cobraste) y el Estado de Cuenta (lo que tenés hoy).')}
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
       metaTitle="Tracker Cocos Capital — Rendi | Cartera consolidada en USD"

@@ -56,8 +56,8 @@ export default function Binance() {
       kicker="Tracker para Binance Argentina"
       h1="Seguí tu portfolio crypto de Binance, con FIFO AFIP automático"
       intro="Binance te muestra balances en cripto y USDT. Rendi convierte tu portfolio a dólares, aplica FIFO automático (criterio fiscal AR) y te permite combinar crypto con CEDEARs, bonos AR y acciones en un solo dashboard."
-      descarga={descargaDe(GUIA, 'Es un solo archivo: el historial completo de transacciones de tu cuenta.')}
       features={FEATURES}
+      descarga={descargaDe(GUIA, 'Es un solo archivo: el historial completo de transacciones de tu cuenta.')}
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
       metaTitle="Tracker Binance Argentina — Rendi | Crypto en USD con FIFO AFIP"

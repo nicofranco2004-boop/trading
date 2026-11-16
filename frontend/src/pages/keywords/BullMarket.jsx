@@ -11,8 +11,7 @@
 // cambiá esto.
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
-import { guiaDeBroker, descargaDe, comoFuncionaDe } from '../../components/landing/landingDeBroker'
-import { RENDI_Y_LOS_IMPUESTOS } from '../../data/impuestos'
+import { guiaDeBroker, descargaDe, comoFuncionaDe, IMPUESTOS_PROVISORIO } from '../../components/landing/landingDeBroker'
 import { otrasGuiasDeBrokers } from '../../data/guiasDeBrokers'
 
 const GUIA = guiaDeBroker('bullmarket')
@@ -62,7 +61,7 @@ const FEATURES = [
     title: 'Tu ganancia, en pesos y en dólares',
     desc: 'Cada operación se pasa al dólar MEP de su fecha, así ves si tu cartera de Bull Market le ganó a la inflación o sólo la acompañó.',
   },
-  RENDI_Y_LOS_IMPUESTOS,
+  IMPUESTOS_PROVISORIO,
 ]
 
 const HOW_STEPS = comoFuncionaDe(GUIA, {

@@ -12,8 +12,7 @@
 // balanz_internacional.py): si cambia lo que el lector hace, cambiá esto.
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
-import { guiaDeBroker, descargaDe, comoFuncionaDe } from '../../components/landing/landingDeBroker'
-import { RENDI_Y_LOS_IMPUESTOS } from '../../data/impuestos'
+import { guiaDeBroker, descargaDe, comoFuncionaDe, IMPUESTOS_PROVISORIO } from '../../components/landing/landingDeBroker'
 import { otrasGuiasDeBrokers } from '../../data/guiasDeBrokers'
 
 const GUIA = guiaDeBroker('balanz')
@@ -60,7 +59,7 @@ const FEATURES = [
     title: 'Tu ganancia medida en dólares',
     desc: 'Balanz te muestra la cartera en pesos. Rendi pasa cada operación al dólar MEP de su fecha: ves si ganaste poder de compra o si sólo acompañaste la inflación.',
   },
-  RENDI_Y_LOS_IMPUESTOS,
+  IMPUESTOS_PROVISORIO,
 ]
 
 const HOW_STEPS = comoFuncionaDe(GUIA, {

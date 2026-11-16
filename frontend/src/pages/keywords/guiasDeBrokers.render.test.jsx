@@ -8,8 +8,8 @@
 //   2. Cada landing de broker está enlazada desde las demás y desde la portada
 //      (sale de data/guiasDeBrokers.js, que tiene que coincidir con la lista de
 //      páginas públicas).
-//   3. No prometen «FIFO para tu declaración AFIP» sobre CEDEARs y acciones: para
-//      una persona humana esa venta en BYMA está exenta (ver data/impuestos.js).
+//   3. Las tres guías nuevas no prometen «FIFO para tu declaración AFIP» sobre
+//      CEDEARs y acciones: para una persona humana esa venta en BYMA está exenta.
 import { describe, it, expect, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
@@ -112,10 +112,12 @@ describe('ninguna landing escribe a mano un camino del menú de su broker', () =
   }
 })
 
-describe('lo que dicen de impuestos', () => {
-  // Binance queda afuera: la cripto sí tributa, y ahí FIFO y declaración son
-  // correctos. (Su «AFIP» sin «ARCA» sigue pendiente, anotado en data/impuestos.js.)
-  const deAcciones = GUIAS_DE_BROKERS.filter(g => g.guia !== 'binance')
+describe('lo que dicen de impuestos las tres guías nuevas', () => {
+  // Sólo las tres nuevas: Cocos, IOL y el resto los corrige la rama
+  // `claude/textos-fiscales` (sesión «Auditoría profunda de SEO»). Cuando esté en
+  // main, ampliar esto a todas las de acciones y CEDEARs (Binance no: la cripto
+  // sí tributa).
+  const deAcciones = GUIAS_DE_BROKERS.filter(g => ['balanz', 'bullmarket', 'ppi'].includes(g.guia))
   const PROMESAS = [
     /declaraci[oó]n (?:AFIP|ARCA|jurada)/i,
     /tu declaraci[oó]n/i,
@@ -127,6 +129,7 @@ describe('lo que dicen de impuestos', () => {
 
   for (const { to } of deAcciones) {
     it(`${to}: no promete declarar la venta de CEDEARs y acciones, y dice que está exenta`, async () => {
+      expect(deAcciones).toHaveLength(3)
       const texto = textoDe(await dibujar(to))
       for (const p of PROMESAS) expect(texto, String(p)).not.toMatch(p)
       expect(texto).toContain('vender CEDEARs y acciones argentinas en BYMA está exento de Ganancias')
