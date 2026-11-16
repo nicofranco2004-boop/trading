@@ -114,7 +114,7 @@ const Reembolso = COMPONENTES_PUBLICOS['/reembolso']
 const Privacidad = COMPONENTES_PUBLICOS['/privacidad']
 
 // SEO landings — páginas keyword-específicas que rankean long-tail
-// (cocos, iol, binance, cedears, bonos AR, AFIP cripto). Accesibles
+// (cocos, iol, binance, cedears, bonos AR, cripto e impuestos). Accesibles
 // sin login. Lazy porque solo se cargan cuando alguien viene de Google.
 const LandingCocos = COMPONENTES_PUBLICOS['/brokers/cocos']
 const LandingIOL = COMPONENTES_PUBLICOS['/brokers/iol']

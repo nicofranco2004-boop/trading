@@ -310,7 +310,7 @@ class ElChatQueDiceElHowToDeGOOGLE(unittest.TestCase):
 class LoQueTodaviaNoExisteNoSeVende(unittest.TestCase):
     """El catálogo separa `roadmap` de las features activas, y avisa en un
     comentario que NUNCA van mezcladas. El muro las mezcló: vendía "carpeta de
-    impuestos" (que en el catálogo es el roadmap `Tax helper AFIP`) como si
+    impuestos" (que en el catálogo es el roadmap `Ayuda para impuestos (ARCA)`) como si
     fuera una feature de Pro."""
 
     MURO = os.path.join(os.path.dirname(BACKEND), "frontend", "src",

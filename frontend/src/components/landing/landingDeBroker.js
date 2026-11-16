@@ -8,6 +8,7 @@
 // escribir un camino del menú de su broker.
 import { BROKER_GUIDES, pasosDeDescarga } from '../import/BrokerInstructions'
 import { PASO_CREAR_CUENTA } from '../../data/prueba'
+import { VENTA_EXENTA, LO_QUE_SI_PAGA, NO_ES_ASESORAMIENTO } from '../../data/impuestos'
 
 export function guiaDeBroker(id) {
   const guia = BROKER_GUIDES.find(g => g.id === id)
@@ -25,19 +26,11 @@ export function descargaDe(guia, bajada) {
   }
 }
 
-// PROVISORIO — lo que dicen de impuestos las landings de Balanz, Bull Market y PPI.
-//
-// La sesión «Auditoría profunda de SEO» corrige los textos fiscales de todas las
-// páginas públicas en la rama `claude/textos-fiscales` y va a dejar las frases
-// compartidas en `data/impuestos.js`. Cuando eso esté en main: importar de ahí,
-// usarlo en estas tres landings y BORRAR esto (si no, quedan dos fuentes).
-//
-// El criterio, mientras tanto: para una persona humana residente, vender CEDEARs
-// y acciones argentinas en BYMA está EXENTO de Ganancias (ley del impuesto, art.
-// 26 inc. u). Nada de «FIFO para AFIP», «P&L declarable» ni «tu declaración».
-export const IMPUESTOS_PROVISORIO = {
-  title: 'Impuestos: qué te muestra Rendi y qué no',
-  desc: 'Para una persona humana, vender CEDEARs y acciones argentinas en BYMA está exento de Ganancias. Por eso Rendi no te presenta esa ganancia como algo para declarar ante ARCA (la ex AFIP): te la muestra para que sepas cuánto ganaste. Lo que sí puede tributar —los dividendos de tus CEDEARs, o Bienes Personales sobre lo que tenés al 31 de diciembre— conviene revisarlo con tu contador.',
+// Lo que dicen de impuestos las landings de Balanz, Bull Market y PPI: las frases
+// compartidas de data/impuestos.js (ahí se corrigen, y ahí está qué es cierto).
+export const ITEM_IMPUESTOS = {
+  title: 'Impuestos: qué paga y qué no',
+  desc: `${VENTA_EXENTA} ${LO_QUE_SI_PAGA} ${NO_ES_ASESORAMIENTO}`,
 }
 
 // «Cómo funciona»: crear la cuenta → cargar los archivos de ESTE broker (lo que

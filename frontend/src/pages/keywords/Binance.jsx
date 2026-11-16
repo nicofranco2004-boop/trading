@@ -8,6 +8,7 @@ import KeywordLanding from '../../components/landing/KeywordLanding'
 import { guiaDeBroker, descargaDe, comoFuncionaDe } from '../../components/landing/landingDeBroker'
 import { cupoDe } from '../../data/prueba'
 import { PRO_FEATURES, CUPO_CHAT } from '../../data/planCatalog'
+import { FIFO_PARA_QUE, CRIPTO_PAGA, CSV_CONTADOR } from '../../data/impuestos'
 import { otrasGuiasDeBrokers } from '../../data/guiasDeBrokers'
 
 const GUIA = guiaDeBroker('binance')
@@ -22,16 +23,16 @@ const FEATURES = [
     desc: 'Rendi es multi-asset. Combiná Binance con Cocos, IOL, Schwab. Allocation total: %en crypto, %en CEDEARs, %en bonos AR, %en cash USD.',
   },
   {
-    title: 'FIFO automático para AFIP / ARCA sobre crypto',
-    desc: 'AFIP requiere FIFO en cripto desde 2018. Rendi aplica criterio fiscal AR automático y exporta el consolidado anual de ganancias y pérdidas declarables.',
+    title: 'FIFO automático sobre tu cripto',
+    desc: `${FIFO_PARA_QUE} ${CRIPTO_PAGA} ${CSV_CONTADOR}`,
   },
   {
     title: 'Precio live de cada par contra USD',
     desc: 'Yahoo Finance + Binance API. Rendi muestra el precio actual de cada token y tu valor live en dólares — no la cotización stale en ARS de cripto.',
   },
   {
-    title: 'Distinguís staking, P2P, trading y holding',
-    desc: 'Categorizás cada operación. Importante para tu reporte AFIP: el staking tiene tratamiento distinto al trading spot.',
+    title: 'Nada del historial de Binance se pierde',
+    desc: 'Rendi lee cada fila del historial de Binance: compras y ventas, P2P, Convert, Earn y lo que te regalan, y la cantidad de cada moneda te da igual que en Binance. Ojo: lo que entra por Convert, Earn, un regalo o desde otra billetera queda sin costo, porque el archivo de Binance no dice cuánto pagaste.',
   },
   {
     title: 'Mervall-E AI con contexto de tu cartera completa',
@@ -45,7 +46,7 @@ const HOW_STEPS = comoFuncionaDe(GUIA, {
 })
 
 const RELATED = [
-  { to: '/afip-cripto', label: 'AFIP cripto + FIFO' },
+  { to: '/afip-cripto', label: 'Cripto e impuestos' },
   ...otrasGuiasDeBrokers('/brokers/binance'),
   { to: '/planes', label: 'Ver planes' },
 ]
@@ -54,14 +55,14 @@ export default function Binance() {
   return (
     <KeywordLanding
       kicker="Tracker para Binance Argentina"
-      h1="Seguí tu portfolio crypto de Binance, con FIFO AFIP automático"
-      intro="Binance te muestra balances en cripto y USDT. Rendi convierte tu portfolio a dólares, aplica FIFO automático (criterio fiscal AR) y te permite combinar crypto con CEDEARs, bonos AR y acciones en un solo dashboard."
+      h1="Seguí tu cripto de Binance en dólares, con FIFO automático"
+      intro="Binance te muestra tus saldos en cripto y USDT. Rendi pasa tu cartera a dólares, calcula la ganancia de cada venta con FIFO y te deja juntar tu cripto con CEDEARs, bonos argentinos y acciones en una sola pantalla."
       features={FEATURES}
       descarga={descargaDe(GUIA, 'Es un solo archivo: el historial completo de transacciones de tu cuenta.')}
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
-      metaTitle="Tracker Binance Argentina — Rendi | Crypto en USD con FIFO AFIP"
-      metaDescription="Seguí tu portfolio crypto de Binance con Rendi: BTC, ETH, USDT y más en USD real. FIFO automático para AFIP / ARCA. Mezclá crypto con acciones AR y CEDEARs."
+      metaTitle="Tracker Binance Argentina — Rendi | Cripto en dólares con FIFO"
+      metaDescription="Seguí tu cripto de Binance en dólares: BTC, ETH, USDT y más. La ganancia de cada venta con FIFO, para tu contador. Sumala a tus CEDEARs y acciones."
       canonicalPath="/brokers/binance"
     />
   )

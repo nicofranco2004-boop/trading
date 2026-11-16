@@ -41,7 +41,7 @@ FEATURE_IDS = {
     "comportamiento.full",          # Todas las tags de comportamiento (vs 1 sample en Free)
     "reportes.historicos",          # Meses históricos en Reportes (Free ve teaser último)
     "export.csv",                   # Export CSV de operaciones / posiciones / monthly
-    "tax.helper",                   # Tax helper AFIP (próximamente, todavía no construido)
+    "tax.helper",                   # Ayuda para impuestos (ARCA): próximamente, todavía no construido
     "alerts.pct_move",              # Alertas de % sobre la cartera ("cae/sube X%") — Plus+
 }
 

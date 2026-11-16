@@ -8,8 +8,9 @@
 //   2. Cada landing de broker está enlazada desde las demás y desde la portada
 //      (sale de data/guiasDeBrokers.js, que tiene que coincidir con la lista de
 //      páginas públicas).
-//   3. Las tres guías nuevas no prometen «FIFO para tu declaración AFIP» sobre
-//      CEDEARs y acciones: para una persona humana esa venta en BYMA está exenta.
+//   3. Las tres guías nuevas no son la misma página con otro nombre.
+// Lo que dicen de impuestos lo vigila, para todas las páginas públicas,
+// `__guards__/impuestos-bien-dichos.test.jsx`.
 import { describe, it, expect, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
@@ -32,8 +33,6 @@ const dibujar = async (ruta) => {
   const { default: Pagina } = await PAGINAS_PUBLICAS[ruta]()
   return renderToStaticMarkup(<HelmetProvider context={{}}><MemoryRouter><Pagina /></MemoryRouter></HelmetProvider>)
 }
-const textoDe = (html) => html.replace(/<script[\s\S]*?<\/script>/g, ' ').replace(/<[^>]+>/g, ' ')
-  .replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&amp;/g, '&').replace(/\s+/g, ' ')
 
 describe('la lista de landings de broker', () => {
   it('es la misma que la de páginas públicas: ninguna queda sin links', () => {
@@ -108,39 +107,6 @@ describe('ninguna landing escribe a mano un camino del menú de su broker', () =
       const ruta = path.join(dir, f)
       const codigo = sinComentarios(ruta, fs.readFileSync(ruta, 'utf8'))
       for (const c of caminos) expect(codigo, `${f} copia «${c}»`).not.toContain(c)
-    })
-  }
-})
-
-describe('lo que dicen de impuestos las tres guías nuevas', () => {
-  // Sólo las tres nuevas: Cocos, IOL y el resto los corrige la rama
-  // `claude/textos-fiscales` (sesión «Auditoría profunda de SEO»). Cuando esté en
-  // main, ampliar esto a todas las de acciones y CEDEARs (Binance no: la cripto
-  // sí tributa).
-  const deAcciones = GUIAS_DE_BROKERS.filter(g => ['balanz', 'bullmarket', 'ppi'].includes(g.guia))
-  const PROMESAS = [
-    /declaraci[oó]n (?:AFIP|ARCA|jurada)/i,
-    /tu declaraci[oó]n/i,
-    /declarable/i,
-    /para (?:la )?AFIP/i,
-    /contador \/ AFIP/i,
-    /FIFO[^.]{0,40}AFIP/i,
-  ]
-
-  for (const { to } of deAcciones) {
-    it(`${to}: no promete declarar la venta de CEDEARs y acciones, y dice que está exenta`, async () => {
-      expect(deAcciones).toHaveLength(3)
-      const texto = textoDe(await dibujar(to))
-      for (const p of PROMESAS) expect(texto, String(p)).not.toMatch(p)
-      expect(texto).toContain('vender CEDEARs y acciones argentinas en BYMA está exento de Ganancias')
-    })
-
-    it(`${to}: cada «AFIP» va con «ARCA» al lado`, async () => {
-      const texto = textoDe(await dibujar(to))
-      for (const m of texto.matchAll(/AFIP/g)) {
-        const alrededor = texto.slice(Math.max(0, m.index - 40), m.index + 40)
-        expect(alrededor, `«AFIP» sin ARCA: «${alrededor}»`).toMatch(/ARCA/)
-      }
     })
   }
 })

@@ -13,7 +13,7 @@ export default function InsightsYReportes() {
       prev={{ to: '/guia/cartera-y-operaciones', label: 'Cartera y operaciones' }}
       next={{ to: '/guia/coach-ia', label: 'Mervall-E AI' }}
       metaTitle="Métricas y reportes — Guía Rendi"
-      metaDescription="Las 5 cards de Métricas, timeline histórico, los 12 detectores de comportamiento y el export CSV consolidado para AFIP en Rendi."
+      metaDescription="Las 5 tarjetas de Métricas, la línea de tiempo, los 12 detectores de comportamiento y el CSV con tus ventas para tu contador."
       canonicalPath="/guia/insights-y-reportes"
     >
       <AdvisorNote>
@@ -117,24 +117,21 @@ export default function InsightsYReportes() {
         planes). <strong>Pro</strong> los ve todos.
       </p>
 
-      <h2>Export CSV consolidado</h2>
+      <h2>Exportar a CSV</h2>
       <p>
-        Botón <strong>"Exportar mensual"</strong> arriba de Reportes te baja un CSV con
-        todas tus operaciones del período, ya consolidadas por broker, con FIFO aplicado
-        y P&amp;L en USD. Es lo que necesita tu contador para tu declaración a AFIP/ARCA.
+        El botón <strong>"Exportar CSV"</strong> de Operaciones te baja cada venta, compra
+        por compra: cuándo y a cuánto compraste, cuándo y a cuánto vendiste, las comisiones
+        y la ganancia en dólares y en pesos. Es la base para que tu contador arme tu
+        declaración en ARCA: los montos en dólares están al MEP, y él los pasa a pesos con
+        las reglas de la ley.
       </p>
       <p>
-        El CSV incluye:
+        El botón <strong>"Exportar mensual"</strong>, arriba de Reportes, te baja el resumen
+        de cada mes por broker: capital al empezar y al terminar, depósitos, retiros y
+        ganancia realizada.
       </p>
-      <ul>
-        <li>Compras: fecha, broker, activo, cantidad, precio, costo total USD.</li>
-        <li>Ventas: fecha, broker, activo, cantidad, precio venta, costo base FIFO, P&amp;L realizado USD.</li>
-        <li>Dividendos / cupones: fecha, activo, monto USD.</li>
-        <li>Depósitos / retiros: fecha, broker, monto USD.</li>
-      </ul>
       <p>
-        <strong>Free</strong> exporta solo el último mes.{' '}
-        <strong>Plus y Pro</strong> exportan todos los meses históricos.
+        Exportar es de los planes <strong>Plus y Pro</strong>.
       </p>
 
       <h2>Cómo calculamos tu rendimiento</h2>

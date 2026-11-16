@@ -10,7 +10,7 @@ const FEATURES = [
   },
   {
     title: 'Bonos CER (TX26, TX28, TZX26/27/28)',
-    desc: 'Bonos ajustados por inflación con coeficiente CER actualizado. Rendi distingue capital ajustado vs renta cupón vs amortización de capital — clave para tu declaración.',
+    desc: 'Bonos ajustados por inflación con coeficiente CER actualizado. Rendi distingue capital ajustado vs renta cupón vs amortización de capital: así ves cuánto ganaste de verdad.',
   },
   {
     title: 'P&L correcto: amortización vs renta',

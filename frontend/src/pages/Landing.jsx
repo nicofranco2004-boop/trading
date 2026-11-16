@@ -373,7 +373,7 @@ function Pricing() {
 function GuiasPorBroker() {
   const guias = [
     ...GUIAS_DE_BROKERS.map(g => [g.to, g.nombre]),
-    ['/cedears', 'CEDEARs'], ['/bonos-argentinos', 'Bonos argentinos'], ['/afip-cripto', 'AFIP y cripto'],
+    ['/cedears', 'CEDEARs'], ['/bonos-argentinos', 'Bonos argentinos'], ['/afip-cripto', 'Cripto e impuestos'],
   ]
   return (
     <section id="para-tu-broker" className="max-w-[1180px] mx-auto px-4 sm:px-6 pb-4">

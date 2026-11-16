@@ -1,24 +1,29 @@
-// /afip-cripto — keyword landing para "declarar cripto AFIP", "FIFO cripto"
+// /afip-cripto — keyword landing para "declarar cripto ARCA / AFIP", "FIFO cripto"
+// Lo que dice de impuestos sale de data/impuestos.js: no escribir frases fiscales a mano.
+// Ojo: para la cripto de una persona la ley no exige FIFO con texto expreso
+// (sólo por remisión al capítulo de empresas): es la forma prudente. Por eso
+// acá no dice «ARCA requiere FIFO» (ni «la ley no lo exige»).
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
 import { PASO_CREAR_CUENTA } from '../../data/prueba'
+import { FIFO_PARA_QUE, CRIPTO_PAGA, CSV_CONTADOR } from '../../data/impuestos'
 
 const FEATURES = [
   {
     title: 'FIFO automático sobre tus operaciones cripto',
-    desc: 'AFIP / ARCA requiere criterio FIFO (First In, First Out) para cripto desde 2018. Rendi aplica el criterio automático en cada venta y te entrega el P&L declarable.',
+    desc: `${FIFO_PARA_QUE} Descontar primero de la compra más vieja es la forma prudente, y la más usada, de calcular la ganancia de tu cripto.`,
   },
   {
-    title: 'Cost basis correcto al precio de adquisición',
-    desc: 'Cada compra queda con su costo en USD al TC del día. Cuando vendés, descontás el lote más viejo primero y calculás la ganancia o pérdida realizada en USD.',
+    title: 'El costo de cada compra, al dólar de su día',
+    desc: 'Cada compra queda con su costo en dólares al tipo de cambio de ese día. Cuando vendés, Rendi descuenta de la compra más vieja primero y te da la ganancia o pérdida en dólares.',
   },
   {
-    title: 'Distinguís staking, trading, P2P',
-    desc: 'AFIP tiene tratamiento distinto para staking (rendimiento financiero) vs trading spot (ganancia de capital). Rendi categoriza cada operación y separa los reportes.',
+    title: 'Nada del historial de Binance se pierde',
+    desc: 'Rendi lee cada fila del historial de Binance: compras y ventas, P2P, Convert, Earn y lo que te regalan, y la cantidad de cada moneda te da igual que en Binance. Ojo: lo que entra por Convert, Earn, un regalo o desde otra billetera queda sin costo, porque el archivo de Binance no dice cuánto pagaste.',
   },
   {
-    title: 'Exportás CSV consolidado anual',
-    desc: 'Al cierre del año fiscal, exportás un consolidado con todas tus operaciones cripto en USD: compras, ventas, FIFO aplicado, ganancia neta declarable. Listo para tu contador.',
+    title: 'Exportás el CSV de tus ventas',
+    desc: 'Cuando quieras (por ejemplo, al cierre del año), exportás desde Operaciones un CSV con cada venta, compra por compra: cuándo y a cuánto compraste, cuándo y a cuánto vendiste, y la ganancia en dólares. Trae todos tus activos y años juntos: tu contador se queda con la cripto del año. Es de los planes Plus y Pro.',
   },
   {
     title: 'Soporte de Binance, exchanges P2P y wallets',
@@ -36,8 +41,8 @@ const HOW_STEPS = [
   // para quien se registra.
   { n: 1, ...PASO_CREAR_CUENTA },
   { n: 2, title: 'Cargá tu historial de operaciones', desc: 'Exportás el historial de transacciones de Binance (el paso a paso está en nuestra guía de Binance) o cargás manualmente. Rendi reconoce los pares y los precia al dólar del día.' },
-  { n: 3, title: 'Rendi aplica FIFO automático', desc: 'Cuando vendés (o convertís) un token, Rendi descuenta del lote más viejo primero y calcula el cost basis al precio de adquisición original.' },
-  { n: 4, title: 'Exportás el consolidado anual', desc: 'En diciembre / al cierre fiscal, descargás el CSV con todas tus operaciones, FIFO aplicado, ganancia neta declarable. Tu contador lo lee directo.' },
+  { n: 3, title: 'Rendi aplica FIFO automático', desc: 'Cuando vendés un token por dólares o USDT, Rendi descuenta de la compra más vieja primero y calcula la ganancia contra lo que te costó.' },
+  { n: 4, title: 'Exportás el consolidado anual', desc: 'En diciembre / al cierre fiscal, descargás desde Operaciones el CSV con cada venta, compra por compra, y su ganancia. Tu contador filtra la cripto y el año que declara.' },
 ]
 
 const RELATED = [
@@ -50,14 +55,14 @@ const RELATED = [
 export default function AfipCripto() {
   return (
     <KeywordLanding
-      kicker="AFIP / ARCA + cripto con FIFO"
-      h1="Declarás tu cripto a AFIP con FIFO automático, sin armar Excels"
-      intro="AFIP / ARCA requiere FIFO (First In, First Out) en operaciones cripto desde 2018. Armar la planilla a mano es un dolor de cabeza: cada venta hay que matchearla con la compra más vieja. Rendi lo hace automático — vos solo cargás las operaciones, nosotros calculamos el cost basis y la ganancia declarable."
+      kicker="Cripto e impuestos (ARCA, la ex AFIP)"
+      h1="Calculá la ganancia de tu cripto con FIFO, sin armar Excels"
+      intro={`${CRIPTO_PAGA} Para saber cuánto ganaste, lo prudente es descontar cada venta de la compra más vieja primero (FIFO, o PEPS) y pasar cada compra al dólar de su fecha: a mano es un dolor de cabeza. Con Rendi, vos cargás las operaciones y la cuenta se hace sola. ${CSV_CONTADOR}`}
       features={FEATURES}
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
-      metaTitle="Declarar cripto a AFIP con FIFO — Rendi"
-      metaDescription="FIFO automático para tu cripto (Binance, exchanges, wallets) con criterio fiscal argentino: costo correcto por lote y CSV anual para tu contador."
+      metaTitle="Impuestos de tu cripto (ARCA, ex AFIP), con FIFO — Rendi"
+      metaDescription="La ganancia de cada venta de tu cripto (Binance, exchanges, wallets) con FIFO, y un CSV para que tu contador declare en ARCA (ex AFIP)."
       canonicalPath="/afip-cripto"
     />
   )

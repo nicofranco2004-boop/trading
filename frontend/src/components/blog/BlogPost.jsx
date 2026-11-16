@@ -16,19 +16,18 @@ import { Helmet } from 'react-helmet-async'
 import CabeceraPublica, { SoloVisitantes } from '../CabeceraPublica'
 import PageMeta from '../PageMeta'
 import { CTA_PRUEBA, PRUEBA_EN_UNA_LINEA } from '../../data/prueba'
+import { POST_POR_SLUG } from '../../data/blogPosts'
 
 const BASE_URL = 'https://rendi.finance'
 
 export default function BlogPost({
-  slug,           // 'fifo-cedears-argentina'
-  title,          // "Cómo funciona el FIFO en CEDEARs (criterio fiscal AR)"
-  description,    // meta description
-  publishedAt,    // 'YYYY-MM-DD'
-  category,       // 'FIFO y AFIP', 'Coaching IA', 'Análisis técnico', etc.
-  readTime,       // '7 min'
+  slug,           // 'fifo-cedears-argentina': título, descripción y fechas salen de data/blogPosts.js
   children,       // contenido del artículo
   related,        // [{ to, label, desc }] otros posts del blog
 }) {
+  const post = POST_POR_SLUG[slug]
+  if (!post) throw new Error(`BlogPost: «${slug}» no está en data/blogPosts.js`)
+  const { title, description, publishedAt, updatedAt, category, readTime } = post
   const canonicalPath = `/blog/${slug}`
   const canonicalUrl = `${BASE_URL}${canonicalPath}`
 
@@ -40,7 +39,7 @@ export default function BlogPost({
     headline: title,
     description,
     datePublished: publishedAt,
-    dateModified: publishedAt,
+    dateModified: updatedAt || publishedAt,
     inLanguage: 'es-AR',
     author: { '@type': 'Organization', name: 'Rendi' },
     publisher: {
@@ -79,17 +78,18 @@ export default function BlogPost({
   }
 
   // Formato fecha humanizado (es-AR)
-  const dateLabel = (() => {
+  const fechaLarga = (iso) => {
     try {
-      const d = new Date(publishedAt + 'T00:00:00')
+      const d = new Date(iso + 'T00:00:00')
       return d.toLocaleDateString('es-AR', { day: 'numeric', month: 'long', year: 'numeric' })
-    } catch { return publishedAt }
-  })()
+    } catch { return iso }
+  }
+  const dateLabel = updatedAt ? `Actualizado el ${fechaLarga(updatedAt)}` : fechaLarga(publishedAt)
 
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
-        title={`${title} — Blog de Rendi`}
+        title={`${title} — Rendi`}
         description={description}
         canonical={canonicalPath}
         ogType="article"

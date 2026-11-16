@@ -11,6 +11,7 @@
 import KeywordLanding from '../../components/landing/KeywordLanding'
 import { guiaDeBroker, descargaDe, comoFuncionaDe } from '../../components/landing/landingDeBroker'
 import { cupoDe } from '../../data/prueba'
+import { FIFO_PARA_QUE, VENTA_EXENTA } from '../../data/impuestos'
 import { PRO_FEATURES, CUPO_CHAT } from '../../data/planCatalog'
 import { otrasGuiasDeBrokers } from '../../data/guiasDeBrokers'
 
@@ -31,7 +32,7 @@ const FEATURES = [
   },
   {
     title: 'FIFO automático para CEDEARs y acciones',
-    desc: 'Cuando vendés desde Cocos, Rendi aplica FIFO (criterio fiscal AR) y calcula tu P&L declarable. Exportás el CSV para tu contador / AFIP.',
+    desc: `${FIFO_PARA_QUE} ${VENTA_EXENTA}`,
   },
   {
     title: 'Soporte completo de bonos AR (AL30, GD30, TX26)',
@@ -60,7 +61,7 @@ export default function Cocos() {
     <KeywordLanding
       kicker="Tracker para Cocos Capital"
       h1="Seguí tu cartera de Cocos en USD real, con FIFO automático"
-      intro="Cocos te muestra tu cartera en pesos. Rendi la consolida con tus otros brokers (IOL, Balanz, Schwab, Binance) y te muestra el P&L real en dólares (al MEP de cada fecha), con FIFO automático para AFIP y Mervall-E AI con memoria."
+      intro="Cocos te muestra tu cartera en pesos. Rendi la junta con tus otros brokers (IOL, Balanz, Schwab, Binance) y te muestra cuánto ganaste de verdad en dólares, al MEP de cada fecha. Con FIFO automático ves la ganancia de cada venta, y Mervall-E AI te contesta con memoria de tu cartera."
       features={FEATURES}
       descarga={descargaDe(GUIA, 'Son dos archivos: tus Movimientos (lo que compraste, vendiste y cobraste) y el Estado de Cuenta (lo que tenés hoy).')}
       howSteps={HOW_STEPS}

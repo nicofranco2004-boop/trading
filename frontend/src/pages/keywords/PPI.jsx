@@ -11,7 +11,7 @@
 // esto.
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
-import { guiaDeBroker, descargaDe, comoFuncionaDe, IMPUESTOS_PROVISORIO } from '../../components/landing/landingDeBroker'
+import { guiaDeBroker, descargaDe, comoFuncionaDe, ITEM_IMPUESTOS } from '../../components/landing/landingDeBroker'
 import { otrasGuiasDeBrokers } from '../../data/guiasDeBrokers'
 
 const GUIA = guiaDeBroker('ppi')
@@ -62,7 +62,7 @@ const FEATURES = [
     title: 'Tu ganancia medida en dólares',
     desc: 'Cada operación en pesos se pasa al dólar MEP de su fecha: ves si tu cartera de PPI creció de verdad o sólo acompañó la inflación.',
   },
-  IMPUESTOS_PROVISORIO,
+  ITEM_IMPUESTOS,
 ]
 
 const HOW_STEPS = comoFuncionaDe(GUIA, {
