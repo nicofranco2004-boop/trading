@@ -31,6 +31,7 @@ import Watchlist from '../components/home/Watchlist'
 import NewsPreview from '../components/home/NewsPreview'
 import EventsPreview from '../components/home/EventsPreview'
 import OnboardingChecklist from '../components/home/OnboardingChecklist'
+import { useEsperaDeLaLista } from '../hooks/useEsperaDeLaLista'
 import Eyebrow from '../components/Eyebrow'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
@@ -343,18 +344,37 @@ export default function HomeMobile() {
       total={totalUsd} formato={fmtRecalculo} oculto={hidden} />
   )
 
-  if (loading) {
+  // ⚠️ LA LISTA DE PRIMEROS PASOS SE MONTA DESDE EL PRINCIPIO Y EL ESQUELETO LA
+  // ESPERA. Antes vivía sólo en la pantalla terminada: sus pedidos salían recién
+  // cuando ésta había cargado, y la lista aparecía después —968 px en el demo—
+  // empujando todo hacia abajo justo cuando se iba a tocar una tarjeta (CLS 0,77
+  // en 4 de 4 cargas, auditoría 16/11/2026). Ahora va escondida detrás del
+  // esqueleto, en el MISMO lugar del árbol en las dos ramas (si cambiara de
+  // lugar, React la volvería a crear y arrancaría de cero), y la pantalla se
+  // muestra cuando la lista se decidió o venció el tope (useEsperaDeLaLista).
+  const espera = useEsperaDeLaLista({ desde: !loading })
+  const pantallaLista = !loading && espera.lista
+  const listaDePrimerosPasos = (
+    <div className="px-4 pt-4" hidden={!pantallaLista}>
+      <OnboardingChecklist onDecidida={espera.alDecidirse} aLaVista={pantallaLista} />
+    </div>
+  )
+
+  if (!pantallaLista) {
     return (
-      <div className="px-4 py-6 space-y-5" aria-busy="true" aria-live="polite">
+      <div className="pb-8" aria-busy="true" aria-live="polite">
         {avisoRecalculo}
-        <div className="space-y-2">
-          <Skeleton className="h-3 w-24" />
-          <Skeleton className="h-12 w-48" />
-          <Skeleton className="h-4 w-40" />
-        </div>
-        <Skeleton className="h-16 w-full rounded-lg" />
-        <div className="grid grid-cols-3 gap-3">
-          {[0, 1, 2].map(i => <Skeleton key={i} className="h-16 rounded-lg" />)}
+        {listaDePrimerosPasos}
+        <div className="px-4 py-6 space-y-5">
+          <div className="space-y-2">
+            <Skeleton className="h-3 w-24" />
+            <Skeleton className="h-12 w-48" />
+            <Skeleton className="h-4 w-40" />
+          </div>
+          <Skeleton className="h-16 w-full rounded-lg" />
+          <div className="grid grid-cols-3 gap-3">
+            {[0, 1, 2].map(i => <Skeleton key={i} className="h-16 rounded-lg" />)}
+          </div>
         </div>
       </div>
     )
@@ -365,10 +385,9 @@ export default function HomeMobile() {
       {avisoRecalculo}
       {/* ── 0. Onboarding checklist (mobile) ────────────────────────────
           Solo visible si el user no completó todos los items. Padding
-          horizontal matchea el resto de la home mobile. */}
-      <div className="px-4 pt-4">
-        <OnboardingChecklist />
-      </div>
+          horizontal matchea el resto de la home mobile. Es el mismo elemento
+          que va escondido en el esqueleto (ver `listaDePrimerosPasos`). */}
+      {listaDePrimerosPasos}
 
       {/* ── 1. Hero balance ─────────────────────────────────────────── */}
       <section className="px-4 pt-5 pb-4">

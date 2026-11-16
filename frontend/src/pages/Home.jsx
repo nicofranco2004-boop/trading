@@ -25,6 +25,7 @@ import { usePrivacy } from '../contexts/PrivacyContext'
 import Eyebrow from '../components/Eyebrow'
 import HomeMobile from './HomeMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useEsperaDeLaLista } from '../hooks/useEsperaDeLaLista'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 
@@ -32,6 +33,8 @@ export default function Home() {
   const isMobile = useIsMobile()
   const { currency } = useCurrency()
   const { hidden } = usePrivacy()
+  // En el celular la espera es de HomeMobile (con su esqueleto): acá no corre.
+  const espera = useEsperaDeLaLista({ desde: !isMobile })
   if (isMobile) return <HomeMobile />
 
   return (
@@ -48,11 +51,16 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="space-y-6">
+      {/* ⚠️ INVISIBLE HASTA QUE LA LISTA DE PRIMEROS PASOS SE DECIDE. La lista
+          aparecía una vuelta de red después que el resto y empujaba todo 686 px
+          hacia abajo (CLS 0,31 en 4 de 4 cargas, 16/11/2026). `invisible` y no
+          `hidden`: todo queda montado y midiendo su ancho, y los pedidos de cada
+          sección salen ya. Con tope: ver useEsperaDeLaLista. */}
+      <div className={`space-y-6 ${espera.lista ? '' : 'invisible'}`} aria-busy={!espera.lista}>
         {/* 0. Onboarding checklist — solo visible si el user no completó
             todos los items (broker, posición, perfil, IA). Se silencia
             automáticamente cuando está todo done o el user lo cierra. */}
-        <OnboardingChecklist />
+        <OnboardingChecklist onDecidida={espera.alDecidirse} aLaVista={espera.lista} />
 
         {/* 0.5 Pre y post mercado — sólo existe en esas franjas */}
         <FueraDeHorarioMercado moneda={currency} oculto={hidden} />

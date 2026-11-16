@@ -50,6 +50,13 @@
 //   - Tiene botón "Cerrar permanentemente" (flag localStorage) para users
 //     que prefieren ocultarlo
 //   - Cada item incompleto es link al lugar donde se completa
+//   - Avisa con `onDecidida` apenas sabe si se muestra y con qué pasos. La
+//     pantalla que la monta arriba de todo espera ese aviso para mostrarse
+//     (hooks/useEsperaDeLaLista): si no, la lista aparecía después y empujaba
+//     toda la pantalla hacia abajo (CLS 0,77 en el inicio del celular).
+//   - `aLaVista={false}`: está montada pero escondida mientras la pantalla
+//     termina de cargar. Así no cuenta una vista que nadie vio ni baja las
+//     fotos de instalar compitiendo con los datos de la pantalla.
 //
 // Tracking:
 //   - checklist_viewed (al montarse)
@@ -107,7 +114,7 @@ const GRUPOS = [
   { id: 'a_mano', titulo: 'Para tener Rendi a mano' },
 ]
 
-export default function OnboardingChecklist() {
+export default function OnboardingChecklist({ onDecidida, aLaVista = true } = {}) {
   const { clientCtx } = useAdvisorContext()
   const navigate = useNavigate()
   const location = useLocation()
@@ -226,8 +233,8 @@ export default function OnboardingChecklist() {
   // Las fotos del paso a paso se piden por adelantado (en Safari tardan si se
   // piden recién al abrir el cartel — ver InstalarAppModal).
   useEffect(() => {
-    if (state.loaded && !instalada && !dismissed) precargarFotosDeInstalar()
-  }, [state.loaded, instalada, dismissed])
+    if (aLaVista && state.loaded && !instalada && !dismissed) precargarFotosDeInstalar()
+  }, [aLaVista, state.loaded, instalada, dismissed])
 
   const enCompu = push.plataforma === 'otro'
   const enCelular = esCelular(push.plataforma)
@@ -356,11 +363,22 @@ export default function OnboardingChecklist() {
   // la lista quedaría abierta y vacía mientras el celular revisa.
   const resueltos = items.filter((it) => it.done || esOmitido(it) || it.oculto).length
 
-  // Track view solo en el primer load para no inflar GA con duplicados.
+  // Ya se sabe si la lista va y con qué pasos: las respuestas llegaron y no
+  // queda ningún paso esperando para aparecer (en el celular, el de las
+  // notificaciones espera a revisar ESTE teléfono). En la cuenta de un cliente o
+  // con la lista cerrada se sabe de entrada: no se muestra.
+  const decidida = !!clientCtx || dismissed || (state.loaded && !items.some((it) => it.oculto))
   useEffect(() => {
-    if (state.loaded) trackEvent('checklist_viewed', { items_done: doneCount })
+    if (decidida) onDecidida?.()
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.loaded])
+  }, [decidida])
+
+  // Track view solo en el primer load para no inflar GA con duplicados.
+  // Y recién cuando está a la vista: escondida detrás del esqueleto no la vio nadie.
+  useEffect(() => {
+    if (state.loaded && aLaVista) trackEvent('checklist_viewed', { items_done: doneCount })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.loaded, aLaVista])
 
   async function activarPush() {
     // Acá no se puede (iPhone sin Rendi en el inicio, navegador sin soporte,

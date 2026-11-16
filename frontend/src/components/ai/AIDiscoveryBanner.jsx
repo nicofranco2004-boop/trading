@@ -33,14 +33,17 @@ export function markAIDiscovered() {
 }
 
 export default function AIDiscoveryBanner() {
-  const [visible, setVisible] = useState(false)
+  // Mostramos solo si nunca cerró el banner Y nunca usó la feature.
+  // ⚠️ SE DECIDE AL CREAR EL ESTADO, NO EN UN EFECTO. La marca se lee sin esperar
+  // a nada, y con el efecto el cartel se dibujaba un cuadro DESPUÉS que la
+  // pantalla: aparecía de golpe arriba del Dashboard y bajaba «Valor actual»
+  // 182 px (CLS 0,13 en el celular, auditoría 16/11/2026).
+  const [visible, setVisible] = useState(() => !isAIDiscovered())
 
-  // Mostramos solo si nunca cerró el banner Y nunca usó la feature
   useEffect(() => {
-    if (!isAIDiscovered()) {
-      setVisible(true)
-      track('ai_discovery_banner_shown')
-    }
+    if (visible) track('ai_discovery_banner_shown')
+  // Una vez, al aparecer: el cierre no es otra vista.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function dismiss() {
