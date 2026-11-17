@@ -1,6 +1,6 @@
 /* Tipografía: Geist (sans, UI + headlines + números) + JetBrains Mono (meta técnica)
 
-   Las letras se sirven desde el propio sitio (public/fonts/), NO desde Google Fonts.
+   Las letras se sirven desde el propio sitio (src/assets/fonts/), NO desde Google Fonts.
    Hasta el 16/11/2026 esto era un @import a fonts.googleapis.com, y eso armaba una
    cadena de cuatro pedidos, cada uno esperando al anterior: la página → este CSS →
    el CSS de Google (otro servidor) → el archivo de la letra (un tercer servidor).
@@ -28,15 +28,30 @@
 
    Los pesos van como RANGO y son los mismos que se le pedían a Google (300–700 y
    400–600): un peso fuera del rango sale en el borde, como salía antes.
-   Si algún día se cambia un archivo, cambiale el NOMBRE (y el preload de
-   index.html): si Vercel lo guarda en caché por mucho tiempo, con el mismo nombre
-   el navegador seguiría usando el viejo. */
+
+   Por qué en src/assets/fonts/ y NO en public/ (16/11/2026, lo encontró la revisión):
+   lo que está en public/ Vercel lo sirve con «guardalo, pero preguntame cada vez si
+   cambió» (max-age=0). Con las letras ahí, cada página entera que se abre —la segunda
+   de una visita, la app con la sesión ya iniciada— le volvía a preguntar al servidor
+   por la letra antes de usarla, y salía más lenta que con Google (que la deja guardada
+   un año): /planes como segunda página, elemento más grande 0,21 s con Google →
+   0,47 s desde public/ → 0,24 s desde /assets/ (celular, 4G lenta). Y si un
+   archivo de public/fonts faltaba, el comodín de vercel.json contestaba app.html con
+   un «todo bien» en vez de un error.
+   Desde src/, Vite publica cada letra en /assets/ con una huella del contenido en el
+   nombre (geist-latin-<huella>.woff2), igual que el JS y este CSS. Eso da tres cosas
+   sin tocar vercel.json: (1) /assets/ se guarda un día sin preguntar (vercel.json);
+   (2) si el archivo cambia, cambia el nombre solo, así que el navegador nunca se queda
+   con una letra vieja; (3) /assets/ está fuera del comodín: un archivo que falta da
+   «no existe» (404), nunca una página entera disfrazada de letra.
+   El preload de index.html nombra el MISMO archivo de src/ y Vite le pone la misma
+   huella. Lo vigila src/__guards__/letras-propias.test.js sobre lo que se publica. */
 @font-face {
   font-family: 'Geist';
   font-style: normal;
   font-weight: 300 700;
   font-display: swap;
-  src: url('/fonts/geist-latin.woff2') format('woff2');
+  src: url('./assets/fonts/geist-latin.woff2') format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
@@ -44,7 +59,7 @@
   font-style: normal;
   font-weight: 400 600;
   font-display: swap;
-  src: url('/fonts/jetbrains-mono-latin.woff2') format('woff2');
+  src: url('./assets/fonts/jetbrains-mono-latin.woff2') format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
@@ -52,7 +67,7 @@
   font-style: normal;
   font-weight: 400 600;
   font-display: swap;
-  src: url('/fonts/jetbrains-mono-greek.woff2') format('woff2');
+  src: url('./assets/fonts/jetbrains-mono-greek.woff2') format('woff2');
   unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
 }
 
