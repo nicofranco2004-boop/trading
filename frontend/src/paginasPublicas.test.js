@@ -47,13 +47,115 @@ describe('las páginas públicas', () => {
     expect(new Set(enSitemap)).toEqual(new Set(RUTAS))
   })
 
-  it('robots.txt no le cierra la puerta a ninguna', () => {
-    const cerradas = [...leer('public/robots.txt').matchAll(/^Disallow:\s*(\S+)/gm)].map((m) => m[1])
+  it('robots.txt no le cierra la puerta a ninguna (leído como lo lee Google)', () => {
+    const robots = leer('public/robots.txt')
     for (const ruta of RUTAS) {
-      for (const c of cerradas) {
-        expect(ruta === c || ruta.startsWith(c.endsWith('/') ? c : `${c}/`), `${c} bloquea ${ruta}`).toBe(false)
-      }
+      expect(googleDejaEntrar(robots, ruta), `robots.txt le cierra ${ruta} a Google`).toBe(true)
     }
+  })
+})
+
+// ─── robots.txt, leído como lo lee Google ────────────────────────────────────
+// La prueba anterior comparaba distinto que Google: tomaba «Disallow: /plan»
+// como si cerrara sólo /plan y /plan/…, y para Google cierra TODA dirección que
+// EMPIECE con ese texto (/planes incluida). Tampoco entendía «*» ni «$», ni
+// que un Allow más largo le gana a un Disallow más corto. Así podía dar verde
+// con un robots.txt que le cerraba una página pública a Google.
+//
+// Las reglas, según https://developers.google.com/search/docs/crawling-indexing/robots/robots_txt
+//   · Google usa el grupo «User-agent: googlebot» si existe; si no, el de «*».
+//   · Una regla vale para toda dirección que EMPIECE con su texto; «*» es
+//     cualquier cosa y un «$» al final obliga a que la dirección termine ahí.
+//   · Si valen varias, gana la de texto más largo; a igual largo, gana Allow.
+//   · «Disallow:» vacío no cierra nada. Mayúsculas y minúsculas cuentan.
+function reglasDeGoogle(robots) {
+  const grupos = []
+  let grupo = null
+  let leyendoAgentes = false
+  for (const cruda of robots.split(/\r?\n/)) {
+    const linea = cruda.replace(/#.*/, '').trim()
+    const m = /^([A-Za-z-]+)\s*:\s*(.*)$/.exec(linea)
+    if (!m) continue
+    const campo = m[1].toLowerCase()
+    const valor = m[2].trim()
+    if (campo === 'user-agent') {
+      // Varias «User-agent» seguidas comparten las reglas que vienen abajo.
+      if (!leyendoAgentes) { grupo = { agentes: [], reglas: [] }; grupos.push(grupo) }
+      grupo.agentes.push(valor.toLowerCase())
+      leyendoAgentes = true
+    } else if (campo === 'allow' || campo === 'disallow') {
+      leyendoAgentes = false
+      if (grupo && valor) grupo.reglas.push({ permite: campo === 'allow', texto: valor })
+    }
+  }
+  const propios = grupos.filter((g) => g.agentes.includes('googlebot'))
+  return (propios.length ? propios : grupos.filter((g) => g.agentes.includes('*'))).flatMap((g) => g.reglas)
+}
+
+function reglaComoRegex(texto) {
+  const anclada = texto.endsWith('$')
+  const cuerpo = (anclada ? texto.slice(0, -1) : texto)
+    .split('*').map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')
+  return new RegExp(`^${cuerpo}${anclada ? '$' : ''}`)
+}
+
+function googleDejaEntrar(robots, direccion) {
+  let ganadora = null
+  for (const r of reglasDeGoogle(robots)) {
+    if (!reglaComoRegex(r.texto).test(direccion)) continue
+    const largo = r.texto.length
+    if (!ganadora || largo > ganadora.largo || (largo === ganadora.largo && r.permite)) ganadora = { largo, permite: r.permite }
+  }
+  return ganadora ? ganadora.permite : true
+}
+
+describe('robots.txt como lo lee Google', () => {
+  // Los ejemplos de la documentación de Google. Los cuatro primeros los
+  // contestaba mal la prueba anterior.
+  const casos = [
+    ['Disallow: /fish', '/fish.html', false],
+    ['Disallow: /fish', '/fishheads/yummy.html', false],
+    ['Disallow: /plan', '/planes', false],
+    ['Disallow: /*.php$', '/carpeta/archivo.php', false],
+    ['Disallow: /fish', '/Fish.asp', true],
+    ['Disallow: /fish', '/catfish', true],
+    ['Disallow: /fish/', '/fish', true],
+    ['Disallow: /*.php$', '/archivo.php/', true],
+    ['Allow: /p\nDisallow: /', '/page', true],
+    ['Allow: /folder\nDisallow: /folder', '/folder/page', true],
+    ['Allow: /page\nDisallow: /*.htm', '/page.htm', false],
+    ['Allow: /$\nDisallow: /', '/', true],
+    ['Allow: /$\nDisallow: /', '/page.htm', false],
+    ['Disallow:', '/lo-que-sea', true],
+  ]
+  for (const [reglas, direccion, entra] of casos) {
+    it(`${reglas.replace('\n', ' + ')} → ${direccion} ${entra ? 'entra' : 'no entra'}`, () => {
+      expect(googleDejaEntrar(`User-agent: *\n${reglas}\n`, direccion)).toBe(entra)
+    })
+  }
+
+  it('si hay un grupo para googlebot, Google usa ése y no el de «*»', () => {
+    const robots = 'User-agent: *\nDisallow: /\n\nUser-agent: Googlebot\nDisallow: /privado\n'
+    expect(googleDejaEntrar(robots, '/planes')).toBe(true)
+    expect(googleDejaEntrar(robots, '/privado/x')).toBe(false)
+  })
+
+  // Las pantallas de la app y las direcciones que no existen dicen «noindex»
+  // adentro de la página (dist/app.html). Si robots.txt las cierra, Google no
+  // entra, no lo lee, y conserva la foto vieja que tenga (pasó con /imports).
+  it('no le cierra a Google ninguna pantalla de la app: tiene que entrar a leer su «noindex»', () => {
+    const robots = leer('public/robots.txt')
+    const deLaApp = [...new Set([...fuenteDeApp.matchAll(/path="([^"]+)"/g)].map((m) => m[1]))]
+      .filter((r) => r !== '*' && !RUTAS.includes(r))
+      .map((r) => r.replace(/:\w+/g, 'x'))
+    expect(deLaApp.length, 'no encontré las rutas de App.jsx').toBeGreaterThan(20)
+    const cerradas = deLaApp.filter((r) => !googleDejaEntrar(robots, r))
+    expect(cerradas, `robots.txt cierra: ${cerradas.join(', ')}`).toEqual([])
+    expect(googleDejaEntrar(robots, '/esto-no-existe')).toBe(true)
+  })
+
+  it('/api/ sigue cerrado: son datos para la app, no páginas', () => {
+    expect(googleDejaEntrar(leer('public/robots.txt'), '/api/auth/me')).toBe(false)
   })
 })
 

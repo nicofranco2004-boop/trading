@@ -133,46 +133,17 @@
     }
     </script>
 
-    <!-- Structured data: HowTo (cómo se usa Rendi — feeds rich results en
-         Google + ayuda al SEO de la sección /#como-funciona).
-         Sincronizado con ComoFunciona en Landing.jsx (3 pasos). -->
-    <script type="application/ld+json">
-    {
-      "@context": "https://schema.org",
-      "@type": "HowTo",
-      "name": "Cómo funciona Rendi — Todas tus inversiones en un solo lugar",
-      "description": "Juntá tu cartera de todos tus brokers en 3 pasos: importás lo de tu broker, Rendi ordena todo y mirás y decidís.",
-      "totalTime": "PT5M",
-      "estimatedCost": { "@type": "MonetaryAmount", "currency": "USD", "value": "0" },
-      "step": [
-        {
-          "@type": "HowToStep",
-          "position": 1,
-          "name": "Importás lo de tu broker",
-          "text": "Bajás el archivo de movimientos de Cocos, IOL, Balanz, Schwab o Binance y lo soltás en Rendi. Si preferís, cargás a mano: acciones, CEDEARs, bonos, cripto, fondos y plazos fijos.",
-          "url": "https://rendi.finance/#como-funciona"
-        },
-        {
-          "@type": "HowToStep",
-          "position": 2,
-          "name": "Rendi ordena todo",
-          "text": "Separa compras, ventas, dividendos y depósitos, pasa cada operación a dólares y arma tu cartera por broker y por tipo de activo. Las ventas se descuentan del lote más viejo (FIFO).",
-          "url": "https://rendi.finance/#como-funciona"
-        },
-        {
-          "@type": "HowToStep",
-          "position": 3,
-          "name": "Mirás y decidís",
-          "text": "Desde ahí se actualiza solo cada día. Mirás la salud de tu cartera, analizás cada activo, le preguntás a Mervall-E AI y comparás antes de tu próxima compra. Mervall-E AI responde 12 preguntas guiadas (9 consultas por semana en Plus); en Pro, chat libre (40 consultas por semana).",
-          "url": "https://rendi.finance/#como-funciona"
-        }
-      ]
-    }
-    </script>
-
-    <!-- Structured data: Organization — define a Rendi como entidad para Google.
-         Habilita Knowledge Graph + E-E-A-T signals (Experience/Expertise/
-         Authority/Trust) que Google usa para rankear en finanzas (YMYL). -->
+    <!-- Structured data: Organization — le dice a Google quién es Rendi.
+         En temas de plata Google mira con lupa quién está detrás de un sitio.
+         · "sameAs": los perfiles oficiales de la marca (hoy, Instagram; el
+           mismo link del pie de la portada, SOCIAL_LINKS en Landing.jsx).
+           Ayuda a que Google no confunda a Rendi con otra «Rendi» (rendi.ai).
+         · "founder": el LinkedIn es el perfil PERSONAL del fundador, no de la
+           empresa: por eso va adentro de "founder" y no en el "sameAs" de Rendi.
+         · "email": el contacto que usan las páginas legales, las guías y
+           llms.txt (soporte@). El pie de la portada muestra hola@: si se
+           unifica, cambiar los dos.
+         src/__guards__/lo-que-lee-google.test.js ata estos links a Landing.jsx. -->
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
@@ -183,19 +154,30 @@
       "logo": "https://rendi.finance/android-chrome-512.png",
       "description": "Tracker de portafolio multi-broker para inversores argentinos con Mervall-E AI.",
       "email": "soporte@rendi.finance",
+      "sameAs": ["https://www.instagram.com/rendifinance/"],
+      "founder": {
+        "@type": "Person",
+        "name": "Nicolás Pussetto",
+        "sameAs": ["https://www.linkedin.com/in/nicolas-pussetto-6a656a1a8/"]
+      },
       "areaServed": { "@type": "Country", "name": "Argentina" },
       "knowsLanguage": ["es-AR", "es"],
       "knowsAbout": ["Inversiones", "CEDEARs", "Bonos Argentinos", "Criptomonedas", "FIFO", "P&L USD", "Mercado de capitales argentino"]
     }
     </script>
 
-    <!-- Structured data: WebSite — habilita el "sitelinks searchbox" en SERPs
-         de Google (cajita de búsqueda directa dentro del resultado de Rendi). -->
+    <!-- Structured data: WebSite — el nombre del sitio que Google muestra
+         arriba de cada resultado. "alternateName" le da la otra forma en que
+         se busca la marca («Rendi Finance»), para que no la mezcle con
+         rendi.ai, otra «Rendi» de inversiones.
+         (Antes este comentario decía que habilitaba la cajita de búsqueda
+         dentro del resultado: Google la retiró en noviembre de 2024.) -->
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
       "@type": "WebSite",
       "name": "Rendi",
+      "alternateName": "Rendi Finance",
       "url": "https://rendi.finance",
       "inLanguage": "es-AR",
       "publisher": { "@type": "Organization", "name": "Rendi", "url": "https://rendi.finance" }

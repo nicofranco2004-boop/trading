@@ -1,52 +1,34 @@
 # robots.txt — Rendi (rendi.finance)
 # ════════════════════════════════════════════════════════════════════════
-# Permite crawl de las páginas públicas (landing, planes, login, legales).
-# Bloquea las rutas internas que requieren login — Google no las puede
-# rendear sin auth y no aportan nada al SEO.
+# Google puede entrar a TODAS las direcciones del sitio, salvo /api/.
+#
+# Por qué no se cierran las pantallas de la app (/login, /dashboard,
+# /imports…): hasta el 16/11/2026 había 25 «Disallow» con esas rutas. Un
+# Disallow no saca una dirección del buscador: le prohíbe a Google ENTRAR, y
+# entonces nunca lee el «no me guardes» que la página trae adentro. Google
+# conservaba fotos viejas (seguía mostrando /imports con un título de hace
+# meses, con el nombre viejo de la IA).
+# Lo dice Google: para que «noindex» funcione, la página no puede estar
+# bloqueada por robots.txt —
+# https://developers.google.com/search/docs/crawling-indexing/block-indexing
+#
+# Quién dice «no me guardes» ahora:
+#   · Las pantallas de la app y toda dirección que no existe las sirve
+#     dist/app.html, que trae <meta name="robots" content="noindex, follow">
+#     (lo escribe scripts/paginasEscritas.mjs al publicar).
+#   · /login, /brand-kit/ y las copias en *.vercel.app, además, por el
+#     encabezado X-Robots-Tag de vercel.json.
+# Las páginas públicas (src/paginasPublicas.js) dicen «index, follow».
+#
+# /api/ sí queda cerrado: son respuestas de datos para la app, no páginas. Y
+# así el robot de Google, al dibujar una página, no llama al servidor (por
+# ejemplo, no puede usar el link de un mail de verificación que encuentre).
+#
+# Si agregás una línea acá: src/paginasPublicas.test.js lee este archivo como
+# lo lee Google y se pone rojo si cierra una página pública o una pantalla de
+# la app.
 
 User-agent: *
-
-# Permitidas (páginas públicas indexables)
-Allow: /$
-Allow: /planes
-Allow: /terminos
-Allow: /reembolso
-Allow: /privacidad
-Allow: /brokers/
-Allow: /cedears
-Allow: /bonos-argentinos
-Allow: /afip-cripto
-Allow: /blog
-Allow: /blog/
-Allow: /guia
-Allow: /guia/
-
-# Bloqueadas (requieren auth o son transitorias — sin SEO value)
-Disallow: /login
-Disallow: /verify-email
-Disallow: /reset-password
-Disallow: /dashboard
-Disallow: /posiciones
-Disallow: /activo/
-Disallow: /operaciones
-Disallow: /mensual
-Disallow: /reportes
-Disallow: /insights
-Disallow: /comportamiento
-Disallow: /novedades
-Disallow: /eventos
-Disallow: /noticias
-Disallow: /objetivos
-Disallow: /wrapped
-Disallow: /imports
-Disallow: /config
-Disallow: /perfil-inversor
-Disallow: /admin
-Disallow: /mas
-Disallow: /buscar
-Disallow: /bienvenida
-Disallow: /onboarding
-Disallow: /billing/
 Disallow: /api/
 
 Sitemap: https://rendi.finance/sitemap.xml

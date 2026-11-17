@@ -10,6 +10,11 @@ import { AuthProvider } from '../contexts/AuthContext'
 import { PAGINAS_PUBLICAS } from '../paginasPublicas'
 
 export const RUTAS = Object.keys(PAGINAS_PUBLICAS)
+// Las notas del blog, para que el prerender escriba dist/rss.xml con la misma
+// lista que leen el índice y cada artículo. Pasa por acá (y no por un import
+// directo desde Node) porque este archivo lo compila Vite: si blogPosts.js un
+// día importa algo que Node solo no entiende, el RSS sigue saliendo igual.
+export { POSTS } from '../data/blogPosts'
 
 export async function render(url) {
   const cargar = PAGINAS_PUBLICAS[url]

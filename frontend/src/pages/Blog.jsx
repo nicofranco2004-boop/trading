@@ -13,6 +13,7 @@ import { Link } from 'react-router-dom'
 import { ArrowRight, Calendar } from 'lucide-react'
 import CabeceraPublica from '../components/CabeceraPublica'
 import PageMeta from '../components/PageMeta'
+import LinkRss from '../components/blog/LinkRss'
 import { POSTS } from '../data/blogPosts'
 
 // Los posts publicados salen de data/blogPosts.js, la misma lista que usa cada
@@ -26,6 +27,7 @@ export default function Blog() {
         description="Artículos sobre impuestos y FIFO en CEDEARs, tu ganancia real en dólares, cripto y comparativas de brokers argentinos. Para inversores con varios brokers."
         canonical="/blog"
       />
+      <LinkRss />
 
       <CabeceraPublica>
         <Link to="/planes" className="text-ink-2 hover:text-ink-0">Planes</Link>

@@ -9,12 +9,14 @@
 //   - JSON-LD Article schema (mejora rich snippets en Google)
 //   - Canonical URL específica del post
 //   - Open Graph article tags
+//   - Link al RSS del blog (LinkRss)
 
 import { Link } from 'react-router-dom'
 import { ArrowLeft, Calendar, Sparkles } from 'lucide-react'
 import { Helmet } from 'react-helmet-async'
 import CabeceraPublica, { SoloVisitantes } from '../CabeceraPublica'
 import PageMeta from '../PageMeta'
+import LinkRss from './LinkRss'
 import { CTA_PRUEBA, PRUEBA_EN_UNA_LINEA } from '../../data/prueba'
 import { POST_POR_SLUG } from '../../data/blogPosts'
 
@@ -98,6 +100,7 @@ export default function BlogPost({
         <script type="application/ld+json">{JSON.stringify(articleSchema)}</script>
         <script type="application/ld+json">{JSON.stringify(breadcrumbSchema)}</script>
       </Helmet>
+      <LinkRss />
 
       {/* Header minimal (sólo sin sesión) */}
       <CabeceraPublica>
