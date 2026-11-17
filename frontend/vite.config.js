@@ -94,6 +94,14 @@ export default defineConfig(({ mode, isSsrBuild }) => {
       // utils/api, o la prueba da rojo (re-test a ciegas 9). Y dos hermanos con
       // el mismo `key` también (Backtesting, 05/11).
       setupFiles: ['./src/testing/vigilarPedidos.js', './src/testing/vigilarClaves.js'],
+      // El reloj simulado (vi.useFakeTimers) arranca a una hora FIJA, no a la
+      // de la compu: si no, una prueba que adelanta minutos cruzaba la
+      // medianoche cuando la suite corría a las 23:58 y daba rojo sólo a esa
+      // hora (usoCatalogo, 16/11/2026: «abrió la app» contado dos veces porque
+      // el día cambió en el medio). Miércoles al mediodía de Buenos Aires: día
+      // hábil, mercado abierto, lejos de la medianoche. La prueba que necesita
+      // otra hora la pone con vi.setSystemTime.
+      fakeTimers: { now: new Date('2026-11-18T15:00:00Z') },
     },
   }
 })

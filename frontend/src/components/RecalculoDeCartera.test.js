@@ -174,9 +174,12 @@ describe('borrado en Movimientos, visto en la próxima pantalla con total', () =
   })
 
   it('el aviso no se queda en "Recalculando…" para siempre', async () => {
-    cambio.anotarCambioDeMovimiento({ texto: 'depósito', monto: 'US$1.000,00', deshecho: true }, D())
-    // El reloj simulado ANTES de montar: el tope se arma al entrar en "Recalculando".
+    // El reloj simulado ANTES de anotar y de montar: el cambio guarda su hora
+    // (y vence a las horas) y el tope se arma al entrar en "Recalculando". El
+    // reloj simulado arranca a una hora fija (vite.config.js), así que un
+    // cambio anotado con la hora real antes de encenderlo quedaría vencido.
     vi.useFakeTimers()
+    cambio.anotarCambioDeMovimiento({ texto: 'depósito', monto: 'US$1.000,00', deshecho: true }, D())
     montado = await montar(h(Cartera, { total: 0, listo: false }))
     expect(texto(montado.contenedor)).toContain('Recalculando')
     await act(async () => { vi.advanceTimersByTime(25000) })
