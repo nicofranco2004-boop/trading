@@ -9,7 +9,8 @@
 //   subtitle    → string opcional
 //   action      → ReactNode a la derecha
 //   meta        → string (contexto) o un nodo que se dibuja tal cual — los
-//                 precios van con <PreciosEnVivo>, que decide si su punto late
+//                 precios van con <PreciosEnVivo>, que decide si su punto late.
+//                 En el celular va en su propio renglón, arriba de las acciones.
 //   bordered    → bool (divider abajo)
 
 export default function PageHeader({ title, subtitle, action, meta, bordered = false, eyebrow }) {
@@ -46,11 +47,20 @@ export default function PageHeader({ title, subtitle, action, meta, bordered = f
           contenido y empujaban la página de costado — Reportes medía 555 px en
           una pantalla de 375 (2026-10-02). Desde sm, como siempre. */}
       <div className="flex flex-wrap items-center gap-3 max-w-full sm:flex-shrink-0">
-        {meta && typeof meta !== 'string' && meta}
-        {meta && typeof meta === 'string' && (
-          <span className="inline-flex items-center gap-2 text-[12px] text-ink-2 font-medium">
-            {meta}
-          </span>
+        {/* ⚠️ EN EL CELULAR EL META VA SOLO EN SU RENGLÓN. Su texto cambia de ancho
+            («Buscando precios…» 118 px, «Precios de hace 0 s» 119, después «hace 1 min»)
+            y, compartiendo renglón con los botones, ese ancho decidía si los botones
+            entraban al lado o bajaban: en el Dashboard del celular sobraba 1 px con un
+            texto y faltaba con el otro, y al llegar los precios todo bajaba 30 px
+            (CLS 0,10 medido en producción, 16/11/2026). Desde sm, al lado, como siempre. */}
+        {meta && (
+          <div className="flex w-full sm:w-auto">
+            {typeof meta !== 'string' ? meta : (
+              <span className="inline-flex items-center gap-2 text-[12px] text-ink-2 font-medium">
+                {meta}
+              </span>
+            )}
+          </div>
         )}
         {action}
       </div>
