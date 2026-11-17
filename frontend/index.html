@@ -81,17 +81,28 @@
     <meta name="twitter:description" content="Cartera multi-broker, ganancia real en dólares, salud de cartera, análisis técnico y fundamental, y Mervall-E AI." />
     <meta name="twitter:image" content="https://rendi.finance/og-image-v3.png" />
 
-    <!-- Fonts — Geist (UI body + headings) + JetBrains Mono (labels mono).
-         Performance fix (audit 2026-05-25): antes cargábamos también
-         Instrument Serif + Manrope que NO se usan en ningún lado (Tailwind
-         config solo declara Geist). Eran ~100-150KB blocking LCP de yapa.
-         Geist se carga via @import en src/index.css. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <!-- Preconnect al backend Railway — abre el handshake TLS en paralelo al
-         download del JS, ahorra 100-200ms en la primera llamada API (mobile 3G).
-         La URL coincide con vercel.json:6 (rewrite a Railway). -->
-    <link rel="preconnect" href="https://trading-production-143b.up.railway.app" crossorigin />
+    <!-- Letras: Geist (todo el texto) + JetBrains Mono (tickers, código).
+         Se sirven desde el propio sitio (src/assets/fonts/, declaradas con
+         @font-face en src/index.css): antes venían de Google Fonts y el texto
+         esperaba una cadena de cuatro pedidos a tres servidores.
+         El href nombra el archivo de src/ y Vite lo cambia por el que publica
+         (/assets/geist-latin-<huella>.woff2): así queda guardado un día como
+         el resto de /assets/ y no hay que acordarse de renombrarlo si cambia.
+         Por qué no public/: ver el comentario de src/index.css.
+         El preload pide el archivo de Geist apenas llega este HTML, en paralelo
+         con el CSS, en vez de esperar a que el CSS diga que lo necesita.
+         Sólo Geist: es la letra de casi todo lo visible al abrir. JetBrains
+         Mono aparece poco y en lugares chicos; precargarla le sacaría ancho de
+         banda al CSS y a Geist.
+         `crossorigin` es obligatorio aunque sea el mismo sitio: el navegador
+         pide las letras en modo CORS y sin él baja el archivo dos veces.
+         El href tiene que nombrar el MISMO archivo que el src del @font-face
+         de Geist en index.css: si no, se bajan dos y el precargado no sirve
+         (lo vigila src/__guards__/letras-propias.test.js en lo publicado).
+         No hay preconnect a Railway: el navegador nunca le habla. Habla con
+         rendi.finance/api y Vercel lo reenvía (vercel.json), así que ese
+         preconnect abría una conexión que nadie usaba. -->
+    <link rel="preload" href="/src/assets/fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin />
 
     <!-- Structured data: SoftwareApplication (qué es Rendi) -->
     <!-- ⚠️ El JSON-LD de abajo ES LO QUE LEE GOOGLE y puede mostrar en los

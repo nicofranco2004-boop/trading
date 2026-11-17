@@ -1,5 +1,75 @@
-/* Tipografía: Geist (sans, UI + headlines + números) + JetBrains Mono (meta técnica) */
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+/* Tipografía: Geist (sans, UI + headlines + números) + JetBrains Mono (meta técnica)
+
+   Las letras se sirven desde el propio sitio (src/assets/fonts/), NO desde Google Fonts.
+   Hasta el 16/11/2026 esto era un @import a fonts.googleapis.com, y eso armaba una
+   cadena de cuatro pedidos, cada uno esperando al anterior: la página → este CSS →
+   el CSS de Google (otro servidor) → el archivo de la letra (un tercer servidor).
+   Peor: un @import frena el primer dibujo, así que la página entera esperaba al CSS
+   de Google. Medido en un celular con 4G lenta: el primer texto aparecía recién
+   cuando llegaba ese CSS, y el titular de la portada saltaba de renglón cuando
+   llegaba Geist. Ahora el archivo de Geist se empieza a bajar apenas llega el HTML
+   (el <link rel="preload"> de index.html) y por la misma conexión que la página.
+   La prueba src/__guards__/letras-propias.test.js impide volver al @import.
+
+   Origen: son EXACTAMENTE los archivos que servía Google Fonts para
+   Geist:wght@300..700 y JetBrains Mono:wght@400..600 (bajados el 16/11/2026 de
+   fonts.gstatic.com con un Chrome actual). Cada familia es UN archivo variable para
+   todos los pesos. Subset "latin": cubre todo lo del español (á é í ó ú ñ ü ¿ ¡ « »
+   – — € ·); se revisó que ningún texto del sitio use letras del subset "latin-ext".
+   JetBrains Mono suma su subset "greek" porque la guía dibuja «Σ» en mono
+   (ReturnsDiagram); por el unicode-range sólo se baja en una página que muestre
+   una letra griega en mono.
+
+   Licencia: las dos son SIL Open Font License 1.1 (https://openfontlicense.org), que
+   permite servirlas desde el propio sitio. El copyright y la licencia viajan adentro
+   de cada archivo (tabla "name"):
+     Geist          — Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font)
+     JetBrains Mono — Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+
+   Los pesos van como RANGO y son los mismos que se le pedían a Google (300–700 y
+   400–600): un peso fuera del rango sale en el borde, como salía antes.
+
+   Por qué en src/assets/fonts/ y NO en public/ (16/11/2026, lo encontró la revisión):
+   lo que está en public/ Vercel lo sirve con «guardalo, pero preguntame cada vez si
+   cambió» (max-age=0). Con las letras ahí, cada página entera que se abre —la segunda
+   de una visita, la app con la sesión ya iniciada— le volvía a preguntar al servidor
+   por la letra antes de usarla, y salía más lenta que con Google (que la deja guardada
+   un año): /planes como segunda página, elemento más grande 0,21 s con Google →
+   0,47 s desde public/ → 0,24 s desde /assets/ (celular, 4G lenta). Y si un
+   archivo de public/fonts faltaba, el comodín de vercel.json contestaba app.html con
+   un «todo bien» en vez de un error.
+   Desde src/, Vite publica cada letra en /assets/ con una huella del contenido en el
+   nombre (geist-latin-<huella>.woff2), igual que el JS y este CSS. Eso da tres cosas
+   sin tocar vercel.json: (1) /assets/ se guarda un día sin preguntar (vercel.json);
+   (2) si el archivo cambia, cambia el nombre solo, así que el navegador nunca se queda
+   con una letra vieja; (3) /assets/ está fuera del comodín: un archivo que falta da
+   «no existe» (404), nunca una página entera disfrazada de letra.
+   El preload de index.html nombra el MISMO archivo de src/ y Vite le pone la misma
+   huella. Lo vigila src/__guards__/letras-propias.test.js sobre lo que se publica. */
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('./assets/fonts/geist-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('./assets/fonts/jetbrains-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('./assets/fonts/jetbrains-mono-greek.woff2') format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
 
 @tailwind base;
 @tailwind components;
