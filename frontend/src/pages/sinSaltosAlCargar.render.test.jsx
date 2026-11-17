@@ -114,6 +114,22 @@ async function piezas() {
 
 const LISTA = 'Tu setup en Rendi'
 
+// Corre `fn` anotando cada vez que SUENA el tope de useEsperaDeLaLista (no
+// cuando se arma: en la compu se arma y se cancela en el mismo instante).
+// NO se mide con reloj: con la Mac cargada (otras sesiones corriendo su suite)
+// el primer dibujo llegó a los 3,6 s y una cota de tiempo daba rojo sin que
+// nada esperara el tope.
+async function anotandoElTope(fn) {
+  const sono = []
+  const setTimeoutDeVerdad = globalThis.setTimeout
+  const espia = vi.spyOn(globalThis, 'setTimeout').mockImplementation((cb, ms, ...resto) => (
+    ms === TOPE_ESPERA_LISTA_MS && String(cb).includes('setVencida')
+      ? setTimeoutDeVerdad(() => { sono.push(ms); cb() }, ms, ...resto)
+      : setTimeoutDeVerdad(cb, ms, ...resto)
+  ))
+  try { return { resultado: await fn(), sono } } finally { espia.mockRestore() }
+}
+
 afterEach(() => { control.colgado = null })
 
 describe('celular (375 px)', () => {
@@ -129,21 +145,25 @@ describe('celular (375 px)', () => {
   }, 60000)
 
   it('inicio con la lista cerrada: se muestra sin esperar el tope', async () => {
-    const dibujos = await dibujosDe('/', { local: { rendi_checklist_dismissed: '1' } })
+    // La lista cerrada se sabe de entrada: el inicio aparece apenas tiene sus
+    // datos (quien pagó y la cerró no espera nada). Si hubiera tenido que
+    // esperar, el tope habría sonado.
+    const { resultado: dibujos, sono } = await anotandoElTope(() => dibujosDe('/', { local: { rendi_checklist_dismissed: '1' } }))
     const primero = dibujos.find((d) => d.texto.includes('Tu cartera'))
     expect(primero, 'el inicio nunca mostró «Tu cartera»').toBeTruthy()
     expect(primero.texto).not.toContain(LISTA)
-    // La lista cerrada se sabe de entrada: el inicio aparece apenas tiene sus
-    // datos, no a los TOPE_ESPERA_LISTA_MS (quien pagó y la cerró no espera nada).
-    expect(primero.t).toBeLessThan(TOPE_ESPERA_LISTA_MS)
+    expect(sono, 'con la lista cerrada, el inicio esperó el tope en vez de mostrarse').toEqual([])
   }, 60000)
 
   it('inicio con el servidor de la lista trabado: se muestra igual al vencer el tope', async () => {
     control.colgado = '/primeros-pasos'
-    const dibujos = await dibujosDe('/')
+    const { resultado: dibujos, sono } = await anotandoElTope(() => dibujosDe('/'))
     const primero = dibujos.find((d) => d.texto.includes('Tu cartera'))
     expect(primero, 'una lista trabada dejó el inicio en el esqueleto para siempre').toBeTruthy()
-    expect(primero.t).toBeGreaterThanOrEqual(TOPE_ESPERA_LISTA_MS - 50)
+    // Se mostró PORQUE sonó el tope (y una sola vez). Esto también prueba que
+    // el espía ve sonar el tope: sin él, el «no sonó» de arriba no diría nada.
+    expect(sono).toHaveLength(1)
+    expect(primero.texto).not.toContain(LISTA)
   }, 60000)
 
   it('Dashboard: el cartel de la IA y el renglón de los precios están desde el primer dibujo con «Valor actual»', async () => {
