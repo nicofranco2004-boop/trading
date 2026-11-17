@@ -11,9 +11,9 @@
 //     letras; Google muestra ~155 y corta el resto.
 //   • Privacidad mandaba a la política de Rebill a una dirección que da 404.
 //   • El manifiesto de la app decía lemas viejos.
-//   • El manual de marca publicado mostraba un fundador inventado, una empleada
-//     inventada, mails de un dominio que no es de Rendi y teléfonos que pueden
-//     ser de cualquiera.
+//   • El kit de marca publicado (el manual y su README) mostraba un fundador
+//     inventado, una empleada inventada, mails de un dominio que no es de Rendi
+//     y teléfonos que pueden ser de cualquiera.
 //   • Ninguna página pública enlazaba la guía para asesores.
 //
 // Por qué ARMA las páginas en vez de leer los .jsx: lo que reciben los robots es
@@ -190,33 +190,79 @@ describe('el manifiesto de la app dice lo mismo que el sitio', () => {
   })
 })
 
-describe('el manual de marca publicado no muestra datos que parezcan reales y no lo son', () => {
-  // Se publica tal cual en rendi.finance/brand-kit/manual.html.
-  const manual = leer('public/brand-kit/manual.html')
+describe('el kit de marca publicado no muestra datos que parezcan reales y no lo son', () => {
+  // Toda la carpeta public/brand-kit/ se publica tal cual en
+  // rendi.finance/brand-kit/: el manual, el README, fonts.md y los tokens.
+  // Antes se miraba sólo manual.html, y el README seguía dando de contacto
+  // design@rendi.fi —un dominio que no es de Rendi: quien lo registre recibe
+  // esos mails— sin que ninguna prueba se pusiera en rojo. Por eso se recorre
+  // la carpeta entera: un archivo nuevo que llegue con lo mismo también falla.
+  const CARPETA = 'public/brand-kit'
+  const TEXTO = new Set(['.html', '.md', '.css', '.json', '.txt', '.svg'])
+  const IMAGEN = new Set(['.png', '.jpg', '.jpeg', '.webp', '.ico'])
+  const archivosDe = (dir) =>
+    fs.readdirSync(path.join(raiz, dir), { withFileTypes: true }).flatMap((e) => {
+      const rel = path.posix.join(dir, e.name)
+      return e.isDirectory() ? archivosDe(rel) : [rel]
+    })
+  const todos = archivosDe(CARPETA)
+  const deTexto = todos
+    .filter((f) => TEXTO.has(path.extname(f).toLowerCase()))
+    .map((f) => [f, leer(f)])
+  // Junta «archivo: lo encontrado» de cada archivo de texto, para que el rojo
+  // diga dónde está y no sólo que algo está mal.
+  const hallados = (re) =>
+    deTexto.flatMap(([f, txt]) => [...txt.matchAll(re)].map((m) => `${f}: ${m[0].trim()}`))
+
+  it('recorre la carpeta de verdad y no deja tipos de archivo sin mirar', () => {
+    // Si un día entra un .vcf o un .pdf, esta prueba pide decidir si se lee como
+    // texto o se descarta como imagen: una lista que deja pasar lo desconocido
+    // falla abierta, justo con el archivo nuevo.
+    expect(deTexto.map(([f]) => f)).toEqual(expect.arrayContaining([
+      `${CARPETA}/manual.html`, `${CARPETA}/README.md`,
+    ]))
+    const ext = (f) => path.extname(f).toLowerCase()
+    expect(todos.filter((f) => !TEXTO.has(ext(f)) && !IMAGEN.has(ext(f)))).toEqual([])
+  })
 
   it('ningún dominio rendi.fi (no es de Rendi)', () => {
-    const m = manual.match(/.{0,40}\brendi\.fi(?!nance)\b.{0,20}/)
-    expect(m?.[0] ?? null).toBeNull()
+    expect(hallados(/[\w.@-]*\brendi\.fi(?!nance)\b/g)).toEqual([])
   })
 
   it('los mails son los que muestra el sitio', () => {
-    const mails = [...new Set(manual.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g) ?? [])]
-    expect(mails.filter((m) => !['hola@rendi.finance', 'soporte@rendi.finance'].includes(m))).toEqual([])
+    const permitidos = ['hola@rendi.finance', 'soporte@rendi.finance']
+    expect(hallados(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g).filter((h) => !permitidos.some((p) => h.endsWith(`: ${p}`)))).toEqual([])
   })
 
   it('ningún teléfono', () => {
-    expect(manual.match(/\+\s?54[\d\s-]{6,}/)?.[0] ?? null).toBeNull()
+    expect(hallados(/\+\s?54[\d\s-]{6,}/g)).toEqual([])
   })
 
   it('ni personas inventadas: el fundador es Nicolás Pussetto', () => {
-    expect(manual.match(/Pablo Pussetto|Sofía Méndez/)?.[0] ?? null).toBeNull()
-    const conApellido = [...manual.matchAll(/(\p{L}+) Pussetto/gu)].map((m) => m[0])
-    expect(conApellido.filter((n) => n !== 'Nicolás Pussetto')).toEqual([])
+    expect(hallados(/Pablo Pussetto|Sofía Méndez/g)).toEqual([])
+    expect(hallados(/\p{L}+ Pussetto/gu).filter((h) => !h.endsWith(': Nicolás Pussetto'))).toEqual([])
   })
 
   it('ni una ronda de inversión que no existió', () => {
-    // Estaba dos veces: en una story («ronda seed») y en un post («SERIES SEED»).
-    expect(manual.match(/ronda seed|series seed|cerramos nuestra ronda|\$2\.4M|OS financiero/i)?.[0] ?? null).toBeNull()
+    // Estaba dos veces en el manual: en una story («ronda seed») y en un post
+    // («SERIES SEED»).
+    expect(hallados(/ronda seed|series seed|cerramos nuestra ronda|\$2\.4M|OS financiero/gi)).toEqual([])
+  })
+
+  it('ni notas internas escondidas en comentarios', () => {
+    // Lo que está en public/ Vite lo copia como está, comentarios incluidos: no
+    // se ven en la página pero sí en «ver código fuente» y en cualquier programa
+    // que copie la página. Los comentarios de los .jsx, en cambio, se borran al
+    // armar. Al sacar los datos inventados del manual quedaron cuatro notas que
+    // contaban esa historia en el archivo público; la explicación va en el
+    // mensaje del commit y en esta prueba, que no se publican.
+    const NOTA_INTERNA = /inventad|no exist|auditor[ií]a del \d/i
+    const comentarios = deTexto.flatMap(([f, txt]) =>
+      [...txt.matchAll(/<!--([\s\S]*?)-->|\/\*([\s\S]*?)\*\//g)]
+        .map((m) => (m[1] ?? m[2]).replace(/\s+/g, ' ').trim())
+        .filter((c) => NOTA_INTERNA.test(c))
+        .map((c) => `${f}: ${c.slice(0, 80)}`))
+    expect(comentarios).toEqual([])
   })
 })
 
