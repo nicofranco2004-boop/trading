@@ -154,6 +154,18 @@ describe('robots.txt como lo lee Google', () => {
     expect(googleDejaEntrar(robots, '/esto-no-existe')).toBe(true)
   })
 
+  // Para dibujar una página como la ve una persona, Google baja su JS, sus
+  // estilos, sus letras y sus imágenes. Cerrar /assets/ «porque no son
+  // páginas» (el mismo razonamiento que cierra /api/) le dejaría el texto sin
+  // diseño.
+  it('no le cierra a Google lo que las páginas necesitan para dibujarse', () => {
+    const robots = leer('public/robots.txt')
+    const archivos = ['/assets/x.js', '/assets/x.css', '/assets/x.woff2', '/founder.jpg',
+      '/og-image-v3.png', '/video/rendi-en-un-minuto.jpg', '/rss.xml', '/sitemap.xml']
+    const cerrados = archivos.filter((a) => !googleDejaEntrar(robots, a))
+    expect(cerrados, `robots.txt cierra: ${cerrados.join(', ')}`).toEqual([])
+  })
+
   it('/api/ sigue cerrado: son datos para la app, no páginas', () => {
     expect(googleDejaEntrar(leer('public/robots.txt'), '/api/auth/me')).toBe(false)
   })

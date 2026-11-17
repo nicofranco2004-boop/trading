@@ -100,7 +100,11 @@ export default defineConfig(({ mode, isSsrBuild }) => {
       // hora (usoCatalogo, 16/11/2026: «abrió la app» contado dos veces porque
       // el día cambió en el medio). Miércoles al mediodía de Buenos Aires: día
       // hábil, mercado abierto, lejos de la medianoche. La prueba que necesita
-      // otra hora la pone con vi.setSystemTime.
+      // otra hora la pone con vi.setSystemTime DESPUÉS de vi.useFakeTimers(), o
+      // con vi.useFakeTimers({ now }): un setSystemTime hecho ANTES se pierde
+      // sin aviso, porque useFakeTimers vuelve a arrancar en esta hora. Y lo que
+      // se anota con la hora (un aviso que vence, un «visto hace…») va después
+      // de encender el reloj simulado, no antes (RecalculoDeCartera.test.js).
       fakeTimers: { now: new Date('2026-11-18T15:00:00Z') },
     },
   }

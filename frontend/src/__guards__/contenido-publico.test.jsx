@@ -226,7 +226,8 @@ describe('el kit de marca publicado no muestra datos que parezcan reales y no lo
   })
 
   it('ningún dominio rendi.fi (no es de Rendi)', () => {
-    expect(hallados(/[\w.@-]*\brendi\.fi(?!nance)\b/g)).toEqual([])
+    // Sin distinguir mayúsculas: el manual está lleno de rótulos en mayúscula.
+    expect(hallados(/[\w.@-]*\brendi\.fi(?!nance)\b/gi)).toEqual([])
   })
 
   it('los mails son los que muestra el sitio', () => {
@@ -236,6 +237,8 @@ describe('el kit de marca publicado no muestra datos que parezcan reales y no lo
 
   it('ningún teléfono', () => {
     expect(hallados(/\+\s?54[\d\s-]{6,}/g)).toEqual([])
+    // Y como se escribe en Argentina, sin el +54: «(011) 4823-8120», «11 4823 8120».
+    expect(hallados(/\(?\b0?11\)?[\s-]+\d{4}[\s-]?\d{4}\b/g)).toEqual([])
   })
 
   it('ni personas inventadas: el fundador es Nicolás Pussetto', () => {

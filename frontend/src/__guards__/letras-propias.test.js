@@ -134,6 +134,7 @@ function carasPublicadas(html) {
     familia: ((m[1].match(/font-family:\s*([^;]+)/) || [])[1] || '').trim().replace(/^['"]|['"]$/g, ''),
     src: (m[1].match(/url\(\s*['"]?([^'")]+)['"]?\s*\)/) || [])[1],
     rango: (m[1].match(/unicode-range:\s*([^;]+)/) || [])[1] || null,
+    mostrar: ((m[1].match(/font-display:\s*([^;]+)/) || [])[1] || '').trim() || null,
   }))
 }
 
@@ -237,6 +238,17 @@ describe('lo que se publica pide bien las letras', () => {
         expect(esWoff2(c.src), `${donde}: ${c.src} (${c.familia}) no se publicó o no es un .woff2`).toBe(true)
       }
     }
+  })
+
+  // Antes lo garantizaba el «&display=swap» del enlace a Google Fonts; ahora
+  // vive sólo en index.css. Sin font-display el navegador deja el texto
+  // INVISIBLE hasta ~3 s mientras baja la letra: justo el primer texto que
+  // este cambio mejoró.
+  it('cada @font-face muestra el texto con la letra del sistema mientras baja la propia (swap u optional)', () => {
+    const caras = carasPublicadas(fs.readFileSync(path.join(dist, 'app.html'), 'utf8'))
+    expect(caras.length).toBeGreaterThan(0)
+    const sin = caras.filter((c) => !/^(swap|optional)$/.test(c.mostrar || ''))
+    expect(sin.map((c) => `${c.familia} (${c.src}): ${c.mostrar ?? 'sin font-display'}`)).toEqual([])
   })
 
   it('Geist y JetBrains Mono cubren el alfabeto común entero y la puntuación de los textos', () => {

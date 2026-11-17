@@ -2,8 +2,9 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <!--
     Sitemap de Rendi (rendi.finance) — todas las páginas públicas indexables.
-    Las rutas internas (dashboard, posiciones, etc.) están en robots.txt
-    como Disallow porque requieren login y no aportan SEO.
+    Las pantallas de la app (dashboard, posiciones, etc.) NO van acá y
+    tampoco se cierran en robots.txt: las sirve app.html, que dice «noindex»
+    adentro, y Google tiene que poder entrar a leerlo (ver robots.txt).
 
     Mantener actualizado cuando:
       - Agregás una landing keyword nueva en pages/keywords/
