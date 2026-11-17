@@ -28,7 +28,7 @@
 // Sin navegador no hay alturas. Lo que se mira es si cada caja está o no está,
 // que es lo que movía todo: desde el primer dibujo en que se ve el contenido, lo
 // que va arriba ya tiene que estar, y no aparecer después.
-import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { createElement as h, Profiler } from 'react'
 import { prepararApp, cargando } from '../testing/pantallaConOjito'
 import { montar } from '../testing/navegadorMinimo'
@@ -167,6 +167,11 @@ describe('celular (375 px)', () => {
   }, 60000)
 
   it('Dashboard: el cartel de la IA y el renglón de los precios están desde el primer dibujo con «Valor actual»', async () => {
+    // Los precios no contestan: así el Dashboard se ve un buen rato SIN precios,
+    // que es el momento en que faltaba el renglón. (Antes se esperaba verlo de
+    // pasada, pero desde que el Dashboard espera al fuera de horario —que en el
+    // demo llega junto con los precios— ese momento ya no se ve solo, 17/11.)
+    control.colgado = '/prices'
     const dibujos = await dibujosDe('/dashboard')
     const conContenido = dibujos.filter((d) => d.texto.includes('Valor actual'))
     expect(conContenido.length, 'el Dashboard nunca mostró «Valor actual»').toBeGreaterThan(0)
@@ -179,6 +184,57 @@ describe('celular (375 px)', () => {
     // Y el «Buscando…» de verdad se vio (si no, la prueba no miró el momento que importa).
     expect(conContenido.some((d) => d.texto.includes('Buscando precios…'))).toBe(true)
   }, 60000)
+})
+
+// ── Fuera de la rueda de Wall Street ─────────────────────────────────────────
+// El 16/11 todo daba verde medido a las 17:30 (rueda), y a las 21:27 el inicio
+// del celular con la lista cerrada daba 0,38–0,58: el anticipo de pre/post
+// mercado (el «Si abriera así» debajo del total y la sección «Post-mercado en
+// Wall Street») llegaba después de dibujar. Y eso es casi todo el día: pre
+// (6:00–11:30), post (18:00–22:00) y «post cerrado» (de las 22 hasta el pre
+// siguiente, y el fin de semana). El demo arma el fuera de horario con el reloj
+// del navegador, así que se prueba corriendo SÓLO la fecha (los temporizadores
+// siguen de verdad: la demora de 80 ms del demo y el tope son los reales).
+const HORAS_FUERA_DE_LA_RUEDA = {
+  'post-mercado (18:30)': '2026-11-17T18:30:00-03:00',
+  'post cerrado (23:30)': '2026-11-17T23:30:00-03:00',
+}
+const SI_ABRIERA = 'Si abriera así'
+
+describe('celular (375 px) fuera de la rueda', () => {
+  beforeAll(async () => { await prepararApp({ ancho: 375 }) }, 60000)
+  afterEach(() => { vi.useRealTimers() })
+
+  for (const [cuando, hora] of Object.entries(HORAS_FUERA_DE_LA_RUEDA)) {
+    describe(cuando, () => {
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['Date'], now: new Date(hora), shouldAdvanceTime: true })
+      })
+
+      it('inicio con la lista cerrada: el anticipo y la sección ya están en el primer dibujo con «Tu cartera»', async () => {
+        const dibujos = await dibujosDe('/', { local: { rendi_checklist_dismissed: '1' } })
+        const conContenido = dibujos.filter((d) => d.texto.includes('Tu cartera'))
+        expect(conContenido.length, 'el inicio nunca mostró «Tu cartera»').toBeGreaterThan(0)
+        // Que de verdad haya fuera de horario a esta hora (si no, la prueba no mira nada).
+        expect(conContenido.at(-1).texto, 'a esta hora el demo tiene que mostrar el anticipo').toContain(SI_ABRIERA)
+        expect(conContenido.filter((d) => !d.texto.includes(SI_ABRIERA)).map((d) => `${Math.round(d.t)} ms`),
+          '«Tu cartera» a la vista sin el anticipo debajo del total: aparece después y baja todo').toEqual([])
+        expect(conContenido.filter((d) => !/(Pre|Post)-mercado en Wall Street/.test(d.texto)).map((d) => `${Math.round(d.t)} ms`),
+          '«Tu cartera» a la vista sin la sección de pre/post mercado: aparece después, arriba de los KPI').toEqual([])
+      }, 60000)
+
+      it('Dashboard: el estado de la sesión y el anticipo ya están en el primer dibujo con «Valor actual»', async () => {
+        const dibujos = await dibujosDe('/dashboard')
+        const conContenido = dibujos.filter((d) => d.texto.includes('Valor actual'))
+        expect(conContenido.length, 'el Dashboard nunca mostró «Valor actual»').toBeGreaterThan(0)
+        expect(conContenido.at(-1).texto, 'a esta hora el demo tiene que mostrar el anticipo').toContain(SI_ABRIERA)
+        expect(conContenido.filter((d) => !/(Pre|Post)-mercado (abierto|cerrado)/.test(d.texto)).map((d) => `${Math.round(d.t)} ms`),
+          '«Valor actual» a la vista sin el estado de la sesión en el encabezado: aparece después y baja todo').toEqual([])
+        expect(conContenido.filter((d) => !d.texto.includes(SI_ABRIERA)).map((d) => `${Math.round(d.t)} ms`),
+          '«Valor actual» a la vista sin el anticipo: aparece después y agranda la tarjeta').toEqual([])
+      }, 60000)
+    })
+  }
 })
 
 describe('compu (1280 px)', () => {

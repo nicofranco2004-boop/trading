@@ -16,31 +16,25 @@
 // y no recién cuando la pantalla terminó (así era en el celular: la lista vivía
 // sólo en la rama «terminada», arrancaba tarde y llegaba tarde siempre).
 //
-// El tope: si la lista no contesta en TOPE_ESPERA_LISTA_MS desde que la pantalla
-// tiene lo suyo (`desde`), la pantalla se muestra igual. Una lista trabada no
-// puede dejar a nadie mirando un esqueleto; en ese caso raro la lista vuelve a
-// aparecer tarde, que es lo que pasaba siempre antes.
+// El tope y la espera en sí viven en useEsperaConTope (también los usa el
+// Dashboard). `ademas`: otra pieza de arriba que la pantalla también espera —
+// en el inicio del celular, la primera respuesta del fuera de horario.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
+import { useEsperaConTope, TOPE_ESPERA_MS } from './useEsperaConTope'
 
-export const TOPE_ESPERA_LISTA_MS = 1500
+export const TOPE_ESPERA_LISTA_MS = TOPE_ESPERA_MS
 
 /**
- * @param {boolean} desde  la pantalla ya tiene sus propios datos: desde acá corre el tope
+ * @param {boolean} desde   la pantalla ya tiene sus propios datos: desde acá corre el tope
+ * @param {boolean} ademas  otra pieza de arriba que también tiene que estar lista
  * @returns {{ lista: boolean, alDecidirse: Function }}
- *   `lista`: se puede mostrar el contenido (la lista se decidió o venció el tope).
+ *   `lista`: se puede mostrar el contenido (todo lo de arriba se decidió o venció el tope).
  *   `alDecidirse`: va al `onDecidida` de OnboardingChecklist.
  */
-export function useEsperaDeLaLista({ desde = true } = {}) {
+export function useEsperaDeLaLista({ desde = true, ademas = true } = {}) {
   const [decidida, setDecidida] = useState(false)
-  const [vencida, setVencida] = useState(false)
-
-  useEffect(() => {
-    if (!desde || decidida) return undefined
-    const t = setTimeout(() => setVencida(true), TOPE_ESPERA_LISTA_MS)
-    return () => clearTimeout(t)
-  }, [desde, decidida])
-
+  const lista = useEsperaConTope({ desde, listo: decidida && ademas })
   const alDecidirse = useCallback(() => setDecidida(true), [])
-  return { lista: decidida || vencida, alDecidirse }
+  return { lista, alDecidirse }
 }

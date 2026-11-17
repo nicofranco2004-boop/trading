@@ -13,6 +13,12 @@
 // El inicio del celular ya la tiene cargada y la pasa; el de la compu no carga
 // la cartera, así que la sección la pide ella misma, y SÓLO cuando hay sesión
 // (de 11 a 17, o de noche, no se pide nada de más).
+//
+// `datos` = la respuesta de GET /fuera-de-horario (con `listas`), cuando la
+// pantalla ya la pidió. El inicio del celular la pide apenas llega la cartera y
+// no se dibuja hasta tenerla: si la sección la pedía por su cuenta, salía recién
+// con la pantalla terminada y aparecía después, empujando todo 718 px (CLS,
+// 17/11/2026). Con `datos` (aunque todavía sea null) la sección no pide nada.
 
 import { useEffect, useMemo, useState } from 'react'
 import { useFueraDeHorarioDe } from '../../hooks/useFueraDeHorario'
@@ -84,12 +90,14 @@ function Lista({ titulo, tono, items, moneda, oculto, vacio }) {
   )
 }
 
-export default function FueraDeHorarioMercado({ cartera = null, moneda = 'USD', oculto = false, className = '' }) {
+export default function FueraDeHorarioMercado({ cartera = null, datos: datosDeLaPantalla, moneda = 'USD', oculto = false, className = '' }) {
   // Primero sin la cartera: con eso alcanza para saber si hay sesión.
   const [hayCartera, setHayCartera] = useState(false)
   const propia = useCarteraPropia(!cartera && hayCartera)
   const c = cartera || propia
-  const datos = useFueraDeHorarioDe(c?.positions, c?.brokers, { listas: true })
+  const losPidoYo = datosDeLaPantalla === undefined
+  const pedidos = useFueraDeHorarioDe(losPidoYo ? c?.positions : null, losPidoYo ? c?.brokers : null, { listas: losPidoYo })
+  const datos = losPidoYo ? pedidos : datosDeLaPantalla
   useEffect(() => { if (datos?.sesion) setHayCartera(true) }, [datos?.sesion])
 
   const impacto = useMemo(

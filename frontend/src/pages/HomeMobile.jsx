@@ -48,7 +48,7 @@ import { useDolarMensual, useFxHistory } from '../hooks/useFxHistory'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import FueraDeHorarioMercado from '../components/home/FueraDeHorarioMercado'
-import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
+import { useFueraDeHorarioDeConEstado } from '../hooks/useFueraDeHorario'
 import { impactoFueraDeHorario } from '../utils/fueraDeHorario'
 import { ChipFueraDeHorario, SiAbrieraAsi } from '../components/FueraDeHorario'
 
@@ -68,6 +68,9 @@ export default function HomeMobile() {
   // El dólar de cada mes y de cada día, para "Capital aportado" en pesos (capitalAportado.js).
   const { dolarMes, tcEnFecha } = useDolarMensual()
   const [loading, setLoading] = useState(true)
+  // Llegaron las posiciones y los brokers (los precios, todavía no): desde acá
+  // se puede pedir el fuera de horario, en paralelo con los precios.
+  const [carteraLlego, setCarteraLlego] = useState(false)
 
   useEffect(() => { loadAll() }, [])
 
@@ -91,6 +94,7 @@ export default function HomeMobile() {
       setBrokers(bkrs || [])
       setDolar(dol)
       setSnapshots(snaps || [])
+      setCarteraLlego(true)
       await loadPrices(pos, bkrs)
     } finally {
       setLoading(false)
@@ -141,11 +145,18 @@ export default function HomeMobile() {
 
   // Pre y post mercado: un ANTICIPO debajo de «Tu cartera», nunca sumado. La
   // cuenta es la de utils/fueraDeHorario; la sección de Mercado de abajo
-  // recibe esta misma cartera para no volver a pedirla.
+  // recibe esta misma cartera y esta misma respuesta para no volver a pedirlas.
+  // ⚠️ UN SOLO PEDIDO, CON LAS LISTAS, APENAS LLEGA LA CARTERA, Y EL ESQUELETO
+  // LO ESPERA (ver `espera`). Antes eran dos: éste, que perdía por poco la
+  // carrera con los precios (el chip de abajo del total aparecía después y
+  // bajaba «Últimos 30 días» 76 px), y el de la sección, que salía recién con la
+  // pantalla terminada (la sección aparecía después, con 718 px). CLS 0,36 con
+  // la lista cerrada, a cualquier hora fuera de la rueda (17/11/2026).
   const carteraFdh = useMemo(
     () => ({ positions, brokers, prices, tcValuacion, tcCedear, tcCripto }),
     [positions, brokers, prices, tcValuacion, tcCedear, tcCripto])
-  const fdh = useFueraDeHorarioDe(positions, brokers)
+  const { datos: fdh, respondio: fdhRespondio } = useFueraDeHorarioDeConEstado(
+    carteraLlego ? positions : null, carteraLlego ? brokers : null, { listas: carteraLlego })
   const impactoFdh = useMemo(
     () => impactoFueraDeHorario(positions, brokers, carteraFdh, fdh), [positions, brokers, carteraFdh, fdh])
   const sesionFdh = impactoFdh.aplica ? fdh.sesion : null
@@ -352,7 +363,8 @@ export default function HomeMobile() {
   // esqueleto, en el MISMO lugar del árbol en las dos ramas (si cambiara de
   // lugar, React la volvería a crear y arrancaría de cero), y la pantalla se
   // muestra cuando la lista se decidió o venció el tope (useEsperaDeLaLista).
-  const espera = useEsperaDeLaLista({ desde: !loading })
+  // Y cuando contestó el fuera de horario (`fdhRespondio`, ver arriba).
+  const espera = useEsperaDeLaLista({ desde: !loading, ademas: fdhRespondio })
   const pantallaLista = !loading && espera.lista
   const listaDePrimerosPasos = (
     <div className="px-4 pt-4" hidden={!pantallaLista}>
@@ -522,7 +534,7 @@ export default function HomeMobile() {
 
       {/* ── 1.5 Pre y post mercado — sólo existe en esas franjas ─────── */}
       <div className="px-4 pb-4 empty:hidden">
-        <FueraDeHorarioMercado cartera={carteraFdh} moneda={currency} oculto={hidden} />
+        <FueraDeHorarioMercado cartera={carteraFdh} datos={fdh} moneda={currency} oculto={hidden} />
       </div>
 
       {/* ── 2. KPI strip 2x2 ────────────────────────────────────────── */}

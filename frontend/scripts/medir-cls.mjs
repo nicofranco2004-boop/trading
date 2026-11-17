@@ -34,6 +34,12 @@
 //   npx vite build --outDir /tmp/x && DIST=/tmp/x node scripts/medir-cls.mjs …     # una compilación local
 //   DETALLE=1 …                                  # la tabla cuadro a cuadro de TODAS las cargas
 //   CHROME=/ruta/a/Chrome …                      # otro Chrome
+//   RELOJ=2026-11-17T18:30:00-03:00 …            # el reloj de la página en esa hora
+// RELOJ importa: el pre y el post mercado de EE.UU. (6:00–11:30 y 18:00–22:00 de
+// Argentina) dibujan piezas que en la rueda no existen. El 16/11 se midió a las
+// 17:30 (rueda), todo en verde, y a las 21:27 el inicio sin la lista daba 0,38–0,58.
+// El demo arma el fuera de horario en el navegador con el reloj de la página, así
+// que con RELOJ se reproduce a cualquier hora. Medir SIEMPRE rueda y fuera de horario.
 // Con DIST, la página y sus archivos salen de esa carpeta (en la misma dirección
 // rendi.finance) y sólo /api va a producción: sirve para comparar antes y después
 // de un cambio en las mismas condiciones, sin publicar.
@@ -49,6 +55,8 @@ const preLs = process.env.PRE_LS ? JSON.parse(process.env.PRE_LS) : null
 const ancho = Number(process.env.ANCHO || 412)
 const celular = ancho < 768
 const dist = process.env.DIST ? path.resolve(process.env.DIST) : null
+const reloj = process.env.RELOJ ? new Date(process.env.RELOJ) : null
+if (reloj && Number.isNaN(reloj.getTime())) throw new Error(`RELOJ no es una fecha: ${process.env.RELOJ}`)
 
 const TIPOS = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.json': 'application/json',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2',
@@ -142,6 +150,19 @@ for (let i = 0; i < cargas; i++) {
   })
   if (preLs) await ctx.addInitScript((kv) => { for (const [k, v] of Object.entries(kv)) localStorage.setItem(k, v) }, preLs)
   await ctx.addInitScript(INIT)
+  // El reloj de la página arranca en RELOJ y sigue andando (se corre la hora, no
+  // se congela: con page.clock.setFixedTime la página no terminaba de cargar).
+  if (reloj) {
+    await ctx.addInitScript((desfase) => {
+      const Real = Date
+      const ahora = () => Real.now() + desfase
+      class Corrida extends Real {
+        constructor(...a) { super(...(a.length ? a : [ahora()])) }
+        static now() { return ahora() }
+      }
+      globalThis.Date = Corrida
+    }, reloj.getTime() - Date.now())
+  }
   const page = await ctx.newPage()
   const cdp = await ctx.newCDPSession(page)
   await cdp.send('Network.enable')
@@ -177,4 +198,4 @@ for (let i = 0; i < cargas; i++) {
   await ctx.close()
 }
 await browser.close()
-console.log(`\nRESUMEN ${url}${dist ? ' [' + path.basename(dist) + ']' : ''}${preLs ? ' ' + JSON.stringify(preLs) : ''}${celular ? '' : ' (compu)'}: CLS por carga = ${resultados.map(x => x.toFixed(3)).join(', ')}`)
+console.log(`\nRESUMEN ${url}${dist ? ' [' + path.basename(dist) + ']' : ''}${preLs ? ' ' + JSON.stringify(preLs) : ''}${celular ? '' : ' (compu)'}${reloj ? ' reloj ' + process.env.RELOJ : ''}: CLS por carga = ${resultados.map(x => x.toFixed(3)).join(', ')}`)

@@ -28,8 +28,22 @@ export function urlFueraDeHorario(simbolos = [], { listas = false, byma = [] } =
   return `/fuera-de-horario?${q.toString()}`
 }
 
-export function useFueraDeHorario(simbolos = [], { listas = false, byma = [] } = {}) {
+/**
+ * Lo mismo que `useFueraDeHorario`, y además `respondio`: ya volvió (o falló)
+ * el pedido de la dirección de AHORA. Una pantalla que muestra el fuera de
+ * horario ARRIBA lo espera antes de dibujarse (con tope: hooks/useEsperaConTope):
+ * si se dibujaba antes, el chip y la sección aparecían después y empujaban todo
+ * (CLS 0,36 en el inicio del celular, 0,175 en el Dashboard, 17/11/2026). Y eso
+ * pasa casi todo el día: hay sesión en pre, en post y en «post cerrado» (de las
+ * 22 hasta el pre siguiente, y el fin de semana); sólo en la rueda no hay nada.
+ * Sin nada que pedir (`url` null), `respondio` es true: no hay qué esperar.
+ */
+export function useFueraDeHorarioConEstado(simbolos = [], { listas = false, byma = [] } = {}) {
   const [datos, setDatos] = useState(null)
+  // La dirección de la última respuesta (o falla). Comparar con la de ahora,
+  // y no un «ya contestó alguna vez»: cuando llega la cartera la dirección
+  // cambia (suma los símbolos), y la respuesta vieja no trae lo tuyo.
+  const [respondida, setRespondida] = useState(null)
   const url = urlFueraDeHorario(simbolos, { listas, byma })
 
   const pedir = useCallback(async () => {
@@ -38,18 +52,28 @@ export function useFueraDeHorario(simbolos = [], { listas = false, byma = [] } =
       setDatos(await api.get(url))
     } catch {
       // se quedan los que había
+    } finally {
+      setRespondida(url)
     }
   }, [url])
 
   useEffect(() => { pedir() }, [pedir])
   useRelojVisible(pedir, FUERA_DE_HORARIO_MS)
-  return datos
+  return { datos, respondio: !url || respondida === url }
+}
+
+export function useFueraDeHorario(simbolos = [], opciones = {}) {
+  return useFueraDeHorarioConEstado(simbolos, opciones).datos
 }
 
 /** El pre/post de estas tenencias: los símbolos de EE.UU. que siguen y cuáles
  *  se miden desde el cierre de BYMA. Lo usan todas las pantallas con cartera. */
-export function useFueraDeHorarioDe(positions, brokers, { listas = false } = {}) {
+export function useFueraDeHorarioDeConEstado(positions, brokers, { listas = false } = {}) {
   const simbolos = useMemo(() => simbolosFueraDeHorario(positions || [], brokers || []), [positions, brokers])
   const byma = useMemo(() => simbolosDesdeByma(positions || [], brokers || []), [positions, brokers])
-  return useFueraDeHorario(simbolos, { listas, byma })
+  return useFueraDeHorarioConEstado(simbolos, { listas, byma })
+}
+
+export function useFueraDeHorarioDe(positions, brokers, opciones = {}) {
+  return useFueraDeHorarioDeConEstado(positions, brokers, opciones).datos
 }

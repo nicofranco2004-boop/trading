@@ -56,7 +56,8 @@ import DistribucionPorActivo from '../components/DistribucionPorActivo'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { toDistributionAiParams } from '../utils/distributionAi'
 import { rendimientoParaIa } from '../utils/rendimientoAi'
-import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
+import { useFueraDeHorarioDeConEstado } from '../hooks/useFueraDeHorario'
+import { useEsperaConTope } from '../hooks/useEsperaConTope'
 import { impactoFueraDeHorario } from '../utils/fueraDeHorario'
 import { ChipFueraDeHorario, SiAbrieraAsi, EstadoSesion, LineaBroker } from '../components/FueraDeHorario'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
@@ -274,7 +275,15 @@ function PersonalDashboard() {
 
   // Pre y post mercado: un ANTICIPO debajo del valor actual, nunca sumado (ni
   // al total, ni a «Hoy», ni a la curva). La cuenta es la de utils/fueraDeHorario.
-  const fdh = useFueraDeHorarioDe(positions, brokers)
+  // ⚠️ EL ESQUELETO ESPERA SU PRIMERA RESPUESTA (con tope). Si la pantalla se
+  // dibujaba antes, el estado de la sesión en el encabezado (+8 px) y el chip
+  // con «si abriera así» en el valor actual (+35 px) aparecían después y bajaban
+  // todo: CLS 0,175 en el celular, a cualquier hora fuera de la rueda (pre,
+  // post y «post cerrado» de noche y el fin de semana; 17/11/2026). Si el chip
+  // va o no lo decide esta respuesta, no los precios: con ella, el lugar del
+  // chip existe desde el primer dibujo y los precios sólo cambian el monto.
+  const { datos: fdh, respondio: fdhRespondio } = useFueraDeHorarioDeConEstado(positions, brokers)
+  const fdhALaVista = useEsperaConTope({ desde: !loading, listo: fdhRespondio })
   const impactoFdh = useMemo(
     () => impactoFueraDeHorario(positions, brokers, { prices, tcValuacion, tcCedear, tcCripto }, fdh),
     [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, fdh])
@@ -895,7 +904,7 @@ function PersonalDashboard() {
 
 
 
-  if (loading) return <DashboardSkeleton />
+  if (loading || !fdhALaVista) return <DashboardSkeleton />
 
   // El Dashboard pide los precios UNA vez, al abrir: el cartel dice de cuándo
   // son y no promete que se actualizan, y su punto no late (antes latía
