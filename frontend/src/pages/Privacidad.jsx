@@ -13,12 +13,18 @@ import { Link } from 'react-router-dom'
 import CabeceraPublica from '../components/CabeceraPublica'
 import PageMeta from '../components/PageMeta'
 
+// La fecha de esta versión se escribe UNA vez: la usan el renglón «Última
+// actualización» y la descripción para Google. Eran dos textos a mano y
+// nada impedía que se actualizara uno solo.
+const ACTUALIZACION = '6 de noviembre de 2026'
+const MES_ACTUALIZACION = ACTUALIZACION.replace(/^\d+ de /, '')  // «4 de octubre de 2026» → «octubre de 2026»
+
 export default function Privacidad() {
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Política de Privacidad — Rendi"
-        description="Cómo Rendi maneja tus datos personales: qué recolectamos, para qué, con quién compartimos, transferencias internacionales, cookies, seguridad, conservación y tus derechos como titular. Compliance Ley 25.326 (Argentina). Última actualización noviembre 2026."
+        description={`Política de privacidad de Rendi: qué datos guardamos, para qué, con quién los compartimos y tus derechos (Ley 25.326). Actualizada en ${MES_ACTUALIZACION}.`}
         canonical="/privacidad"
       />
 
@@ -32,7 +38,7 @@ export default function Privacidad() {
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Política de Privacidad</h1>
-        <p className="text-sm text-ink-3 mb-10">Última actualización: 6 de noviembre de 2026</p>
+        <p className="text-sm text-ink-3 mb-10">Última actualización: {ACTUALIZACION}</p>
 
         {/* Resumen prominente */}
         <div className="border border-data-violet/40 bg-data-violet/[0.06] rounded-lg p-5 mb-10">
@@ -326,7 +332,11 @@ export default function Privacidad() {
               <strong className="text-ink-0">Rebill (procesamiento de pagos).</strong>{' '}
               Recibe los datos necesarios para procesar tu pago. Como aclaramos, Rendi no
               almacena los datos de tu tarjeta: los maneja Rebill. Política:{' '}
-              <a href="https://www.rebill.com/legal/privacy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">rebill.com/legal/privacy</a>.
+              {/* rebill.com/legal/privacy daba 404 (auditoría 16/11/2026). Ésta es
+                  la que enlazan los propios términos de Rebill para usuarios
+                  (rebill.com/politica-de-privacidad redirige acá). La lista de
+                  direcciones comprobadas vive en __guards__/contenido-publico.test.jsx. */}
+              <a href="https://www.rebill.com/es/privacy-policy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">rebill.com/es/privacy-policy</a>.
             </li>
             <li>
               <strong className="text-ink-0">Google (Google Analytics).</strong>{' '}

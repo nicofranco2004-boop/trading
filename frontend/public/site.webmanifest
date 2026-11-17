@@ -1,7 +1,7 @@
 {
-  "name": "Rendi — Tu portfolio, con IA",
+  "name": "Rendi — Todas tus inversiones en un solo lugar",
   "short_name": "Rendi",
-  "description": "Tracker multi-broker para Argentina. P&L real en USD, FIFO automático, Mervall-E AI con memoria.",
+  "description": "Juntá Cocos, IOL, Schwab y Binance en un solo lugar: ganancia real en dólares, salud de cartera, análisis técnico y fundamental, y Mervall-E AI.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#07090c",

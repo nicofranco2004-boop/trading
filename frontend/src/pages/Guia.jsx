@@ -16,7 +16,8 @@ import PageMeta from '../components/PageMeta'
 import { MervallEIcono } from '../components/ai/MervallE'
 
 // Sección EXTRA para cuentas de asesor. No va en SECTIONS porque no se le muestra a
-// un usuario común: el índice la antepone solo si el tier es 'advisor'. Lo operativo
+// un usuario común: el índice la antepone solo si el tier es 'advisor', y a quien
+// llega sin sesión se la ofrece aparte, debajo de la grilla. Lo operativo
 // (cargar posiciones, vender, marcar depósitos) NO se duplica — el asesor hace todo eso
 // adentro de cada cliente, así que le sirven las MISMAS secciones de abajo.
 const SECCION_ASESORES = {
@@ -160,6 +161,30 @@ export default function Guia() {
               )
             })}
           </div>
+
+          {/* La guía para asesores, para quien llega SIN sesión. Con cuenta de
+              asesor ya es la primera tarjeta de la grilla (arriba); a un usuario
+              común con sesión no se le ofrece, porque no aplica a su cuenta. Sin
+              este link, ninguna página pública enlazaba /guia/asesores: para
+              Google y para un asesor que todavía no tiene cuenta, no existía
+              (auditoría SEO del 16/11/2026). */}
+          <SoloVisitantes>
+            <Link
+              to={SECCION_ASESORES.to}
+              className="mt-4 flex items-center gap-4 border border-line/60 hover:border-data-violet/40 hover:bg-data-violet/[0.03] rounded-lg px-6 py-4 transition-colors group"
+            >
+              <div className="w-10 h-10 rounded bg-data-violet/10 flex items-center justify-center flex-shrink-0 group-hover:bg-data-violet/15 transition-colors">
+                <Users size={18} strokeWidth={1.75} className="text-data-violet" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-ink-0 group-hover:text-data-violet transition-colors">
+                  ¿Sos asesor financiero? Guía para asesores
+                </p>
+                <p className="text-xs text-ink-2 leading-relaxed mt-0.5">{SECCION_ASESORES.desc}</p>
+              </div>
+              <ArrowRight size={14} strokeWidth={1.75} className="text-data-violet flex-shrink-0 group-hover:translate-x-0.5 transition-transform" />
+            </Link>
+          </SoloVisitantes>
         </section>
 
         {/* Recursos rápidos */}

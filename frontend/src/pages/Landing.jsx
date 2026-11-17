@@ -105,9 +105,12 @@ function Hero() {
     <section className="relative overflow-hidden">
       <div className="relative max-w-[1180px] mx-auto px-4 sm:px-6 py-10 lg:py-16 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] gap-10 items-center">
         <div className="min-w-0">
-          {/* H1 único de la portada. */}
+          {/* H1 único de la portada. El {' '} no se ve (el segundo renglón es un
+              bloque y el espacio al final de una línea no se dibuja), pero sin él
+              un robot o un lector de pantalla leía «inversiones,en»: el salto de
+              línea del código JSX no deja ningún espacio. */}
           <h1 className="text-[clamp(38px,5.6vw,68px)] leading-none font-semibold tracking-tighter text-ink-0 mb-6">
-            Todas tus inversiones,
+            Todas tus inversiones,{' '}
             <span className="block headline-sweep">en un solo lugar.</span>
           </h1>
           {/* Las palabras que busca la gente (Cocos, IOL, Schwab, Binance,
