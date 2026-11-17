@@ -233,7 +233,11 @@ describe('tokens de tema — los dos temas cubren lo mismo', () => {
     // motivo equivocado.
     const USOS = execSync(
       "grep -rhoE \"var\\(--[a-z0-9-]+|v\\('[a-z0-9-]+'\\)|--pol-\\\\$\\{lado\\}\" " +
-      "src/ --include='*.jsx' --include='*.js' --include='*.css' --exclude='index.css' || true"
+      "src/ --include='*.jsx' --include='*.js' --include='*.css' --exclude='index.css' || true",
+      // Desde la carpeta del frontend, no desde donde se corrió la suite: si no,
+      // corrida desde la raíz del repo el grep no encontraba src/ y TODAS las
+      // variables parecían sin usar.
+      { cwd: ROOT },
     ).toString()
 
     const huerfanas = Object.keys(LIGHT).filter(t => {

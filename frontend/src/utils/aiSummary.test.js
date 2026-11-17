@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync as leerDesdeLaCarpeta } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { buildAiSummary } from './aiSummary.js'
+
+// Las rutas ('src/…') se leen desde la carpeta del frontend, no desde donde se
+// corrió la suite: con la ruta relativa, correr vitest desde la raíz del repo
+// daba rojo «no existe el archivo» sin que nada estuviera roto.
+const FRONTEND = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
+const readFileSync = (ruta, cod) => leerDesdeLaCarpeta(resolve(FRONTEND, ruta), cod)
 
 // `/api/monthly` devuelve la fila sintética `global` (que ya es la suma) JUNTO a
 // las por-broker. La forma real del payload: dos brokers + su global.
