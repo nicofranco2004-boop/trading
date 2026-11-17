@@ -49,7 +49,9 @@ export default function PageMeta({
 
       {/* robots: noindex,follow para páginas que NO queremos en SERP pero
           sí queremos que el crawler siga sus links (ej: /login).
-          Default (sin Helmet): hereda el `index,follow` del index.html. */}
+          Default: hereda el robots del HTML de base — «index, follow» en las
+          páginas públicas escritas, «noindex, follow» en app.html (pantallas
+          de la app y direcciones que no existen; ver paginasEscritas.mjs). */}
       {noindex && <meta name="robots" content="noindex,follow" />}
 
       {/* Open Graph — sobrescribe el global del index.html cuando el title

@@ -12,7 +12,7 @@
 //   Video            «Mirá Rendi en un minuto» (VideoRendi)
 //   Qué hace         seis pestañas que pasan solas cada 4 s (RecorridoModulos)
 //   Sin / con Rendi  por qué en un solo lugar, renglón por renglón
-//   Cómo funciona    tres pasos (el HowTo de index.html dice los MISMOS tres)
+//   Cómo funciona    tres pasos
 //   Precios · Guías por broker · Preguntas · Fundador · Cierre · Pie
 //   + en el celular, un botón fijo abajo para registrarse.
 //
@@ -237,8 +237,6 @@ function AntesConRendi() {
 }
 
 // ─── Cómo funciona ───────────────────────────────────────────────────────────
-// Los tres pasos los repite el HowTo de `index.html` para Google: si cambian
-// acá, cambian allá (el prerender lo deja sólo en la portada).
 
 function DibujoArchivo() {
   return (

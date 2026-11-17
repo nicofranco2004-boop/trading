@@ -36,9 +36,10 @@
     <meta name="apple-mobile-web-app-title" content="Rendi" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="color-scheme" content="dark light" />
-    <!-- OJO: acá NO va la etiqueta canonical. Vercel sirve este mismo
-         index.html para TODAS las rutas de la SPA, así que un canonical fijo
-         apuntaría cada landing, blog y guía al home. Y como PageMeta AGREGA el
+    <!-- OJO: acá NO va la etiqueta canonical. De este archivo salen todas las
+         páginas escritas (scripts/paginasEscritas.mjs) y app.html, que Vercel
+         sirve para las rutas de la app: un canonical fijo apuntaría cada
+         landing, blog y guía al home. Y como PageMeta AGREGA el
          suyo (no reemplaza al estático), quedaban DOS <link rel="canonical">
          por página, el primero al home — Google los ignora a los dos.
          Cada página pone el suyo con <PageMeta canonical="..." />; el home,
