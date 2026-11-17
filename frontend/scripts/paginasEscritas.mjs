@@ -37,7 +37,7 @@ export const CARTEL_SIN_JS = /\s*<noscript>\s*<div style="max-width:720px[\s\S]*
 //
 // Acá app.html pasa a decir «noindex, follow»: no guardes esta dirección, pero
 // seguí sus links. El título queda neutro («Rendi»), porque no es la portada.
-// Las 26 páginas públicas NO pasan por acá: se arman desde el index.html
+// Las páginas públicas NO pasan por acá: se arman desde el index.html
 // original, que sigue diciendo «index, follow».
 //
 // Efecto visible: con sesión iniciada, la pestaña del navegador dice «Rendi»

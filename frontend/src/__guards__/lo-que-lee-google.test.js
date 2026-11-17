@@ -1,5 +1,5 @@
 // Lo que el prerender deja en dist/ para Google: app.html con «no me guardes»,
-// las 26 páginas públicas sin él, el RSS del blog y los datos estructurados.
+// las páginas públicas sin él, el RSS del blog y los datos estructurados.
 //
 // Auditoría SEO del 16/11/2026, verificada contra producción:
 //   · Toda dirección que no es una página pública (/esto-no-existe, /dashboard,
@@ -83,9 +83,10 @@ describe('app.html dice «no me guardes»; las páginas públicas no', () => {
     expect(escrito.app).toContain('<div id="root"></div>')
   })
 
-  it('las 26 páginas públicas se escriben y ninguna dice noindex', () => {
+  // La cantidad la ata la lista única (src/paginasPublicas.js), no un número
+  // escrito acá: agregar una página pública bien hecha no tiene que dar rojo.
+  it('cada página pública se escribe y ninguna dice noindex', () => {
     expect(resultado.paginas).toBe(RUTAS.length)
-    expect(RUTAS.length).toBe(26)
     for (const ruta of RUTAS) {
       const cabeza = cabezaDe(escrito.paginas[ruta])
       expect(robotsDe(cabeza), `${ruta}`).toEqual(['index, follow, max-image-preview:large'])
