@@ -41,4 +41,4 @@ Sistema de identidad de Rendi · v1.0 · Mayo 2026
 
 ## Contacto
 
-design@rendi.fi
+hola@rendi.finance

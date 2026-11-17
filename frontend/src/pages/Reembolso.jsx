@@ -23,12 +23,18 @@ import { Link } from 'react-router-dom'
 import CabeceraPublica from '../components/CabeceraPublica'
 import PageMeta from '../components/PageMeta'
 
+// La fecha de esta versión se escribe UNA vez: la usan el renglón «Última
+// actualización» y la descripción para Google. Eran dos textos a mano y
+// nada impedía que se actualizara uno solo.
+const ACTUALIZACION = '26 de septiembre de 2026'
+const MES_ACTUALIZACION = ACTUALIZACION.replace(/^\d+ de /, '')  // «4 de octubre de 2026» → «octubre de 2026»
+
 export default function Reembolso() {
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Política de Reembolso — Rendi"
-        description="Política de reembolso de Rendi: derecho de arrepentimiento de 10 días corridos con reembolso total (Ley 24.240), botón de arrepentimiento, cómo solicitarlo, plazos vía Rebill, proración al cambiar de plan y cancelación. Última actualización septiembre 2026."
+        description={`Política de reembolso de Rendi: 10 días corridos para arrepentirte con devolución total (Ley 24.240) y cómo pedirla. Actualizada en ${MES_ACTUALIZACION}.`}
         canonical="/reembolso"
       />
       {/* Header simple — logo + link a planes */}
@@ -41,7 +47,7 @@ export default function Reembolso() {
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Política de reembolso</h1>
-        <p className="text-sm text-ink-3 mb-10">Última actualización: 26 de septiembre de 2026</p>
+        <p className="text-sm text-ink-3 mb-10">Última actualización: {ACTUALIZACION}</p>
 
         {/* Resumen prominente */}
         <div className="border border-data-violet/40 bg-data-violet/[0.06] rounded-lg p-5 mb-10">

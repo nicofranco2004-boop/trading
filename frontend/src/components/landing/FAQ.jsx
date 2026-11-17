@@ -129,9 +129,23 @@ export default function FAQ() {
           </p>
         </div>
 
+        {/* Las 10 respuestas van SIEMPRE en el HTML; las cerradas sólo se
+            ocultan a la vista (atributo `hidden`). Antes se dibujaba sólo la
+            abierta: en la página que reciben Google y las IA había 1 respuesta
+            de 10, y las otras 9 existían únicamente en el FAQPage de arriba.
+            Google pide que lo marcado para él esté en la página (políticas de
+            datos estructurados); lo que está en un desplegable cerrado cuenta,
+            lo que no está escrito, no. Medido en producción el 16/11/2026.
+
+            Estructura del patrón «acordeón» de accesibilidad: el título (h3)
+            ENVUELVE al botón —un título adentro de un botón no se anuncia como
+            título— y el botón dice si está abierto (aria-expanded) y qué región
+            abre (aria-controls → el id de la respuesta). */}
         <ul className="space-y-2">
           {FAQS.map((item, i) => {
             const isOpen = openIdx === i
+            const idPregunta = `faq-pregunta-${i}`
+            const idRespuesta = `faq-respuesta-${i}`
             return (
               <li
                 key={i}
@@ -141,26 +155,35 @@ export default function FAQ() {
                     : 'border-line/50 hover:border-line-2/70'
                 }`}
               >
-                <button
-                  type="button"
-                  onClick={() => setOpenIdx(isOpen ? -1 : i)}
-                  className="w-full flex items-start justify-between gap-4 px-5 py-4 text-left"
-                  aria-expanded={isOpen}
+                <h3>
+                  <button
+                    type="button"
+                    id={idPregunta}
+                    onClick={() => setOpenIdx(isOpen ? -1 : i)}
+                    className="w-full flex items-start justify-between gap-4 px-5 py-4 text-left"
+                    aria-expanded={isOpen}
+                    aria-controls={idRespuesta}
+                  >
+                    <span className={`text-sm md:text-base font-medium leading-snug ${isOpen ? 'text-ink-0' : 'text-ink-1'}`}>
+                      {item.q}
+                    </span>
+                    <ChevronDown
+                      size={16}
+                      strokeWidth={1.75}
+                      aria-hidden="true"
+                      className={`flex-shrink-0 mt-1 text-ink-3 transition-transform ${isOpen ? 'rotate-180 text-data-violet' : ''}`}
+                    />
+                  </button>
+                </h3>
+                <div
+                  id={idRespuesta}
+                  role="region"
+                  aria-labelledby={idPregunta}
+                  hidden={!isOpen}
+                  className="px-5 pb-4 text-sm text-ink-2 leading-relaxed"
                 >
-                  <h3 className={`text-sm md:text-base font-medium leading-snug ${isOpen ? 'text-ink-0' : 'text-ink-1'}`}>
-                    {item.q}
-                  </h3>
-                  <ChevronDown
-                    size={16}
-                    strokeWidth={1.75}
-                    className={`flex-shrink-0 mt-1 text-ink-3 transition-transform ${isOpen ? 'rotate-180 text-data-violet' : ''}`}
-                  />
-                </button>
-                {isOpen && (
-                  <div className="px-5 pb-4 text-sm text-ink-2 leading-relaxed">
-                    {item.a}
-                  </div>
-                )}
+                  {item.a}
+                </div>
               </li>
             )
           })}

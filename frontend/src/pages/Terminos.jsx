@@ -15,12 +15,18 @@ import { Link } from 'react-router-dom'
 import CabeceraPublica from '../components/CabeceraPublica'
 import PageMeta from '../components/PageMeta'
 
+// La fecha de esta versión se escribe UNA vez: la usan el renglón «Última
+// actualización» y la descripción para Google. Eran dos textos a mano y
+// nada impedía que se actualizara uno solo.
+const ACTUALIZACION = '4 de octubre de 2026'
+const MES_ACTUALIZACION = ACTUALIZACION.replace(/^\d+ de /, '')  // «4 de octubre de 2026» → «octubre de 2026»
+
 export default function Terminos() {
   return (
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Términos y Condiciones — Rendi"
-        description="Términos y Condiciones de Rendi: definiciones, qué hacemos y qué no, la prueba gratuita y los planes Plus y Pro, pagos y renovación, reembolsos, datos, propiedad intelectual, responsabilidades, Defensa del Consumidor y jurisdicción argentina (CABA). Última actualización octubre 2026."
+        description={`Términos y Condiciones de Rendi: prueba gratis, planes, pagos, reembolsos y tus datos. Rige la ley argentina. Actualizados en ${MES_ACTUALIZACION}.`}
         canonical="/terminos"
       />
       {/* Header simple — logo + link a home */}
@@ -33,7 +39,7 @@ export default function Terminos() {
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Términos y Condiciones</h1>
-        <p className="text-sm text-ink-3 mb-4">Última actualización: 4 de octubre de 2026</p>
+        <p className="text-sm text-ink-3 mb-4">Última actualización: {ACTUALIZACION}</p>
 
         <p className="text-sm text-ink-1 leading-relaxed mb-10">
           Estos Términos y Condiciones (los "Términos") regulan el acceso y uso de
