@@ -18,7 +18,8 @@
 //
 // El tope y la espera en sí viven en useEsperaConTope (también los usa el
 // Dashboard). `ademas`: otra pieza de arriba que la pantalla también espera —
-// en el inicio del celular, la primera respuesta del fuera de horario.
+// el fuera de horario: en el inicio del celular su primera respuesta; en el de
+// la compu, la sección entera (hooks/useFueraDeHorarioDelInicio).
 
 import { useCallback, useState } from 'react'
 import { useEsperaConTope, TOPE_ESPERA_MS } from './useEsperaConTope'

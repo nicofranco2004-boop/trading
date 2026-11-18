@@ -200,6 +200,20 @@ const HORAS_FUERA_DE_LA_RUEDA = {
   'post cerrado (23:30)': '2026-11-17T23:30:00-03:00',
 }
 const SI_ABRIERA = 'Si abriera así'
+// El chip punteado de la ficha de un activo: «☾ Post-mercado +USD 12 +0,4 %».
+const CHIP = /(Pre|Post)-mercado/
+const SECCION = /(Pre|Post)-mercado en Wall Street/
+
+// Los dibujos en que el contenido de la pantalla (`marca`) ya se ve y `pieza`
+// todavía no: la pieza va a aparecer después y empujar lo de abajo. Antes, que
+// al final las dos estén (si a esa hora el demo no la muestra, no se mira nada).
+function piezaQueLlegaTarde(dibujos, marca, pieza) {
+  const tiene = (d) => (typeof pieza === 'string' ? d.texto.includes(pieza) : pieza.test(d.texto))
+  const conContenido = dibujos.filter((d) => d.texto.includes(marca))
+  expect(conContenido.length, `la pantalla nunca mostró «${marca}»`).toBeGreaterThan(0)
+  expect(tiene(conContenido.at(-1)), `a esta hora el demo tiene que mostrar ${pieza}`).toBe(true)
+  return conContenido.filter((d) => !tiene(d)).map((d) => `${Math.round(d.t)} ms`)
+}
 
 describe('celular (375 px) fuera de la rueda', () => {
   beforeAll(async () => { await prepararApp({ ancho: 375 }) }, 60000)
@@ -233,8 +247,119 @@ describe('celular (375 px) fuera de la rueda', () => {
         expect(conContenido.filter((d) => !d.texto.includes(SI_ABRIERA)).map((d) => `${Math.round(d.t)} ms`),
           '«Valor actual» a la vista sin el anticipo: aparece después y agranda la tarjeta').toEqual([])
       }, 60000)
+
+      it('Cartera: el anticipo ya está en el primer dibujo con el total', async () => {
+        // «Invertido» va en el encabezado, al lado del total; el esqueleto no tiene texto.
+        const dibujos = await dibujosDe('/posiciones')
+        expect(piezaQueLlegaTarde(dibujos, 'Invertido', SI_ABRIERA),
+          'el total a la vista sin el anticipo debajo: aparece después y baja la lista').toEqual([])
+      }, 60000)
+
+      it('ficha de una tenencia: el chip de pre/post ya está en el primer dibujo con «Valor actual»', async () => {
+        // 102 = AAPL en Schwab, en el demo.
+        const dibujos = await dibujosDe('/posiciones/102')
+        expect(piezaQueLlegaTarde(dibujos, 'Valor actual', CHIP),
+          '«Valor actual» a la vista sin el chip: aparece después y baja el gráfico').toEqual([])
+      }, 60000)
     })
   }
+})
+
+// La compu, fuera de la rueda (17/11, medido con scripts/medir-cls.mjs a las
+// 18:30): el inicio con la lista cerrada daba 0,35 —la sección armaba la cartera
+// sola en cuatro pasos y aparecía, y después cambiaba a «Tus activos», con la
+// pantalla ya dibujada— y Cartera 0,09–0,14: el anticipo debajo del total (+18
+// px) y el renglón de cada broker (+30) llegaban después.
+describe('compu (1280 px) fuera de la rueda', () => {
+  beforeAll(async () => { await prepararApp({ ancho: 1280 }) }, 60000)
+  afterEach(() => { vi.useRealTimers() })
+
+  for (const [cuando, hora] of Object.entries(HORAS_FUERA_DE_LA_RUEDA)) {
+    describe(cuando, () => {
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['Date'], now: new Date(hora), shouldAdvanceTime: true })
+      })
+
+      it('inicio con la lista cerrada: la sección, ya con «Tus activos», está desde el primer dibujo con los movers', async () => {
+        const dibujos = await dibujosDe('/', { local: { rendi_checklist_dismissed: '1' } })
+        expect(piezaQueLlegaTarde(dibujos, 'Movers del día', SECCION),
+          'los movers a la vista sin la sección de pre/post mercado: aparece después, arriba de todo').toEqual([])
+        // La pestaña que se ve primero es la de tus activos; si llega después,
+        // las listas cambian de largo y la pantalla salta.
+        expect(piezaQueLlegaTarde(dibujos, 'Movers del día', 'Tus activos'),
+          'la sección a la vista sin «Tus activos»: llega después y cambia las listas').toEqual([])
+      }, 60000)
+
+      it('inicio con la lista: la lista y la sección, ya con «Tus activos», están desde el primer dibujo con los movers', async () => {
+        const dibujos = await dibujosDe('/')
+        expect(piezaQueLlegaTarde(dibujos, 'Movers del día', LISTA), 'los movers a la vista sin la lista').toEqual([])
+        expect(piezaQueLlegaTarde(dibujos, 'Movers del día', 'Tus activos'),
+          'la sección a la vista sin «Tus activos»: llega después y cambia las listas').toEqual([])
+      }, 60000)
+
+      it('Cartera: el anticipo y el estado de la sesión ya están en el primer dibujo con «Tu cartera hoy»', async () => {
+        const dibujos = await dibujosDe('/posiciones')
+        expect(piezaQueLlegaTarde(dibujos, 'Tu cartera hoy', SI_ABRIERA),
+          '«Tu cartera hoy» a la vista sin el anticipo: aparece después y baja los brokers').toEqual([])
+        expect(piezaQueLlegaTarde(dibujos, 'Tu cartera hoy', /(Pre|Post)-mercado (abierto|cerrado)/),
+          '«Tu cartera hoy» a la vista sin el estado de la sesión en el encabezado').toEqual([])
+      }, 60000)
+
+      it('ficha de un activo: el chip de pre/post ya está en el primer dibujo con «Valor actual»', async () => {
+        const dibujos = await dibujosDe('/activo/AAPL')
+        expect(piezaQueLlegaTarde(dibujos, 'Valor actual', CHIP),
+          '«Valor actual» a la vista sin el chip: aparece después y baja el gráfico').toEqual([])
+      }, 60000)
+    })
+  }
+
+  describe('con el servidor del fuera de horario trabado (18:30)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'], now: new Date(HORAS_FUERA_DE_LA_RUEDA['post-mercado (18:30)']), shouldAdvanceTime: true })
+      control.colgado = '/fuera-de-horario'
+    })
+
+    it('inicio: se muestra igual al vencer el tope', async () => {
+      const { resultado: dibujos, sono } = await anotandoElTope(() => dibujosDe('/', { local: { rendi_checklist_dismissed: '1' } }))
+      expect(dibujos.find((d) => d.texto.includes('Movers del día')), 'un fuera de horario trabado dejó el inicio invisible').toBeTruthy()
+      expect(sono).toHaveLength(1)
+    }, 60000)
+
+    it('Cartera: se muestra igual al vencer el tope', async () => {
+      const { resultado: dibujos, sono } = await anotandoElTope(() => dibujosDe('/posiciones'))
+      expect(dibujos.find((d) => d.texto.includes('Tu cartera hoy')), 'un fuera de horario trabado dejó Cartera en el esqueleto').toBeTruthy()
+      expect(sono).toHaveLength(1)
+    }, 60000)
+  })
+})
+
+// En la rueda (de 11:30 a 18 de Argentina) no hay fuera de horario: ninguna
+// pantalla puede quedarse esperando el tope por él.
+describe('en la rueda (14:00): nada espera de más', () => {
+  afterEach(() => { vi.useRealTimers() })
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-11-17T14:00:00-03:00'), shouldAdvanceTime: true })
+  })
+
+  it('compu: el inicio con la lista cerrada y Cartera se muestran sin esperar el tope', async () => {
+    await prepararApp({ ancho: 1280 })
+    const { resultado: inicio, sono: sonoInicio } = await anotandoElTope(() => dibujosDe('/', { local: { rendi_checklist_dismissed: '1' } }))
+    expect(inicio.find((d) => d.texto.includes('Movers del día'))?.texto).not.toMatch(SECCION)
+    expect(sonoInicio, 'en la rueda el inicio esperó el tope').toEqual([])
+    const { resultado: cartera, sono: sonoCartera } = await anotandoElTope(() => dibujosDe('/posiciones'))
+    expect(cartera.find((d) => d.texto.includes('Tu cartera hoy'))?.texto).not.toContain(SI_ABRIERA)
+    expect(sonoCartera, 'en la rueda Cartera esperó el tope').toEqual([])
+  }, 60000)
+
+  it('celular: Cartera y la ficha de una tenencia se muestran sin esperar el tope', async () => {
+    await prepararApp({ ancho: 375 })
+    const { resultado: cartera, sono: sonoCartera } = await anotandoElTope(() => dibujosDe('/posiciones'))
+    expect(cartera.find((d) => d.texto.includes('Invertido')), 'Cartera nunca mostró el total').toBeTruthy()
+    expect(sonoCartera, 'en la rueda Cartera esperó el tope').toEqual([])
+    const { resultado: ficha, sono: sonoFicha } = await anotandoElTope(() => dibujosDe('/posiciones/102'))
+    expect(ficha.find((d) => d.texto.includes('Valor actual')), 'la ficha nunca se mostró').toBeTruthy()
+    expect(sonoFicha, 'en la rueda la ficha esperó el tope').toEqual([])
+  }, 60000)
 })
 
 describe('compu (1280 px)', () => {

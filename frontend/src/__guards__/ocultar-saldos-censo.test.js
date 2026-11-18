@@ -103,6 +103,7 @@ export const SIN_OJITO = {
   'hooks/useCuponesPorCobrar.js': 'lo muestra DividendosPorCobrar (mira el ojito)',
   'hooks/useDividendosPorCobrar.js': 'lo muestra DividendosPorCobrar (mira el ojito)',
   'hooks/useMonthlyData.js': 'lo muestra MonthlySummary (mira el ojito)',
+  'hooks/useFueraDeHorarioDelInicio.js': 'tu cartera para la sección de pre/post mercado del inicio de la compu; no dibuja nada: la sección recibe `oculto` de Home, que mira el ojito',
   'hooks/usePfRollup.js': 'lo suma la Cartera, que mira el ojito',
   'hooks/useReportYears.js': 'años con informe, sin montos',
   'hooks/useReportsTimeline.js': 'lo muestran los informes',

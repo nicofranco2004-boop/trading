@@ -42,10 +42,13 @@
 // que con RELOJ se reproduce a cualquier hora. Medir SIEMPRE rueda y fuera de horario.
 // Con DIST, la página y sus archivos salen de esa carpeta (en la misma dirección
 // rendi.finance) y sólo /api va a producción: sirve para comparar antes y después
-// de un cambio en las mismas condiciones, sin publicar.
+// de un cambio en las mismas condiciones, sin publicar. Cada archivo de la
+// carpeta tarda lo que tardaría por la red elegida (ver demoraDeLaRed): hasta
+// el 17/11 llegaba al instante y el celular «con 4G lenta» no esperaba nada.
 import { chromium } from 'playwright-core'
 import fs from 'node:fs'
 import path from 'node:path'
+import zlib from 'node:zlib'
 
 const url = process.argv[2] || 'https://rendi.finance/?demo=1'
 const cargas = Number(process.argv[3] || 4)
@@ -65,6 +68,23 @@ function archivoLocal(u) {
   let f = path.join(dist, decodeURIComponent(new URL(u).pathname))
   if (!f.startsWith(dist) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(dist, 'index.html')
   return { body: fs.readFileSync(f), contentType: TIPOS[path.extname(f)] || 'application/octet-stream' }
+}
+
+// Celular: la 4G lenta de Lighthouse (150 ms de ida y vuelta, 1,6 Mb/s) con el
+// factor que aplica DevTools, y el procesador 4 veces más lento. Compu: red buena.
+const RED = celular
+  ? { latency: 562.5, downloadThroughput: 1474.56 * 1024 / 8, uploadThroughput: 675 * 1024 / 8 }
+  : { latency: 40, downloadThroughput: 10240 * 1024 / 8, uploadThroughput: 10240 * 1024 / 8 }
+// ⚠️ Lo que sale de la carpeta (DIST) NO pasa por la red emulada: Chrome frena
+// lo que viaja de verdad, y una respuesta armada acá no viaja. Sin esto, en el
+// «celular con 4G lenta» la compilación local cargaba en 0,2 s, las piezas
+// tardías llegaban antes de dibujar y daba 0,000 antes y después (17/11). Se
+// le pone a mano la demora de esa red: la ida y vuelta + lo que pesa comprimido
+// (cada archivo con la red entera para él: un poco más rápido que la realidad).
+const comprimido = new Map()
+function demoraDeLaRed(f, body) {
+  if (!comprimido.has(f)) comprimido.set(f, zlib.gzipSync(body).length)
+  return RED.latency + comprimido.get(f) / RED.downloadThroughput * 1000
 }
 
 // Los medidores de terceros. Las fuentes de Google NO: cambiar de letra también
@@ -144,7 +164,9 @@ for (let i = 0; i < cargas; i++) {
     if (BLOQUEADOS.test(req.url())) return route.abort()
     if (req.method() !== 'GET') { cortados.push(req.method() + ' ' + req.url()); return route.abort() }
     if (dist && /^https:\/\/rendi\.finance\//.test(req.url()) && !/\/api\//.test(req.url())) {
-      return route.fulfill({ status: 200, ...archivoLocal(req.url()) })
+      const archivo = archivoLocal(req.url())
+      return new Promise(r => setTimeout(r, demoraDeLaRed(req.url(), archivo.body)))
+        .then(() => route.fulfill({ status: 200, ...archivo }))
     }
     return route.continue()
   })
@@ -166,11 +188,7 @@ for (let i = 0; i < cargas; i++) {
   const page = await ctx.newPage()
   const cdp = await ctx.newCDPSession(page)
   await cdp.send('Network.enable')
-  // Celular: la 4G lenta de Lighthouse (150 ms de ida y vuelta, 1,6 Mb/s) con el
-  // factor que aplica DevTools, y el procesador 4 veces más lento. Compu: red buena.
-  await cdp.send('Network.emulateNetworkConditions', celular
-    ? { offline: false, latency: 562.5, downloadThroughput: 1474.56 * 1024 / 8, uploadThroughput: 675 * 1024 / 8 }
-    : { offline: false, latency: 40, downloadThroughput: 10240 * 1024 / 8, uploadThroughput: 10240 * 1024 / 8 })
+  await cdp.send('Network.emulateNetworkConditions', { offline: false, ...RED })
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: celular ? 4 : 1 })
   await page.goto(url, { waitUntil: 'load', timeout: 120000 })
   await page.waitForTimeout(espera)

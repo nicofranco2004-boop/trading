@@ -9,58 +9,25 @@
 // de utils/fueraDeHorario — la misma cuenta que Cartera y el Dashboard. Fuera
 // de esas franjas la sección no existe: no deja un hueco ni un cartel.
 //
-// `cartera` = { positions, brokers, prices, tcValuacion, tcCedear, tcCripto }.
-// El inicio del celular ya la tiene cargada y la pasa; el de la compu no carga
-// la cartera, así que la sección la pide ella misma, y SÓLO cuando hay sesión
-// (de 11 a 17, o de noche, no se pide nada de más).
-//
-// `datos` = la respuesta de GET /fuera-de-horario (con `listas`), cuando la
-// pantalla ya la pidió. El inicio del celular la pide apenas llega la cartera y
-// no se dibuja hasta tenerla: si la sección la pedía por su cuenta, salía recién
-// con la pantalla terminada y aparecía después, empujando todo 718 px (CLS,
-// 17/11/2026). Con `datos` (aunque todavía sea null) la sección no pide nada.
+// La sección sólo DIBUJA: no pide nada. La pantalla le pasa
+//   · `cartera` = { positions, brokers, prices, tcValuacion, tcCedear, tcCripto }
+//     (null si todavía no llegó o no hay: entonces van índices, ADRs y populares);
+//   · `datos` = la respuesta de GET /fuera-de-horario con las listas (`listas`)
+//     y los símbolos de la cartera.
+// Y la pantalla no se muestra hasta tenerlos (con tope): la FORMA de la sección
+// —si está, qué pestañas, cuántas filas— sale de ahí. Cuando la sección pedía
+// por su cuenta, salía con la pantalla ya dibujada y aparecía después,
+// empujando todo 718 px en el celular; en la compu, además, armaba la cartera
+// sola en cuatro pasos y cambiaba a «Tus activos» un rato después (CLS 0,35,
+// 17/11/2026). El celular (HomeMobile) ya tiene la cartera y la respuesta; la
+// compu (Home) las pide con hooks/useFueraDeHorarioDelInicio.
 
-import { useEffect, useMemo, useState } from 'react'
-import { useFueraDeHorarioDe } from '../../hooks/useFueraDeHorario'
+import { useMemo, useState } from 'react'
 import { impactoFueraDeHorario, nombreDeSesion, estadoDeSesion } from '../../utils/fueraDeHorario'
 import { IconoSesion, tonoDeSesion, montoFdh } from '../FueraDeHorario'
 import { pctVar, pctColor, colorClass } from '../../utils/format'
-import { api } from '../../utils/api'
-import { buildPriceSymbols } from '../../utils/valuation'
-import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
-import { useRelojVisible } from '../../hooks/useRelojVisible'
 
 const TOPE_LISTA = 5
-
-// La cartera, para cuando la pantalla no la tiene a mano (el inicio de la compu).
-function useCarteraPropia(activo) {
-  const { valuationDollar } = useCurrency()
-  const [c, setC] = useState(null)
-  // No congelarla (auditoría 2026-10-15): si cambia el dólar elegido, o cada 10
-  // minutos con la pestaña a la vista, se vuelve a pedir (la de Cartera se
-  // refresca cada 90 s).
-  useEffect(() => { setC(null) }, [valuationDollar])
-  useRelojVisible(() => setC(null), 10 * 60 * 1000)
-  useEffect(() => {
-    if (!activo || c) return
-    let vivo = true
-    ;(async () => {
-      try {
-        const [positions, brokers, dolar] = await Promise.all([
-          api.get('/positions'), api.get('/brokers'), api.get('/dolar').catch(() => null),
-        ])
-        const syms = buildPriceSymbols(positions || [], brokers || []).join(',')
-        const prices = syms ? await api.get(`/prices?symbols=${syms}`).catch(() => ({})) : {}
-        const tc = pickFinancialRate(dolar, valuationDollar) || 1415
-        if (vivo) setC({ positions: positions || [], brokers: brokers || [], prices, tcValuacion: tc, tcCedear: tc, tcCripto: dolar?.cripto?.venta })
-      } catch {
-        // sin cartera la sección sigue: índices, ADRs y populares
-      }
-    })()
-    return () => { vivo = false }
-  }, [activo, c, valuationDollar])
-  return c
-}
 
 function ordenar(items) {
   const conDato = items.filter(x => x.pct != null)
@@ -90,16 +57,7 @@ function Lista({ titulo, tono, items, moneda, oculto, vacio }) {
   )
 }
 
-export default function FueraDeHorarioMercado({ cartera = null, datos: datosDeLaPantalla, moneda = 'USD', oculto = false, className = '' }) {
-  // Primero sin la cartera: con eso alcanza para saber si hay sesión.
-  const [hayCartera, setHayCartera] = useState(false)
-  const propia = useCarteraPropia(!cartera && hayCartera)
-  const c = cartera || propia
-  const losPidoYo = datosDeLaPantalla === undefined
-  const pedidos = useFueraDeHorarioDe(losPidoYo ? c?.positions : null, losPidoYo ? c?.brokers : null, { listas: losPidoYo })
-  const datos = losPidoYo ? pedidos : datosDeLaPantalla
-  useEffect(() => { if (datos?.sesion) setHayCartera(true) }, [datos?.sesion])
-
+export default function FueraDeHorarioMercado({ cartera: c = null, datos = null, moneda = 'USD', oculto = false, className = '' }) {
   const impacto = useMemo(
     () => (c ? impactoFueraDeHorario(c.positions, c.brokers, c, datos) : null),
     [c, datos])

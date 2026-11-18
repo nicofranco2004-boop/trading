@@ -4,8 +4,11 @@
 // `simbolos` sale de utils/fueraDeHorario `simbolosFueraDeHorario` (cada CEDEAR
 // ya traducido a su acción de EE.UU., cada acción argentina a su ADR). Sin
 // símbolos y sin `listas` no se pide nada: no hay qué mostrar. Las pantallas
-// con cartera usan `useFueraDeHorarioDe(positions, brokers)`, que arma los dos
-// pedidos (símbolos y `byma`) de una.
+// con cartera usan `useFueraDeHorarioDeConEspera(positions, brokers, { desde })`,
+// que arma los dos pedidos (símbolos y `byma`) de una y dice cuándo dibujarse
+// (el inicio del celular, `…DeConEstado`, porque espera también otra cosa).
+// No hay una versión «pedí y listo» para pantallas con cartera, a propósito:
+// todas lo muestran arriba, y sin esperar la respuesta aparece tarde y empuja.
 //
 // Si un refresco falla se QUEDAN los datos que había: un corte de red de un
 // segundo no puede hacer desaparecer el chip.
@@ -13,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../utils/api'
 import { useRelojVisible } from './useRelojVisible'
+import { useEsperaConTope } from './useEsperaConTope'
 import { FUERA_DE_HORARIO_MS, simbolosFueraDeHorario, simbolosDesdeByma } from '../utils/fueraDeHorario'
 
 /** La dirección del pedido, o null si no hay nada que pedir. `byma`: cuáles
@@ -74,6 +78,18 @@ export function useFueraDeHorarioDeConEstado(positions, brokers, { listas = fals
   return useFueraDeHorarioConEstado(simbolos, { listas, byma })
 }
 
-export function useFueraDeHorarioDe(positions, brokers, opciones = {}) {
-  return useFueraDeHorarioDeConEstado(positions, brokers, opciones).datos
+/**
+ * Para la pantalla que muestra el pre/post de estas tenencias ARRIBA (el
+ * Dashboard, Cartera, la ficha de un activo): lo mismo que
+ * `useFueraDeHorarioDeConEstado`, y además `aLaVista`, que dice cuándo se puede
+ * dibujar. Hasta entonces la pantalla muestra su esqueleto: el chip, el «si
+ * abriera así» y el renglón de cada broker tienen que estar desde el primer
+ * dibujo, o aparecen después y empujan todo (CLS 0,09–0,14 en Cartera de la
+ * compu, 17/11/2026). Con tope (useEsperaConTope), que corre desde `desde`: las
+ * tenencias ya llegaron, o sea que ya se sabe qué pedir.
+ */
+export function useFueraDeHorarioDeConEspera(positions, brokers, { desde, listas = false } = {}) {
+  const estado = useFueraDeHorarioDeConEstado(positions, brokers, { listas })
+  const aLaVista = useEsperaConTope({ desde, listo: estado.respondio })
+  return { ...estado, aLaVista }
 }

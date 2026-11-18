@@ -1,7 +1,8 @@
 // useEsperaConTope — una pantalla no se muestra hasta que lo que va ARRIBA de
 // todo ya sabe cuánto ocupa (`listo`), y si eso no llega a tiempo, se muestra
-// igual. Lo usan el inicio (la lista de primeros pasos y el fuera de horario,
-// ver useEsperaDeLaLista) y el Dashboard (el fuera de horario).
+// igual. Lo usan los dos inicios (la lista de primeros pasos y el fuera de
+// horario, ver useEsperaDeLaLista) y, por el fuera de horario, el Dashboard,
+// Cartera y la ficha de un activo (useFueraDeHorarioDeConEspera).
 // ═══════════════════════════════════════════════════════════════════════════
 // Por qué: una pieza que se dibuja DESPUÉS que la pantalla, arriba, empuja
 // todo lo de abajo justo cuando la persona va a tocar algo. Es lo que Google
@@ -36,6 +37,15 @@ export function useEsperaConTope({ desde = true, listo }) {
   const ya = desde && (!!listo || vencida)
 
   useEffect(() => { if (ya) setMostrada(true) }, [ya])
+
+  // Si la pantalla vuelve a SU esqueleto (`desde` otra vez false: en la ficha,
+  // otro activo elegido en el buscador, con la misma página sin rearmarse), la
+  // vez siguiente espera de nuevo. Si no, el chip del segundo llegaba tarde.
+  useEffect(() => {
+    if (desde) return
+    setMostrada(false)
+    setVencida(false)
+  }, [desde])
 
   useEffect(() => {
     if (!desde || listo || mostrada) return undefined

@@ -16,7 +16,6 @@ import {
   nombreDeSesion, nombreCorto, rotuloVia, estadoDeSesion,
   impactoFueraDeHorario, sumarTenencias,
 } from '../utils/fueraDeHorario'
-import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
 
 const esPre = (sesion) => sesion === 'pre'
 
@@ -95,10 +94,14 @@ export function ChipFueraDeHorario({ sesion, monto, pctFraccion, moneda, oculto 
  * (bonos, fondos, acción argentina sin ADR…) o si no hay sesión.
  * `prices`, `tcValuacion`, `tcCedear` y `tcCripto` son los mismos que Cartera
  * le pasa a impactoFueraDeHorario. «sin operar» si la acción todavía no se movió.
+ *
+ * `datos` = la respuesta de GET /fuera-de-horario para esos lotes. La PÁGINA la
+ * pide (useFueraDeHorarioDeConEspera) y no se dibuja hasta tenerla: cuando el
+ * chip la pedía solo, salía recién con la ficha dibujada y el chip aparecía
+ * después, debajo del valor, bajando el gráfico y todo lo demás (17/11/2026).
  */
-export function ChipDelActivo({ lotes, brokers, prices, tcValuacion, tcCedear, tcCripto = null, className = '' }) {
+export function ChipDelActivo({ lotes, brokers, datos, prices, tcValuacion, tcCedear, tcCripto = null, className = '' }) {
   const { hidden } = usePrivacy()
-  const datos = useFueraDeHorarioDe(lotes, brokers)
   const impacto = useMemo(
     () => impactoFueraDeHorario(lotes, brokers, { prices, tcValuacion, tcCedear, tcCripto }, datos),
     [lotes, brokers, prices, tcValuacion, tcCedear, tcCripto, datos])

@@ -69,7 +69,7 @@ import { useEnVuelo } from '../hooks/useEnVuelo'
 import PesoEnCartera from '../components/PesoEnCartera'
 import RadiografiaTecnica, { useLecturasCartera, lecturaDeLaFila, TendenciaChip, FuerzaRsi } from '../components/RadiografiaTecnica'
 import { relojVisible, PRECIOS_CARTERA_MS } from '../utils/relojVisible'
-import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
+import { useFueraDeHorarioDeConEspera } from '../hooks/useFueraDeHorario'
 import { impactoFueraDeHorario, sumarTenencias } from '../utils/fueraDeHorario'
 import { ChipFueraDeHorario, SiAbrieraAsi, EstadoSesion, EncabezadoColumna, CeldaFueraDeHorario } from '../components/FueraDeHorario'
 import PositionsMobile from './PositionsMobile'
@@ -225,6 +225,11 @@ function PositionsDesktop() {
     date: today(),
   })
   const [lastUpdated, setLastUpdated] = useState(null)
+  // Hay un pedido de precios en viaje. Mientras viajan los primeros, el
+  // encabezado dice «Buscando precios…» donde después va «Precios de hace…»
+  // (como el Dashboard y Cartera del celular): sin ese renglón, al llegar los
+  // precios aparecía, y con él el estado del pre/post mercado (CLS, 17/11/2026).
+  const [pidiendoPrecios, setPidiendoPrecios] = useState(false)
   // ¿El último refresco movió algún precio? Decide si late el punto del
   // cartel de precios (PreciosEnVivo). Con el mercado cerrado, no.
   const [preciosSeMueven, setPreciosSeMueven] = useState(false)
@@ -634,6 +639,7 @@ function PositionsDesktop() {
     const all = buildPriceSymbols(pos, bkrs).join(',')
     if (!all) return
     const vigente = nuevoPedidoPrecios()
+    setPidiendoPrecios(true)
     try {
       const data = await api.get(`/prices?symbols=${all}`)
       if (vigente()) {
@@ -642,7 +648,9 @@ function PositionsDesktop() {
         setPrices(data)
         if (hayPrecios(data)) setLastUpdated(new Date())
       }
-    } catch {}
+    } catch {} finally {
+      if (vigente()) setPidiendoPrecios(false)
+    }
     // Prev-close para la variación diaria por posición. Endpoint aparte y
     // best-effort: si falla, las celdas "Var. día" muestran '—' sin romper nada.
     try {
@@ -1730,7 +1738,12 @@ function PositionsDesktop() {
   // Pre y post mercado de Wall Street: un ANTICIPO al lado del total, nunca
   // sumado. La cuenta es la de utils/fueraDeHorario (la misma del celular, el
   // Dashboard y el inicio).
-  const fdh = useFueraDeHorarioDe(positions, brokers)
+  // ⚠️ LA PÁGINA ESPERA SU PRIMERA RESPUESTA (con tope; ver el esqueleto más
+  // abajo). Se mostraba apenas llegaban las posiciones y el pedido salía recién
+  // ahí: el «si abriera así» del total (+18 px) y el renglón de cada broker
+  // (+30) aparecían una vuelta después y bajaban todo. CLS 0,09–0,14 a las
+  // 18:30 (17/11/2026); pasa a cualquier hora fuera de la rueda.
+  const { datos: fdh, aLaVista: fdhALaVista } = useFueraDeHorarioDeConEspera(positions, brokers, { desde: datosListos })
   const impactoFdh = useMemo(
     () => impactoFueraDeHorario(positions, brokers, { prices, tcValuacion, tcCedear, tcCripto }, fdh),
     [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, fdh])
@@ -1825,6 +1838,19 @@ function PositionsDesktop() {
   const montoConSigno = (n) => `${n >= 0 ? '+' : '−'}${montoSinSigno(Math.abs(n))}`
   const heroPctDisp = isArsDisp ? heroPctArs : heroPct
 
+  // El esqueleto: mientras viaja la cartera y, ya con ella, mientras viaja la
+  // primera respuesta del fuera de horario (`fdhALaVista`, arriba).
+  const esqueleto = (
+    <div className="page-shell-xwide">
+      <PageHeader eyebrow="Posiciones / Activas" title="Tu cartera en vivo" />
+      <div className="space-y-3 mt-6" aria-live="polite" aria-busy="true">
+        <div className="h-32 w-full bg-bg-1 rounded-xl esqueleto" />
+        <div className="h-24 w-2/5 bg-bg-1 rounded-xl esqueleto" />
+        <div className="h-64 w-full bg-bg-1 rounded-xl esqueleto" />
+      </div>
+    </div>
+  )
+
   if (brokers.length === 0) {
     // «Todavía no llegó» no es «no tiene brokers». Hasta 2026-10-11 esta
     // pantalla le decía "sumá tu primer broker" a cualquiera mientras la lista
@@ -1832,32 +1858,25 @@ function PositionsDesktop() {
     // veía varios segundos, justo lo que encuentra quien llega desde el botón
     // «Registrar» esperando un formulario.
     if (!datosListos) {
+      if (!cargaTerminada) return esqueleto
       return (
         <div className="page-shell-xwide">
           <PageHeader eyebrow="Posiciones / Activas" title="Tu cartera en vivo" />
-          {cargaTerminada ? (
-            <div className="bg-bg-1 border border-line rounded-xl mt-6">
-              <EmptyState
-                title="No pudimos cargar tu cartera"
-                description="Tus datos están guardados: suele ser la conexión. Probá de nuevo."
-                action={
-                  <button
-                    type="button"
-                    onClick={() => loadAll().then(ok => { if (ok) setCargaLista(true) })}
-                    className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white text-sm font-medium rounded-sm px-4 py-2 transition-colors"
-                  >
-                    Reintentar
-                  </button>
-                }
-              />
-            </div>
-          ) : (
-            <div className="space-y-3 mt-6" aria-live="polite" aria-busy="true">
-              <div className="h-32 w-full bg-bg-1 rounded-xl esqueleto" />
-              <div className="h-24 w-2/5 bg-bg-1 rounded-xl esqueleto" />
-              <div className="h-64 w-full bg-bg-1 rounded-xl esqueleto" />
-            </div>
-          )}
+          <div className="bg-bg-1 border border-line rounded-xl mt-6">
+            <EmptyState
+              title="No pudimos cargar tu cartera"
+              description="Tus datos están guardados: suele ser la conexión. Probá de nuevo."
+              action={
+                <button
+                  type="button"
+                  onClick={() => loadAll().then(ok => { if (ok) setCargaLista(true) })}
+                  className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white text-sm font-medium rounded-sm px-4 py-2 transition-colors"
+                >
+                  Reintentar
+                </button>
+              }
+            />
+          </div>
         </div>
       )
     }
@@ -1884,6 +1903,7 @@ function PositionsDesktop() {
       </div>
     )
   }
+  if (!fdhALaVista) return esqueleto
 
   // FR-02: tiene broker(s) pero NINGUNA posición todavía (caso típico post-skip
   // o post-import sin filas). Se usa abajo para reemplazar la grilla vacía por
@@ -1893,11 +1913,14 @@ function PositionsDesktop() {
 
   // Cartera SÍ vuelve a pedir los precios solos (relojVisible, cada
   // PRECIOS_CARTERA_MS con la pestaña a la vista): puede prometerlo.
-  const meta = lastUpdated
+  // Mientras viajan los primeros precios, «Buscando precios…» en el MISMO lugar
+  // (ver `pidiendoPrecios`): el renglón —y el estado del pre/post mercado, que
+  // va en él— existe desde el primer cuadro. Si no llega ningún precio, se va.
+  const meta = lastUpdated || pidiendoPrecios
     ? (
       <span className="inline-flex items-center gap-2 flex-wrap">
         {sesionFdh && <EstadoSesion datos={fdh} />}
-        <PreciosEnVivo actualizado={lastUpdated} seActualizanSolos seMueven={preciosSeMueven} />
+        <PreciosEnVivo actualizado={lastUpdated} actualizando={pidiendoPrecios} seActualizanSolos seMueven={preciosSeMueven} />
       </span>
     )
     : null

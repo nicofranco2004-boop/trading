@@ -26,6 +26,7 @@ import Eyebrow from '../components/Eyebrow'
 import HomeMobile from './HomeMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useEsperaDeLaLista } from '../hooks/useEsperaDeLaLista'
+import { useFueraDeHorarioDelInicio } from '../hooks/useFueraDeHorarioDelInicio'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 
@@ -34,7 +35,10 @@ export default function Home() {
   const { currency } = useCurrency()
   const { hidden } = usePrivacy()
   // En el celular la espera es de HomeMobile (con su esqueleto): acá no corre.
-  const espera = useEsperaDeLaLista({ desde: !isMobile })
+  // La sección de pre/post mercado se pide desde que se abre la pantalla, y la
+  // pantalla la espera junto con la lista (ver hooks/useFueraDeHorarioDelInicio).
+  const fdh = useFueraDeHorarioDelInicio({ activo: !isMobile })
+  const espera = useEsperaDeLaLista({ desde: !isMobile, ademas: fdh.listo })
   if (isMobile) return <HomeMobile />
 
   return (
@@ -55,7 +59,10 @@ export default function Home() {
           aparecía una vuelta de red después que el resto y empujaba todo 686 px
           hacia abajo (CLS 0,31 en 4 de 4 cargas, 16/11/2026). `invisible` y no
           `hidden`: todo queda montado y midiendo su ancho, y los pedidos de cada
-          sección salen ya. Con tope: ver useEsperaDeLaLista. */}
+          sección salen ya. Con tope: ver useEsperaDeLaLista. Y hasta que la
+          sección de pre/post mercado sabe si va y con qué forma (`fdh.listo`):
+          aparecía después, arriba, y cambiaba a «Tus activos» (CLS 0,35 con la
+          lista cerrada, a las 18:30 del 17/11/2026). */}
       <div className={`space-y-6 ${espera.lista ? '' : 'invisible'}`} aria-busy={!espera.lista}>
         {/* 0. Onboarding checklist — solo visible si el user no completó
             todos los items (broker, posición, perfil, IA). Se silencia
@@ -63,7 +70,7 @@ export default function Home() {
         <OnboardingChecklist onDecidida={espera.alDecidirse} aLaVista={espera.lista} />
 
         {/* 0.5 Pre y post mercado — sólo existe en esas franjas */}
-        <FueraDeHorarioMercado moneda={currency} oculto={hidden} />
+        <FueraDeHorarioMercado cartera={fdh.cartera} datos={fdh.datos} moneda={currency} oculto={hidden} />
 
         {/* 1. Strip de índices */}
         <IndicesStrip />

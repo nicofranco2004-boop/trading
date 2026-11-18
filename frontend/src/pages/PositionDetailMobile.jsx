@@ -21,6 +21,7 @@ import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCos
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { ChipDelActivo } from '../components/FueraDeHorario'
+import { useFueraDeHorarioDeConEspera } from '../hooks/useFueraDeHorario'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import Panel from '../components/Panel'
@@ -43,6 +44,11 @@ export default function PositionDetailMobile() {
   const [operations, setOperations] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  // Pre/post de Wall Street de esta tenencia (el chip debajo del valor). La
+  // pantalla espera la primera respuesta (con tope): si el chip llegaba después,
+  // bajaba el gráfico. Sale apenas llega la posición, junto con su precio.
+  const lotes = useMemo(() => (position ? [position] : null), [position])
+  const { datos: fdh, aLaVista: fdhALaVista } = useFueraDeHorarioDeConEspera(lotes, brokers, { desde: !loading })
 
   useEffect(() => { loadAll() }, [id])
 
@@ -87,7 +93,7 @@ export default function PositionDetailMobile() {
     }
   }
 
-  if (loading) {
+  if (loading || !fdhALaVista) {
     return <FullScreen><div className="text-ink-3 text-sm">Cargando posición…</div></FullScreen>
   }
 
@@ -277,7 +283,7 @@ export default function PositionDetailMobile() {
             </div>
           )}
           {/* Pre/post de Wall Street: anticipo, no sumado al valor de arriba. */}
-          <ChipDelActivo lotes={[p]} brokers={brokers} prices={prices}
+          <ChipDelActivo lotes={lotes} brokers={brokers} datos={fdh} prices={prices}
             tcValuacion={tcValuacion} tcCedear={tcCedear} tcCripto={tcCripto} className="mt-3 text-[12px]" />
         </section>
       </AskAIAbout>

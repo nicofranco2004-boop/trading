@@ -56,8 +56,7 @@ import DistribucionPorActivo from '../components/DistribucionPorActivo'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { toDistributionAiParams } from '../utils/distributionAi'
 import { rendimientoParaIa } from '../utils/rendimientoAi'
-import { useFueraDeHorarioDeConEstado } from '../hooks/useFueraDeHorario'
-import { useEsperaConTope } from '../hooks/useEsperaConTope'
+import { useFueraDeHorarioDeConEspera } from '../hooks/useFueraDeHorario'
 import { impactoFueraDeHorario } from '../utils/fueraDeHorario'
 import { ChipFueraDeHorario, SiAbrieraAsi, EstadoSesion, LineaBroker } from '../components/FueraDeHorario'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
@@ -282,8 +281,7 @@ function PersonalDashboard() {
   // post y «post cerrado» de noche y el fin de semana; 17/11/2026). Si el chip
   // va o no lo decide esta respuesta, no los precios: con ella, el lugar del
   // chip existe desde el primer dibujo y los precios sólo cambian el monto.
-  const { datos: fdh, respondio: fdhRespondio } = useFueraDeHorarioDeConEstado(positions, brokers)
-  const fdhALaVista = useEsperaConTope({ desde: !loading, listo: fdhRespondio })
+  const { datos: fdh, aLaVista: fdhALaVista } = useFueraDeHorarioDeConEspera(positions, brokers, { desde: !loading })
   const impactoFdh = useMemo(
     () => impactoFueraDeHorario(positions, brokers, { prices, tcValuacion, tcCedear, tcCripto }, fdh),
     [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, fdh])

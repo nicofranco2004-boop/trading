@@ -77,7 +77,7 @@ import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import { avisoBorrarBroker } from '../utils/avisoBorrarBroker'
 import { confirmar } from '../utils/confirmar'
-import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
+import { useFueraDeHorarioDeConEspera } from '../hooks/useFueraDeHorario'
 import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { impactoFueraDeHorario, sumarTenencias, nombreCorto } from '../utils/fueraDeHorario'
 import { ChipFueraDeHorario, SiAbrieraAsi, IconoSesion, tonoDeSesion } from '../components/FueraDeHorario'
@@ -1487,7 +1487,12 @@ export default function PositionsMobile() {
   // Pre y post mercado: un ANTICIPO al lado del total, nunca sumado. La cuenta
   // es la de utils/fueraDeHorario, la misma de la compu, el Dashboard y el
   // inicio. Las filas y los brokers la leen del contexto (FdhCtx).
-  const fdh = useFueraDeHorarioDe(positions, brokers)
+  // ⚠️ EL ESQUELETO ESPERA SU PRIMERA RESPUESTA (con tope). La página se
+  // mostraba apenas llegaban las posiciones y el pedido salía recién ahí: el
+  // chip y el «si abriera así» del encabezado, el renglón de cada fila y el de
+  // cada broker aparecían una vuelta después y bajaban la lista. Pasa a
+  // cualquier hora fuera de la rueda (pre, post y «post cerrado», 17/11/2026).
+  const { datos: fdh, aLaVista: fdhALaVista } = useFueraDeHorarioDeConEspera(positions, brokers, { desde: !loading })
   const impactoFdh = useMemo(
     () => impactoFueraDeHorario(positions, brokers, { prices, tcValuacion, tcCedear, tcCripto }, fdh),
     [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, fdh])
@@ -1550,7 +1555,7 @@ export default function PositionsMobile() {
     window.addEventListener('scroll', alBajar, { passive: true })
     medir()
     return () => { window.removeEventListener('scroll', alBajar); if (cuadro) cancelAnimationFrame(cuadro) }
-  }, [loading])
+  }, [loading, fdhALaVista])
   function irABuscar() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
     setTimeout(() => buscarRef.current?.focus(), 350)
@@ -1563,7 +1568,7 @@ export default function PositionsMobile() {
   }
   // El toggle "Detalle" solo aporta en brokers ARS (revela el equivalente USD).
   // Si el user no tiene ningún broker en pesos, no mostramos el botón.
-  if (loading) {
+  if (loading || !fdhALaVista) {
     // Skeleton mínimo en lugar de texto plano — el user ve inmediatamente
     // que la página está cargando contenido (perceived performance), no
     // un mensaje genérico que parpadea.

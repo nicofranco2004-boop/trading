@@ -44,6 +44,7 @@ import { monedaDe } from '../components/home/Watchlist'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { ChipDelActivo } from '../components/FueraDeHorario'
+import { useFueraDeHorarioDeConEspera } from '../hooks/useFueraDeHorario'
 import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { esCobro } from '../utils/tradeStats'
 import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
@@ -120,7 +121,12 @@ export default function AssetDetail() {
   // cripto) nunca se da vuelta: quedaría tu operatoria arriba del técnico.
   const fundamentalArriba = orden === 'fundamental' && !!empresa && sabido !== false
 
-  if (loading) {
+  // Pre/post de Wall Street de tus lotes (el chip debajo del valor). La ficha
+  // espera la primera respuesta (con tope): si el chip llegaba después, bajaba
+  // el gráfico. Sale apenas llegan tus lotes, junto con los precios.
+  const { datos: fdh, aLaVista: fdhALaVista } = useFueraDeHorarioDeConEspera(positions, brokers, { desde: !loading })
+
+  if (loading || !fdhALaVista) {
     return (
       <div className="page-shell-wide py-4 space-y-4">
         <Skeleton className="h-8 w-48" />
@@ -162,7 +168,7 @@ export default function AssetDetail() {
             </div>
           )}
           {/* Pre/post de Wall Street: anticipo, no sumado al valor de arriba. */}
-          <ChipDelActivo lotes={positions} brokers={brokers} prices={prices}
+          <ChipDelActivo lotes={positions} brokers={brokers} datos={fdh} prices={prices}
             tcValuacion={tcValuacion} tcCedear={tcCedear} tcCripto={tcCripto} className="mt-3 text-[12.5px]" />
         </section>
       </AskAIAbout>}
