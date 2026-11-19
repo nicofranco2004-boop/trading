@@ -533,8 +533,6 @@ export function motivoCartera(res, cuantos = 2) {
       return 'Pediste muchos activos nuevos en poco tiempo: probá de nuevo en un rato.'
     case 'bajando':
       return 'Estamos trayendo los precios: probá de nuevo en unos segundos.'
-    case 'demo':
-      return 'En el modo demo no hay precios de todos los días para simular carteras.'
     default:
       return 'No pudimos simular la cartera.'
   }

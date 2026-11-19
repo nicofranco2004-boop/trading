@@ -486,21 +486,19 @@ describe('por qué no se pudo simular', () => {
       .toBe('Tenemos muy pocos días de precios de NUEVITO: no alcanzan para simular. Cambialo por otro con más historia.')
     expect(motivoCartera({ motivo: 'poca_historia', recorte_por: null, faltan: [] }, 3))
       .toBe('Con estos activos tenemos muy pocos días de precios: no alcanzan para simular.')
-    expect(motivoCartera({ motivo: 'demo' })).toBe('En el modo demo no hay precios de todos los días para simular carteras.')
     expect(motivoCartera({ motivo: 'tope' })).toMatch(/probá de nuevo en un rato/)
   })
 })
 
 describe('en el modo demo', () => {
-  it('la cartera de hoy se arma sin el bono, y simular dice que no hay precios', async () => {
-    const { handleDemoRequest } = await import('./demo')
-    const hoy = handleDemoRequest('GET', '/backtest/cartera/hoy')
-    expect(hoy.activos.reduce((s, a) => s + a.peso, 0)).toBe(100)
-    expect(hoy.activos.length).toBeLessThanOrEqual(MAX_ACTIVOS)
-    expect(hoy.afuera).toEqual([{ asset: 'AL30', tipo: 'BOND', motivo: 'sin_serie' }])
-    const r = handleDemoRequest('GET', '/backtest/cartera?activos=NVDA&pesos=100&anios=2')
-    expect(r).toEqual({ disponible: false, motivo: 'demo' })
-    expect(motivoCartera(r)).toBe('En el modo demo no hay precios de todos los días para simular carteras.')
+  it('la cartera de hoy y la simulación las arma el servidor, con la cartera de ejemplo (19/11)', async () => {
+    // Antes la cartera de hoy estaba escrita a mano (NVDA 20 %, AAPL 20 %…) y
+    // simular decía «en el modo demo no hay precios»: ahora la puerta del demo
+    // (backend/main.py) corre `cartera_simulada.de_hoy` y la simulación de una cuenta.
+    const { rutaDelDemoEnElServidor } = await import('./demo')
+    expect(rutaDelDemoEnElServidor('GET', '/backtest/cartera/hoy')).toBe('/demo/backtest/cartera/hoy')
+    expect(rutaDelDemoEnElServidor('GET', '/backtest/cartera?activos=NVDA&pesos=100&anios=2'))
+      .toBe('/demo/backtest/cartera?activos=NVDA&pesos=100&anios=2')
   })
 })
 
@@ -514,7 +512,7 @@ describe('nunca promete', () => {
           ...(a ? [a.frase, ...a.veredicto, a.nota].filter(Boolean) : [])]
       }),
       QUE_SE_SIMULA, notaHoy(), notaHoy('Ana', true), notaOjito(), notaSinActivos('Ana'), NOTA_CADA_ACTIVO,
-      COMO_SE_SIMULA_CARTERA, ...['sin_serie', 'vieja', 'poca_historia', 'tope', 'bajando', 'demo', 'otro']
+      COMO_SE_SIMULA_CARTERA, ...['sin_serie', 'vieja', 'poca_historia', 'tope', 'bajando', 'otro']
         .map(m => motivoCartera({ motivo: m, faltan: [{ asset: 'X', hasta: '2026-01-02' }] }, 1)),
     ].join(' ')
     expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|conviene|deber[íi]as|mejor cartera|la mejor\b|te recomend|ayuda|muchas veces|garantiz/i)

@@ -5,6 +5,7 @@ import { claveSemanaISO } from './semanas'
 import { hoyISO, fechaISO } from './fecha'
 import { pctTxt } from './format'
 import { computeBrokerValue } from './valuation'
+import { esLoteLocal } from './accionLocal'
 import { computeSectorBreakdown } from './assetSector'
 import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
@@ -1899,6 +1900,18 @@ const DEMO_CAGR = (() => {
   return { cagr: +(cagr * 100).toFixed(2), months: monthsCount }
 })()
 
+// ¿Este lote del demo es una acción argentina? LA regla de la app
+// (accionLocal.esLoteLocal, espejo de la del servidor), con la moneda del lote
+// como la manda el servidor en una cuenta (las del demo no la traen). Sin ella
+// la regla mira el registro de brokers de utils/valuation, que se vacía al
+// entrar al demo y lo llenan recién la Cartera o el inicio: entrando directo al
+// técnico, GGAL y YPFD salían «de Nueva York» (revisión a ciegas, 19/11). Antes
+// la lista del gráfico tenía su propia regla (broker en pesos y panel argentino).
+function _esLoteLocalDelDemo(p) {
+  const b = BROKERS.find(x => x.name === p.broker)
+  return esLoteLocal({ ...p, currency: p.currency ?? b?.currency })
+}
+
 // La cartera para la lista del gráfico (GET /watchlist/cartera del demo).
 function _carteraDelGrafico(posiciones) {
   const ars = new Set(BROKERS.filter(b => b.currency === 'ARS').map(b => b.name))
@@ -1914,7 +1927,7 @@ function _carteraDelGrafico(posiciones) {
     const antes = PREV_CLOSE[cotiza] ?? null
     out.push({
       symbol: asset, cotiza, asset_type: p.asset_type || null,
-      local: enPesos && inferType(asset) === 'stock_ar',
+      local: _esLoteLocalDelDemo(p),
       price: precio,
       change: precio != null && antes != null ? +(precio - antes).toFixed(6) : null,
       change_pct: precio != null && antes ? +((precio / antes - 1) * 100).toFixed(2) : null,
@@ -3178,35 +3191,13 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/prices/history') {
       return buildPriceHistory(query)
     }
-    // La lectura técnica: el demo no tiene velas guardadas. "Sin serie" hace
-    // que la ficha muestre el gráfico de 30 días (que sí se simula), en vez de
-    // "No se pudo cargar el gráfico" (el null de una ruta que el demo no conoce).
-    // Qué parte de tu plata es (la ficha): el demo no tiene velas, así que la
-    // tarjeta «Cuánto se mueve» no aparece y el % tampoco.
-    if (basePath.startsWith('/tecnico/') && basePath.endsWith('/peso')) return { peso: null }
-    // El backtesting necesita las velas de cada día, que el demo no tiene: lo dice
-    // con su propio motivo. Sin esto le tocaba el «sin serie» de abajo (pensado
-    // para la ficha) y decía de NVDA que era un bono o un fondo (auditoría 04/11).
-    if (basePath.startsWith('/tecnico/') && basePath.endsWith('/backtest')) {
-      return {
-        asset: decodeURIComponent(basePath.slice('/tecnico/'.length, -'/backtest'.length)).toUpperCase(),
-        disponible: false, motivo: 'demo',
-      }
-    }
-    // «Una cartera» de Backtesting: la cartera de hoy del demo se arma (sin el
-    // bono AL30 ni el efectivo, que no tienen precio de todos los días, como dice
-    // el servidor), pero simular necesita las velas, que el demo no tiene.
-    if (basePath === '/backtest/cartera/hoy') {
-      return {
-        activos: [['NVDA', 20], ['AAPL', 20], ['BTC', 15], ['GGAL', 10, true], ['MSFT', 10], ['SPY', 10],
-          ['ETH', 5], ['YPFD', 5, true], ['TSLA', 5]].map(([asset, peso, local]) => ({ asset, local: !!local, peso, tipo: null })),
-        afuera: [{ asset: 'AL30', tipo: 'BOND', motivo: 'sin_serie' }],
-      }
-    }
-    if (basePath === '/backtest/cartera') return { disponible: false, motivo: 'demo' }
-    if (basePath.startsWith('/tecnico/')) {
-      return { asset: decodeURIComponent(basePath.slice('/tecnico/'.length)).toUpperCase(), disponible: false, motivo: 'sin_serie' }
-    }
+    // El análisis técnico lo arma el servidor (`rutaDelDemoEnElServidor`, más
+    // abajo): acá quedan sólo los dibujos y las líneas, que son de cada persona.
+    // Los dibujos: sin la lista, la pantalla sigue con la copia del navegador
+    // (utils/dibujos.js `dibujosDelServidor`), así lo que dibuja el visitante
+    // queda en su pantalla. Las líneas con aviso: no hay, porque no hay alertas.
+    if (/^\/tecnico\/[^/]+\/dibujos$/.test(basePath)) return {}
+    if (/^\/tecnico\/[^/]+\/lineas$/.test(basePath)) return { lineas: [] }
     // Reports timeline (Reportes page)
     if (basePath === '/reports/timeline') {
       return { reports: REPORTS_TIMELINE, total: REPORTS_TIMELINE.length,
@@ -4136,6 +4127,70 @@ function _objetivoDemo() {
   }
 }
 
+// ─── El análisis técnico del demo lo arma el servidor ────────────────────────
+// ⚠️ ANTES EL DEMO LO CONTESTABA A MANO Y SE QUEDÓ ATRÁS. A la ficha le decía
+// «sin serie» (caía a una línea de 30 días) y a Tu lista, la radiografía de la
+// Cartera y Tus señales no les contestaba nada: el Panorama, Tu lista y Señales
+// decían «No pudimos cargar…» (visto el 19/11/2026; nadie les escribió su
+// respuesta inventada cuando se agregaron). Ahora esos pedidos van a la puerta
+// del demo del servidor (backend/main.py, «La puerta del demo»), que corre el
+// MISMO motor que para una cuenta, con ESTA cartera de ejemplo y las velas de
+// verdad estiradas a los precios de acá (backend/escala_del_demo.py): el gráfico
+// de NVDA termina en los US$ 178,50 de PRICES. utils/api.js los manda SIN la
+// cookie: no viaja la sesión de quien tenga su cuenta abierta en el navegador.
+const _TECNICO_EN_EL_SERVIDOR = [
+  ['GET', /^\/tecnico\/[^/]+$/],                                          // la ficha
+  ['GET', /^\/tecnico\/[^/]+\/(horas|hoy|peso|eventos|backtest)$/],
+  ['POST', /^\/tecnico\/(lista|cartera|en-fechas)$/],
+  ['GET', /^\/tus-senales$/],
+  ['GET', /^\/backtest\/cartera(\/hoy)?$/],
+  ['GET', /^\/comparar\/precio$/],
+  // De la misma sección (Análisis de mercado): el termómetro, con «tu plata»
+  // de la cuenta de ejemplo, y la liquidez en BYMA de la ficha.
+  ['GET', /^\/termometro$/],
+  ['GET', /^\/liquidez\/[^/]+$/],
+]
+
+/** La ruta de la puerta del demo para este pedido de la pantalla
+ *  ('/demo/tecnico/NVDA?moneda=usd'), o null si lo contesta `handleDemoRequest`. */
+export function rutaDelDemoEnElServidor(method, path) {
+  const [base, query] = String(path || '').split('?')
+  if (!_TECNICO_EN_EL_SERVIDOR.some(([m, re]) => m === method && re.test(base))) return null
+  return `/demo${base}${query ? `?${query}` : ''}`
+}
+
+// Los tipos de la app (tickers.inferType) con el nombre que usa el servidor
+// (`asset_type`): un bono no tiene tendencia («no se mide»).
+const _TIPO_DEL_SERVIDOR = {
+  crypto: 'CRYPTO', stock_ar: 'STOCK_AR', cedear: 'CEDEAR', bond: 'BOND', etf: 'ETF', fci: 'FCI', stock_us: 'STOCK',
+}
+
+/** La cuenta de ejemplo como la recibe la puerta del demo (`DemoContextoIn`):
+ *  cada tenencia con lo que vale en dólares con LA valuación de la pantalla del
+ *  demo (computeBrokerValue al MEP, la de la Cartera), así el «12 % de tu plata»
+ *  del técnico es el de la Cartera; lo que agregó el visitante; su watchlist; y
+ *  el precio de cada activo, al que se estiran las velas. */
+export function contextoTecnicoDelDemo() {
+  const overlay = getDemoOverlay()
+  const broker = (n) => BROKERS.find(b => b.name === n)
+  const tenencias = []
+  let efectivo = 0
+  for (const p of [...POSITIONS, ...overlay.positions]) {
+    const b = broker(p.broker)
+    if (!b) continue
+    const valor = computeBrokerValue([p], PRICES, b, _DEMO_TC_MEP, _DEMO_TC_MEP, _DEMO_TC_CRIPTO, 'purchase').value
+    if (!(valor > 0)) continue
+    if (p.is_cash) { efectivo += valor; continue }
+    const asset = String(p.asset || '').toUpperCase()
+    tenencias.push({ asset, local: _esLoteLocalDelDemo(p), valor, tipo: _TIPO_DEL_SERVIDOR[inferType(asset)] || null })
+  }
+  const watchlist = (overlay.watchlist ?? WATCHLIST_BASE)
+    .map(w => ({ symbol: w.symbol, asset_type: w.asset_type || null, added_at: w.added_at || null }))
+  const precios = Object.fromEntries(Object.entries(PRICES).filter(([, x]) => x > 0))
+  // Plazos fijos: el demo no tiene (GET /plazos-fijos es una lista vacía).
+  return { precios, cartera: { tenencias, efectivo, plazos_fijos: 0 }, watchlist }
+}
+
 // ─── Escrituras del visitante (se bloquean) ──────────────────────────────────
 // Las de FONDO siguen en silencio: nadie las pidió a mano y un error ahí sólo
 // sería ruido (la foto diaria, el no realizado del mes, telemetría, "visto").
@@ -4153,6 +4208,9 @@ const _BASES_DEL_VISITANTE = [
   '/goals', '/wallbit', '/plazos-fijos', '/futures', '/alerts', '/movements',
   '/me', '/market-brief', '/assets', '/sections', '/billing', '/iol',
   '/advisor', '/admin', '/push', '/auth/investor-profile', '/ai/voz',
+  // Cómo te llega el resumen de los sábados: el demo lo muestra con «Mail»
+  // elegido (backend/main.py DEMO_CANAL); cambiarlo es de una cuenta.
+  '/tus-senales',
 ]
 function _esEscrituraDelVisitante(method, path) {
   if (method === 'GET') return false

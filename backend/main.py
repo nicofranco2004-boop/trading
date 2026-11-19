@@ -13059,12 +13059,8 @@ def get_tecnico(request: Request, asset: str, moneda: str = "usd", local: int = 
     'sin_datos' (Yahoo no lo tiene, o la app no lo conoce). `local=1`: es una
     acción argentina (en dólares va su precio de BYMA ÷ MEP, no el ADR). Las
     cuentas: tecnico.py."""
-    sym = (asset or "").strip().upper()
-    if not _SYMBOL_RE.match(sym):
-        raise HTTPException(400, f"Símbolo inválido: {asset}")
-    ref = (ref or "").strip().upper() or None
-    if ref and not _SYMBOL_RE.match(ref):
-        raise HTTPException(400, f"Símbolo inválido: {ref}")
+    sym = _simbolo_tecnico(asset)
+    ref = _simbolo_tecnico(ref) if (ref or "").strip() else None
     import tecnico
     # El freno de la ficha (`_freno_tecnico`, tipo «uno»): 45 fichas distintas a
     # la vez dejaron el «¿estás vivo?» en 33 s (re-test E1, 29/10).
@@ -13096,15 +13092,8 @@ def get_tecnico_backtest(request: Request, asset: str, reglas: str = "media200",
     backtest.py."""
     import backtest
     from fechas import hoy_art_date
-    sym = (asset or "").strip().upper()
-    if not _SYMBOL_RE.match(sym):
-        raise HTTPException(400, f"Símbolo inválido: {asset}")
-    pedidas = [r.strip() for r in (reglas or "").split(",") if r.strip()]
-    if (not pedidas or len(pedidas) > backtest.MAX_REGLAS or len(set(pedidas)) != len(pedidas)
-            or any(r not in backtest.REGLAS for r in pedidas)):
-        raise HTTPException(400, f"Reglas inválidas: de 1 a {backtest.MAX_REGLAS} de las que se ofrecen, sin repetir")
-    if anios not in backtest.ANIOS:
-        raise HTTPException(400, f"Período inválido: {anios} años")
+    sym = _simbolo_tecnico(asset)
+    pedidas = _reglas_del_backtest(reglas, anios)
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         bajadas = _velas_a_pedido(conn, [(sym, bool(local))], uid)
         tickers, motivo = bajadas[sym]
@@ -13115,18 +13104,29 @@ def get_tecnico_backtest(request: Request, asset: str, reglas: str = "media200",
         return res
 
 
-@app.get("/api/backtest/cartera")
-def get_backtest_cartera(request: Request, activos: str, pesos: str, local: str = "", anios: int = 2,
-                         uid: int = Depends(get_effective_user)):
-    """«Una cartera» de la pestaña Backtesting: qué habría pasado con US$ 100
-    repartidos en `activos` ('AAPL,GGAL') según `pesos` ('60,40', sobre 100),
-    comprados el primer día y sin tocar, al lado del S&P 500 y del Nasdaq, en los
-    últimos `anios` años. `local`: los que son acción argentina ('GGAL'), la misma
-    marca que en Comparar. No va en /api/tecnico/<palabra>: esa la atrapa
-    /api/tecnico/{asset}. Un activo que nadie sigue se baja en el momento, como en
-    la ficha (`_velas_a_pedido`). Las cuentas: cartera_simulada.py."""
+def _simbolo_tecnico(asset: str) -> str:
+    """El símbolo de una ruta técnica en mayúsculas, o 400 si no es un ticker."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    return sym
+
+
+def _reglas_del_backtest(reglas: str, anios: int) -> list:
+    """Las reglas pedidas del backtesting ('rsi,adx_squeeze'), o 400."""
+    import backtest
+    pedidas = [r.strip() for r in (reglas or "").split(",") if r.strip()]
+    if (not pedidas or len(pedidas) > backtest.MAX_REGLAS or len(set(pedidas)) != len(pedidas)
+            or any(r not in backtest.REGLAS for r in pedidas)):
+        raise HTTPException(400, f"Reglas inválidas: de 1 a {backtest.MAX_REGLAS} de las que se ofrecen, sin repetir")
+    if anios not in backtest.ANIOS:
+        raise HTTPException(400, f"Período inválido: {anios} años")
+    return pedidas
+
+
+def _pedido_de_cartera_simulada(activos: str, pesos: str, local: str, anios: int):
+    """(activos, los que son acción argentina, porcentajes) de «Una cartera», o 400."""
     import cartera_simulada as cs
-    from fechas import hoy_art_date
     lista = [s.strip().upper() for s in (activos or "").split(",") if s.strip()]
     locales = {s.strip().upper() for s in (local or "").split(",") if s.strip()}
     if not lista or len(lista) > cs.MAX_ACTIVOS or len(set(lista)) != len(lista):
@@ -13146,6 +13146,22 @@ def get_backtest_cartera(request: Request, activos: str, pesos: str, local: str 
         raise HTTPException(400, "Va un porcentaje por activo, mayor a 0, y entre todos suman 100")
     if anios not in cs.ANIOS:
         raise HTTPException(400, f"Período inválido: {anios} años")
+    return lista, locales, ps
+
+
+@app.get("/api/backtest/cartera")
+def get_backtest_cartera(request: Request, activos: str, pesos: str, local: str = "", anios: int = 2,
+                         uid: int = Depends(get_effective_user)):
+    """«Una cartera» de la pestaña Backtesting: qué habría pasado con US$ 100
+    repartidos en `activos` ('AAPL,GGAL') según `pesos` ('60,40', sobre 100),
+    comprados el primer día y sin tocar, al lado del S&P 500 y del Nasdaq, en los
+    últimos `anios` años. `local`: los que son acción argentina ('GGAL'), la misma
+    marca que en Comparar. No va en /api/tecnico/<palabra>: esa la atrapa
+    /api/tecnico/{asset}. Un activo que nadie sigue se baja en el momento, como en
+    la ficha (`_velas_a_pedido`). Las cuentas: cartera_simulada.py."""
+    import cartera_simulada as cs
+    from fechas import hoy_art_date
+    lista, locales, ps = _pedido_de_cartera_simulada(activos, pesos, local, anios)
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         bajadas = _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid)
         res = cs.para_la_pantalla(conn, [(s, s in locales, p) for s, p in zip(lista, ps)], anios, hoy_art_date())
@@ -13272,6 +13288,20 @@ def get_comparar_precio(request: Request, activos: str, local: str = "", moneda:
     misma marca que `/api/tecnico?local=1`. `plazo`: '1a', '3a' o 'compra' (con
     `desde`='YYYY-MM-DD', tu primera compra). Un activo que nadie sigue se baja
     en el momento, como en la ficha (`_velas_a_pedido`)."""
+    lista, locales, moneda, inicio, anios, hoy = _pedido_de_comparar(activos, local, moneda, plazo, desde)
+    # Hasta 4 series y la bajada a pedido: el freno de la ficha (`_freno_tecnico`,
+    # tipo «uno»), como toda lectura pesada (E1). Sin él, el guardián de
+    # pesado.py lo marca (visto al juntar la pieza 16 con E, 30/10).
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        bajadas = _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid)
+        res = _comparar_precio(conn, lista, locales, moneda, inicio, anios, hoy, bajadas)
+        res["plazo"] = plazo
+        return res
+
+
+def _pedido_de_comparar(activos: str, local: str, moneda: str, plazo: str, desde: str):
+    """(activos, los que son acción argentina, moneda, inicio, años, hoy) del
+    comparador de precios, o 400."""
     import comparar
     from fechas import hoy_art_date
     lista = list(dict.fromkeys(s.strip().upper() for s in (activos or "").split(",") if s.strip()))
@@ -13300,41 +13330,44 @@ def get_comparar_precio(request: Request, activos: str, local: str = "", moneda:
         anios = comparar.PLAZOS[plazo]
     else:
         raise HTTPException(400, "Plazo inválido")
-    # Hasta 4 series y la bajada a pedido: el freno de la ficha (`_freno_tecnico`,
-    # tipo «uno»), como toda lectura pesada (E1). Sin él, el guardián de
-    # pesado.py lo marca (visto al juntar la pieza 16 con E, 30/10).
-    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
-        bajadas = _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid)
-        motivos = {s: motivo or ("sin_serie" if not tickers else "sin_datos") for s, (tickers, motivo)
-                   in bajadas.items()}
-        cer, basis = None, None
-        if moneda == "ars":
-            try:
-                basis = _serie_cer_o_uva(conn, "CER")
-                _ensure_index_cached(conn, basis)
+    return lista, locales, moneda, inicio, anios, hoy
 
-                def cer(dia):
-                    """El índice desde `dia` (y el último anterior, para el día del 100).
-                    Lo llama comparar.comparar cuando ya sabe el día: con «1 año»
-                    depende del último precio de los activos."""
-                    try:
-                        return [(r["date"], float(r["value"])) for r in conn.execute(
-                            "SELECT date, value FROM bond_indices_daily WHERE index_name=? AND date >= "
-                            "COALESCE((SELECT MAX(date) FROM bond_indices_daily WHERE index_name=? AND date <= ?), ?) "
-                            "ORDER BY date", (basis, basis, dia, dia)).fetchall()]
-                    except Exception as ex:   # sin la fuente, la vara no aparece y se dice
-                        log.warning("comparar: CER no disponible: %r", ex)
-                        return []
-            except Exception as ex:   # sin la fuente, la vara no aparece y se dice
-                log.warning("comparar: CER no disponible: %r", ex)
-        res = comparar.comparar(conn, [(s, s in locales) for s in lista], moneda, inicio, anios=anios,
-                                cer=cer, cer_basis=basis, hoy=hoy)
-        for f in res["faltan"]:
-            if f["clave"] in motivos and (f["motivo"] == "sin_datos"
-                                         or _motivo_de_la_bajada(bajadas, [f["clave"]])):
-                f["motivo"] = motivos[f["clave"]]
-        res["plazo"] = plazo
-        return res
+
+def _comparar_precio(conn, lista: list, locales: set, moneda: str, inicio, anios, hoy, bajadas: dict) -> dict:
+    """La cuenta del comparador de precios (comparar.comparar) con la vara de la
+    inflación en pesos. `bajadas`: lo que dijo la bajada a pedido de cada activo
+    (`_velas_a_pedido`), para decir por qué falta uno; vacío en el demo, que no
+    baja nada."""
+    import comparar
+    motivos = {s: motivo or ("sin_serie" if not tickers else "sin_datos") for s, (tickers, motivo)
+               in bajadas.items()}
+    cer, basis = None, None
+    if moneda == "ars":
+        try:
+            basis = _serie_cer_o_uva(conn, "CER")
+            _ensure_index_cached(conn, basis)
+
+            def cer(dia):
+                """El índice desde `dia` (y el último anterior, para el día del 100).
+                Lo llama comparar.comparar cuando ya sabe el día: con «1 año»
+                depende del último precio de los activos."""
+                try:
+                    return [(r["date"], float(r["value"])) for r in conn.execute(
+                        "SELECT date, value FROM bond_indices_daily WHERE index_name=? AND date >= "
+                        "COALESCE((SELECT MAX(date) FROM bond_indices_daily WHERE index_name=? AND date <= ?), ?) "
+                        "ORDER BY date", (basis, basis, dia, dia)).fetchall()]
+                except Exception as ex:   # sin la fuente, la vara no aparece y se dice
+                    log.warning("comparar: CER no disponible: %r", ex)
+                    return []
+        except Exception as ex:   # sin la fuente, la vara no aparece y se dice
+            log.warning("comparar: CER no disponible: %r", ex)
+    res = comparar.comparar(conn, [(s, s in locales) for s in lista], moneda, inicio, anios=anios,
+                            cer=cer, cer_basis=basis, hoy=hoy)
+    for f in res["faltan"]:
+        if f["clave"] in motivos and (f["motivo"] == "sin_datos"
+                                     or _motivo_de_la_bajada(bajadas, [f["clave"]])):
+            f["motivo"] = motivos[f["clave"]]
+    return res
 
 
 @app.get("/api/tecnico/{asset}/horas")
@@ -13350,19 +13383,23 @@ def get_tecnico_horas(asset: str, request: Request, cada: str = "1h", moneda: st
     memoria cuenta para un cupo por persona (velas_horarias.NUEVOS_*), el de la
     que PIDE (`_auth_uid_de`: la asesora mirando a un cliente gasta el suyo,
     como en `_velas_a_pedido`): pasado, `motivo: 'tope'`."""
-    sym = (asset or "").strip().upper()
-    if not _SYMBOL_RE.match(sym):
-        raise HTTPException(400, f"Símbolo inválido: {asset}")
-    if cada not in ("1h", "4h"):
-        raise HTTPException(400, "Las velas por hora son de 1h o 4h.")
-    if desde is not None and not 0 <= desde <= 4102444800:
-        raise HTTPException(400, "`desde` es un momento en segundos UTC.")
+    sym = _pedido_de_horas(asset, cada, desde)
     import velas_horarias
     # Lee la serie para saber qué ticker y con qué dólar: el freno único de las
     # lecturas pesadas (E1, el de la ficha; al juntar, 30/10).
     with _freno_tecnico(request, uid, "uno"):
         return velas_horarias.para_la_ficha(db_abierta, sym, cada, moneda, bool(local), desde,
                                             _auth_uid_de(request, uid))
+
+
+def _pedido_de_horas(asset: str, cada: str, desde) -> str:
+    """El símbolo de las velas por hora, o 400 (también si `cada` o `desde` no van)."""
+    sym = _simbolo_tecnico(asset)
+    if cada not in ("1h", "4h"):
+        raise HTTPException(400, "Las velas por hora son de 1h o 4h.")
+    if desde is not None and not 0 <= desde <= 4102444800:
+        raise HTTPException(400, "`desde` es un momento en segundos UTC.")
+    return sym
 
 
 @app.get("/api/liquidez/{papel}")
@@ -13429,6 +13466,12 @@ FRENO_TECNICO = {
     "uno": (90, 3),
 }
 PESADOS_A_LA_VEZ = 8
+# De esos 8, cuántos pueden estar ocupados por visitantes del demo a la vez (la
+# puerta del demo, sin cuenta: `_quien_del_demo`): la otra mitad queda siempre
+# para las cuentas, y un pico de visitas que llegan de un anuncio no las deja sin
+# gráficos. Con 2, una sola visita (la ficha pide 4 cosas juntas) ya recibía 503
+# y la pantalla tardaba un reintento más (medido en la compu el 19/11).
+DEMO_PESADOS_A_LA_VEZ = 4
 _freno_hechos: dict = {}       # (quién, tipo) → deque de instantes (los del último minuto)
 _freno_corriendo: dict = {}    # (quién, tipo) → cuántos están corriendo
 _freno_total = [0]             # cuántas lecturas corren en todo el servidor
@@ -13441,6 +13484,11 @@ _freno_reloj = time.monotonic
 # decide acá, una vez, y ninguna ruta lo tiene que repetir: pasado a mano ruta
 # por ruta, se olvidó en el ✦ de la ficha (auditoría del 05/11).
 _freno_paga = _contextvars.ContextVar("rendi_freno_paga", default=None)
+
+
+def _es_quien_del_demo(quien) -> bool:
+    """¿El freno le está contando esta lectura a un visitante del demo?"""
+    return isinstance(quien, str) and quien.startswith(_DEMO_QUIEN)
 
 
 def _freno_reiniciar() -> None:
@@ -13473,7 +13521,9 @@ def _freno_tecnico(request: Request, uid: int, tipo: str = "muchos"):
             raise HTTPException(429, "Ya estamos preparando tus lecturas. Esperá unos segundos y probá de nuevo.",
                                 headers={"Retry-After": "5"})
         if _freno_total[0] >= PESADOS_A_LA_VEZ or (
-                _freno_total[0] >= PESADOS_A_LA_VEZ // 2 and _freno_de_cada_uno.get(quien[0], 0) >= 1):
+                _freno_total[0] >= PESADOS_A_LA_VEZ // 2 and _freno_de_cada_uno.get(quien[0], 0) >= 1) or (
+                _es_quien_del_demo(quien[0]) and sum(
+                    n for q, n in _freno_de_cada_uno.items() if _es_quien_del_demo(q)) >= DEMO_PESADOS_A_LA_VEZ):
             raise HTTPException(503, "Hay mucha gente mirando gráficos en este momento. "
                                      "Probá de nuevo en unos segundos.",
                                 headers={"Retry-After": "3"})
@@ -13532,14 +13582,20 @@ def post_tecnico_cartera(body: CarteraTecnicaIn, request: Request, uid: int = De
     pasada» (senales_semana.reparto, LA cuenta: la misma del Panorama, de la
     pestaña Señales y del mail de los sábados). Viene en este pedido, que la
     Cartera ya hace, para no sumar otro."""
+    with _freno_tecnico(request, uid):
+        return _radiografia_tecnica(body, uid)
+
+
+def _radiografia_tecnica(body: CarteraTecnicaIn, uid, car: dict = None) -> dict:
+    """Lo de /api/tecnico/cartera: las lecturas pedidas y el `reparto` de la
+    plata de `uid` (o de `car`, la cartera del demo, que no está en la base)."""
     import tecnico
     import senales_semana
     from fechas import hoy_art_date
-    with _freno_tecnico(request, uid):
-        out = _lecturas_tecnicas(body, tecnico.para_la_cartera)
-        with db_abierta() as conn:
-            out["reparto"] = senales_semana.reparto(conn, uid, hoy_art_date())
-        return out
+    out = _lecturas_tecnicas(body, tecnico.para_la_cartera)
+    with db_abierta() as conn:
+        out["reparto"] = senales_semana.reparto(conn, uid, hoy_art_date(), car=car)
+    return out
 
 
 @app.post("/api/tecnico/lista")
@@ -13561,24 +13617,31 @@ def post_tecnico_lista(body: CarteraTecnicaIn, request: Request, uid: int = Depe
     `sin_medir`: {efectivo, plazos_fijos}, la parte de tu plata que es cada uno
     (`senales_semana.pesos_sin_medir`). Lo usa el mapa de calor del
     Dashboard (que pide sin watchlist: `activos` vacío)."""
-    import tecnico
     import senales_semana
     with _freno_tecnico(request, uid):
         with db_abierta() as conn:
             car = senales_semana.cartera(conn, uid)
-        tuyas = [k for k, _ in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
-        out = _lecturas_tecnicas(
-            body, lambda conn, pedidos: tecnico.para_la_lista(
-                conn, (tuyas + [k for k in pedidos if k not in car["tenencias"]])[:MAX_ACTIVOS_CARTERA]))
-        out["lecturas"] = out["lecturas"][:MAX_ACTIVOS_CARTERA]
-        out["tenencias"] = [
-            {"asset": a, "local": l, "peso": senales_semana.peso(car, a, l), "tipo": car["tipos"].get((a, l)) or None}
-            for (a, l), v in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
-        # Efectivo y plazos fijos: cuentan en el total (por eso los pesos de arriba no
-        # suman 1); el «Mapa de tu cartera» (Panorama y Dashboard) nombra con esto el
-        # cuadrito de lo que falta para 100 % (utils/mapaCartera.sinLecturaDe).
-        out["sin_medir"] = senales_semana.pesos_sin_medir(car)
-        return out
+        return _lista_tecnica(body, car)
+
+
+def _lista_tecnica(body: CarteraTecnicaIn, car: dict) -> dict:
+    """Lo de /api/tecnico/lista con la cartera ya valuada (`car`, de
+    `senales_semana.cartera`; en el demo, la suya)."""
+    import tecnico
+    import senales_semana
+    tuyas = [k for k, _ in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
+    out = _lecturas_tecnicas(
+        body, lambda conn, pedidos: tecnico.para_la_lista(
+            conn, (tuyas + [k for k in pedidos if k not in car["tenencias"]])[:MAX_ACTIVOS_CARTERA]))
+    out["lecturas"] = out["lecturas"][:MAX_ACTIVOS_CARTERA]
+    out["tenencias"] = [
+        {"asset": a, "local": l, "peso": senales_semana.peso(car, a, l), "tipo": car["tipos"].get((a, l)) or None}
+        for (a, l), v in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
+    # Efectivo y plazos fijos: cuentan en el total (por eso los pesos de arriba no
+    # suman 1); el «Mapa de tu cartera» (Panorama y Dashboard) nombra con esto el
+    # cuadrito de lo que falta para 100 % (utils/mapaCartera.sinLecturaDe).
+    out["sin_medir"] = senales_semana.pesos_sin_medir(car)
+    return out
 
 
 @app.get("/api/tus-senales")
@@ -13596,10 +13659,18 @@ def get_tecnico_semana(request: Request, uid: int = Depends(get_effective_user))
     # watchlist más lo que tenés): el mismo freno. Sin él, 45 a la vez de una
     # cuenta dejaron el «¿estás vivo?» en 44 s (re-test E1, 29/10).
     with _freno_tecnico(request, uid), db_abierta() as conn:
-        out = senales_semana.armar_semana(conn, uid, hoy_art_date())
-        out["canal"] = senales_semana.canal(conn, uid)
-        # Cuándo sale el próximo resumen: lo dice el que lo manda (A9).
-        out["proximo_resumen"] = senales_semana.proximo_resumen(conn, uid)
+        return _tus_senales(conn, uid)
+
+
+def _tus_senales(conn, uid, persona: dict = None, canal: str = None) -> dict:
+    """Lo de /api/tus-senales de `uid`, o de `persona` (el demo, que no está en
+    la base: `senales_semana.armar_semana`) con su `canal`."""
+    import senales_semana
+    from fechas import hoy_art_date
+    out = senales_semana.armar_semana(conn, uid, hoy_art_date(), persona=persona)
+    out["canal"] = canal or senales_semana.canal(conn, uid)
+    # Cuándo sale el próximo resumen: lo dice el que lo manda (A9).
+    out["proximo_resumen"] = senales_semana.proximo_resumen(conn, uid)
     return out
 
 
@@ -13663,6 +13734,16 @@ def tecnico_en_fechas(data: TendenciasEnFechasIn, request: Request, uid: int = D
     2000 operaciones de 2000 activos eran 2000 series). Las de más contestan
     `motivo: 'tope'`."""
     import tecnico
+    pedidos, out = _pedidos_de_tendencias(data)
+    with _freno_tecnico(request, uid):
+        with db_abierta() as conn:
+            out.update(tecnico.tendencias_en_fechas(conn, pedidos))
+        return {"resultados": out}
+
+
+def _pedidos_de_tendencias(data: TendenciasEnFechasIn):
+    """(pedidos válidos para `tecnico.tendencias_en_fechas`, las respuestas de
+    los que no se leen: un símbolo inválido o más activos que el tope)."""
     pedidos = []
     out = {}
     series = set()
@@ -13677,10 +13758,7 @@ def tecnico_en_fechas(data: TendenciasEnFechasIn, request: Request, uid: int = D
             continue
         series.add(clave)
         pedidos.append({"id": it.id, "asset": sym, "local": it.local, "fecha": it.fecha})
-    with _freno_tecnico(request, uid):
-        with db_abierta() as conn:
-            out.update(tecnico.tendencias_en_fechas(conn, pedidos))
-        return {"resultados": out}
+    return pedidos, out
 
 
 @app.get("/api/tecnico/{asset}/hoy")
@@ -13743,35 +13821,467 @@ def get_tecnico_eventos(request: Request, asset: str, moneda: str = "usd", local
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
+    # Lee la serie entera y puede ir a Yahoo: el mismo freno que la ficha.
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        return _eventos_de_la_ficha(conn, sym, moneda, bool(local))
+
+
+def _eventos_de_la_ficha(conn, sym: str, moneda: str, local: bool) -> dict:
+    """Lo de /api/tecnico/{asset}/eventos (sin la persona: es de la empresa)."""
     moneda = "ars" if moneda == "ars" else "usd"
     import movimiento
     import tecnico
-    # Lee la serie entera y puede ir a Yahoo: el mismo freno que la ficha.
-    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
-        empresa = tecnico.ticker_de_la_empresa(conn, sym, bool(local))
-        velas = tecnico.serie(conn, sym, moneda, bool(local))["velas"]
-        if not empresa or not velas:
-            return {"empresa": empresa, "eventos": []}
-        desde = velas[0]["date"]
-        hasta = velas[-1]["date"]
-        incompleto = False
+    empresa = tecnico.ticker_de_la_empresa(conn, sym, bool(local))
+    velas = tecnico.serie(conn, sym, moneda, bool(local))["velas"]
+    if not empresa or not velas:
+        return {"empresa": empresa, "eventos": []}
+    desde = velas[0]["date"]
+    hasta = velas[-1]["date"]
+    incompleto = False
+    try:
+        incompleto = bool(_dividendos.actualizar(conn, [empresa], tope=_TOPE_EVENTOS_FICHA))
+    except Exception as ex:   # Yahoo caído: lo guardado
+        log.warning("ficha eventos: dividendos de %s: %s", empresa, ex)
+        incompleto = True
+    dividendos = _dividendos.historial(conn, [empresa], desde)[empresa]["pagos"]
+    # Sin ningún balance pasado guardado, se espera a Yahoo (con tope); si
+    # ya hay, se responde con eso y se renueva de fondo.
+    ya = balances_entre(conn, empresa, desde, hasta)
+    _earnings_pasados_al_dia(empresa, esperar_segundos=None if ya else _TOPE_EVENTOS_FICHA)
+    balances = balances_entre(conn, empresa, desde, hasta)
+    return {
+        "empresa": empresa,
+        "eventos": movimiento.eventos_del_grafico(
+            velas, balances, dividendos, "ars" if empresa.endswith(".BA") else "usd"),
+        "incompleto": incompleto,
+    }
+
+
+# ─── La puerta del demo ──────────────────────────────────────────────────────
+# El análisis técnico del modo demo (frontend/src/utils/demo.js) con el MISMO
+# motor que el de una cuenta (19/11/2026, Nico: que el demo muestre los gráficos,
+# el resumen de la semana y todo lo que se ve adentro de una cuenta). Antes el
+# demo no le preguntaba nada al servidor y el técnico lo contestaba a mano: la
+# ficha caía a una línea de 30 días («sin serie»), y el Panorama, Tu lista y las
+# Señales decían «No pudimos cargar…», porque nadie les escribió su respuesta
+# inventada cuando se agregaron.
+#
+# Cómo es la puerta:
+#   · SIN CUENTA. Ninguna ruta de acá pide la sesión ni lee nada de una persona:
+#     la pantalla del demo manda su cartera de ejemplo (`DemoContextoIn`: qué
+#     tiene y cuánto vale cada cosa con la valuación de la pantalla del demo, qué
+#     sigue y a qué precio está cada activo) y se usa en lugar de la de la base.
+#     La pantalla la pide sin la cookie (`credentials: 'omit'`, utils/api.js):
+#     tampoco viaja la sesión de quien tenga su cuenta abierta en el navegador.
+#   · LAS VELAS DE VERDAD, ESTIRADAS al precio del demo (escala_del_demo.py):
+#     el gráfico de NVDA termina en los US$ 178,50 que dice la Cartera del demo,
+#     el diario y el de 1 hora. Sin la vela en vivo de hoy: con ella terminaba en
+#     el precio de verdad de hoy (175,08 al lado de los 178,50, visto el 19/11).
+#   · NO BAJA HISTORIA: sin `_velas_a_pedido`. Un activo que nadie sigue contesta
+#     «sin serie» y la ficha del demo dibuja su gráfico de 30 días, como antes.
+#     Las velas de 1 hora tienen su tope aparte (velas_horarias.NUEVOS_DEMO_HORA).
+#   · EL FRENO por dirección (`_quien_del_demo`), y a lo sumo
+#     `DEMO_PESADOS_A_LA_VEZ` de los lugares de entre todos.
+#   · LO MISMO PARA TODOS, GUARDADO UN RATO (`_RESPUESTAS_DEMO`, con tope de
+#     cantidad y de bytes): todos los visitantes mandan la misma cartera, así
+#     que el primero lo calcula y los demás lo leen. Mientras el primero lo
+#     calcula, el que pide lo mismo recibe 503 «en un segundo»
+#     (`_DEMO_CALCULANDO`) y la pantalla lo vuelve a pedir sola: cien visitas
+#     juntas son UN cálculo, y nadie espera ocupando uno de los lugares del
+#     servidor (ver «Freno para las lecturas técnicas»).
+#   · NADA DE LO QUE MANDA EL VISITANTE QUEDA EN LAS MEMORIAS DE LAS CUENTAS:
+#     un pedido del demo no lee ni escribe lo ya leído del motor
+#     (`tecnico._leer_varios`, `velas_horarias._ARMADAS`). Los precios del demo
+#     los elige quien pide: cada precio distinto dejaba otra entrada, que
+#     crecía sin tope y empujaba afuera lo de las cuentas (revisión a ciegas, 19/11).
+#   · Lo que no hay en el demo: el resumen de Mervall-E de la ficha (cuesta una
+#     llamada a la IA y hablaría de los precios de verdad, no de los estirados),
+#     «la semana pasada» del % de tu plata (no hay nada guardado, como en una
+#     cuenta nueva) y los dibujos y avisos de cada persona.
+_DEMO_QUIEN = "demo:"
+DEMO_MAX_PRECIOS = 60
+DEMO_MAX_TENENCIAS = 60
+DEMO_MAX_SEGUIDOS = 100
+DEMO_RESPUESTA_SEG = 10 * 60
+DEMO_RESPUESTAS_MAX = 400
+# Lo que pueden ocupar entre todas, ya escritas como las manda la red (una
+# ficha son ~170 KB). Con sólo el tope de cantidad, alguien que variara la
+# consulta podía dejar 400 fichas de ~800 KB cada una (revisión a ciegas, 19/11).
+DEMO_RESPUESTAS_BYTES = 40 * 1024 * 1024
+# El precio más alto que se acepta: más que eso daba infinitos al estirar.
+DEMO_PRECIO_MAXIMO = 1e9
+# Cómo le llega el resumen de los sábados a la cuenta de ejemplo: así el demo
+# muestra la opción elegida (cambiarla pide crear una cuenta).
+DEMO_CANAL = "mail"
+from collections import OrderedDict  # noqa: E402
+_RESPUESTAS_DEMO: OrderedDict = OrderedDict()   # clave → (cuándo, la respuesta escrita en bytes)
+_RESPUESTAS_DEMO_BYTES = [0]                     # lo que ocupan entre todas
+_DEMO_CALCULANDO: set = set()                    # claves que alguien está calculando
+_respuestas_demo_candado = threading.Lock()
+
+
+class _DemoTenenciaIn(BaseModel):
+    asset: str = Field(..., max_length=40)
+    local: bool = False
+    valor: float = Field(..., ge=0, le=1e10)
+    tipo: Optional[str] = Field(None, max_length=20)
+
+
+class _DemoSeguidoIn(BaseModel):
+    symbol: str = Field(..., max_length=40)
+    asset_type: Optional[str] = Field(None, max_length=20)
+    added_at: Optional[str] = Field(None, max_length=32)
+
+
+class _DemoCarteraIn(BaseModel):
+    tenencias: List[_DemoTenenciaIn] = Field(default_factory=list, max_length=DEMO_MAX_TENENCIAS)
+    efectivo: float = Field(0, ge=0, le=1e10)
+    plazos_fijos: float = Field(0, ge=0, le=1e10)
+
+
+class DemoContextoIn(BaseModel):
+    """La cuenta de ejemplo del demo, tal como la arma la pantalla
+    (utils/demo.js `contextoTecnicoDelDemo`): `precios` {símbolo de la valuación
+    ('NVDA', 'GGAL.BA', 'BTC'): precio}, `cartera` (lo que vale cada tenencia en
+    dólares, el efectivo y los plazos fijos) y `watchlist`."""
+    precios: dict[str, float] = Field(default_factory=dict)
+    cartera: _DemoCarteraIn = Field(default_factory=_DemoCarteraIn)
+    watchlist: List[_DemoSeguidoIn] = Field(default_factory=list, max_length=DEMO_MAX_SEGUIDOS)
+
+    @field_validator("precios")
+    @classmethod
+    def _precios_validos(cls, v):
+        if len(v) > DEMO_MAX_PRECIOS:
+            raise ValueError(f"Hasta {DEMO_MAX_PRECIOS} precios")
+        out = {}
+        for simbolo, precio in v.items():
+            s = (simbolo or "").strip().upper()
+            if not _SYMBOL_RE.match(s) or not (math.isfinite(precio) and 0 < precio <= DEMO_PRECIO_MAXIMO):
+                raise ValueError(f"Precio inválido: {simbolo}")
+            out[s] = float(precio)
+        return out
+
+
+class DemoPedidoIn(BaseModel):
+    demo: DemoContextoIn = Field(default_factory=DemoContextoIn)
+    # El cuerpo del pedido de la pantalla, para las lecturas que van por POST
+    # (Tu lista, la radiografía, el diario): se valida con el modelo de su ruta.
+    cuerpo: Optional[dict] = None
+
+
+def _quien_del_demo(request: Request) -> str:
+    """A quién le cuenta el freno una lectura del demo: a su dirección."""
+    return _DEMO_QUIEN + _ip_del_cliente(request)
+
+
+def _cuerpo_del_demo(modelo, data: DemoPedidoIn):
+    from pydantic import ValidationError
+    try:
+        return modelo.model_validate(data.cuerpo or {})
+    except ValidationError as ex:
+        raise HTTPException(422, f"Pedido inválido: {ex.errors()[0].get('msg', '')}")
+
+
+def _objetivos_del_demo(precios: dict) -> dict:
+    """{ticker de las velas: precio en que termina} (escala_del_demo.py), con el
+    símbolo de la valuación llevado al de las velas por los traductores de
+    `tecnico.serie`: 'GGAL.BA' → la serie de BYMA, 'BTC' → 'BTC-USD', 'NVDA' →
+    la acción de afuera."""
+    from cripto import yahoo_de_cripto
+    from snapshots_job import simbolo_byma
+    import velas_diarias
+    out = {}
+    for simbolo, precio in precios.items():
+        if simbolo.endswith(".BA"):
+            ticker = simbolo_byma(simbolo[:-3])
+        else:
+            ticker = yahoo_de_cripto(simbolo) or velas_diarias.ticker_de_afuera(simbolo)
+        out[ticker.upper()] = precio
+    return out
+
+
+def _persona_del_demo(demo: DemoContextoIn) -> dict:
+    """Lo que tiene y sigue la cuenta de ejemplo, con las formas de
+    `senales_semana.cartera`, `watchlist` y `agregado_a_la_watchlist` (la
+    `persona` de `senales_semana.armar_semana`)."""
+    import senales_semana
+    tenencias, tipos = {}, {}
+    for t in demo.cartera.tenencias:
+        a = (t.asset or "").strip().upper()
+        if not a or not t.valor > 0:      # como `cartera`: lo que no vale nada no está
+            continue
+        k = (a, bool(t.local))
+        tenencias[k] = tenencias.get(k, 0.0) + t.valor
+        tipos.setdefault(k, (t.tipo or "").upper())
+    efectivo, pfs = demo.cartera.efectivo, demo.cartera.plazos_fijos
+    car = {"tenencias": tenencias, "tipos": tipos, "efectivo": efectivo, "plazos_fijos": pfs,
+           "sin_medir": efectivo + pfs, "total": sum(tenencias.values()) + efectivo + pfs}
+    watchlist, agregado = {}, {}
+    for w in demo.watchlist:
+        s = (w.symbol or "").strip().upper()
+        if not s:
+            continue
+        k = senales_semana._clave_de_la_watchlist(s, w.asset_type)
+        watchlist[k] = s
+        dia = (w.added_at or "")[:10]
+        if _DATE_RE.match(dia):
+            agregado[k] = dia
+    return {"cartera": car, "watchlist": watchlist, "agregado": agregado, "tesis": {}}
+
+
+def _clave_del_demo(ruta: str, consulta: str, data: DemoPedidoIn) -> str:
+    """La llave de una respuesta guardada del demo: la ruta, la consulta y la
+    cuenta de ejemplo entera (todos los visitantes mandan la misma)."""
+    return hashlib.sha256(json.dumps([ruta, consulta, data.model_dump()], sort_keys=True, default=str)
+                          .encode("utf-8")).hexdigest()
+
+
+def _guardar_del_demo(clave: str, cuerpo: bytes) -> None:
+    """Guarda una respuesta del demo ya escrita, sacando lo vencido y, si no
+    entra, lo que hace más que nadie pide. Con el candado tomado."""
+    ahora = time.monotonic()
+    for k in [k for k, (t, _) in _RESPUESTAS_DEMO.items() if ahora - t >= DEMO_RESPUESTA_SEG]:
+        _RESPUESTAS_DEMO_BYTES[0] -= len(_RESPUESTAS_DEMO.pop(k)[1])
+    if len(cuerpo) > DEMO_RESPUESTAS_BYTES // 4:
+        return                                  # una sola no puede ocupar casi todo
+    viejo = _RESPUESTAS_DEMO.pop(clave, None)
+    if viejo:
+        _RESPUESTAS_DEMO_BYTES[0] -= len(viejo[1])
+    _RESPUESTAS_DEMO[clave] = (ahora, cuerpo)
+    _RESPUESTAS_DEMO_BYTES[0] += len(cuerpo)
+    while _RESPUESTAS_DEMO and (len(_RESPUESTAS_DEMO) > DEMO_RESPUESTAS_MAX
+                                or _RESPUESTAS_DEMO_BYTES[0] > DEMO_RESPUESTAS_BYTES):
+        _RESPUESTAS_DEMO_BYTES[0] -= len(_RESPUESTAS_DEMO.popitem(last=False)[1][1])
+
+
+def _del_demo(request: Request, data: DemoPedidoIn, armar, *, tipo: str = "muchos", guardar: bool = True):
+    """Corre `armar(persona, quien)` como lo corre una cuenta, pero con la
+    cuenta de ejemplo (`_persona_del_demo`), las velas estiradas a sus precios y
+    el freno del demo, que cuenta también lo que sale de lo guardado. `guardar`:
+    la respuesta se guarda escrita (`DEMO_RESPUESTA_SEG`, con tope de cantidad y
+    de bytes) para el próximo que pida lo mismo, y mientras se calcula, el que la
+    pide recibe 503 «en un segundo» en vez de calcularla otra vez."""
+    from fastapi.encoders import jsonable_encoder
+    import escala_del_demo
+    clave = _clave_del_demo(request.url.path, str(request.url.query), data) if guardar else None
+    quien = _quien_del_demo(request)
+    with _freno_tecnico(request, quien, tipo):
+        if clave:
+            with _respuestas_demo_candado:
+                hecho = _RESPUESTAS_DEMO.get(clave)
+                if hecho and time.monotonic() - hecho[0] < DEMO_RESPUESTA_SEG:
+                    _RESPUESTAS_DEMO.move_to_end(clave)
+                    return Response(content=hecho[1], media_type="application/json")
+                if clave in _DEMO_CALCULANDO:
+                    raise HTTPException(503, "Estamos preparando este gráfico. Probá de nuevo en un segundo.",
+                                        headers={"Retry-After": "1"})
+                _DEMO_CALCULANDO.add(clave)
         try:
-            incompleto = bool(_dividendos.actualizar(conn, [empresa], tope=_TOPE_EVENTOS_FICHA))
-        except Exception as ex:   # Yahoo caído: lo guardado
-            log.warning("ficha eventos: dividendos de %s: %s", empresa, ex)
-            incompleto = True
-        dividendos = _dividendos.historial(conn, [empresa], desde)[empresa]["pagos"]
-        # Sin ningún balance pasado guardado, se espera a Yahoo (con tope); si
-        # ya hay, se responde con eso y se renueva de fondo.
-        ya = balances_entre(conn, empresa, desde, hasta)
-        _earnings_pasados_al_dia(empresa, esperar_segundos=None if ya else _TOPE_EVENTOS_FICHA)
-        balances = balances_entre(conn, empresa, desde, hasta)
-        return {
-            "empresa": empresa,
-            "eventos": movimiento.eventos_del_grafico(
-                velas, balances, dividendos, "ars" if empresa.endswith(".BA") else "usd"),
-            "incompleto": incompleto,
-        }
+            with escala_del_demo.usando(_objetivos_del_demo(data.demo.precios)):
+                res = armar(_persona_del_demo(data.demo), quien)
+            # Escrita una vez, como la manda la red: lo guardado se devuelve tal
+            # cual, sin copiarlo ni volver a escribirlo en cada pedido.
+            cuerpo = JSONResponse(jsonable_encoder(res)).body
+            if clave:
+                with _respuestas_demo_candado:
+                    _guardar_del_demo(clave, cuerpo)
+            return Response(content=cuerpo, media_type="application/json")
+        finally:
+            if clave:
+                with _respuestas_demo_candado:
+                    _DEMO_CALCULANDO.discard(clave)
+
+
+def _olvidar_lo_del_demo() -> None:
+    """Vacía las respuestas guardadas del demo (para las pruebas)."""
+    with _respuestas_demo_candado:
+        _RESPUESTAS_DEMO.clear()
+        _RESPUESTAS_DEMO_BYTES[0] = 0
+        _DEMO_CALCULANDO.clear()
+
+
+# Las rutas con nombre propio van antes que /api/demo/tecnico/{asset}: si no,
+# «lista» se leería como un ticker.
+@app.post("/api/demo/tecnico/lista")
+def demo_tecnico_lista(data: DemoPedidoIn, request: Request):
+    """/api/tecnico/lista de la cuenta de ejemplo (`_lista_tecnica`)."""
+    body = _cuerpo_del_demo(CarteraTecnicaIn, data)
+    return _del_demo(request, data, lambda p, q: _lista_tecnica(body, p["cartera"]))
+
+
+@app.post("/api/demo/tecnico/cartera")
+def demo_tecnico_cartera(data: DemoPedidoIn, request: Request):
+    """/api/tecnico/cartera de la cuenta de ejemplo (`_radiografia_tecnica`)."""
+    body = _cuerpo_del_demo(CarteraTecnicaIn, data)
+    return _del_demo(request, data, lambda p, q: _radiografia_tecnica(body, None, car=p["cartera"]))
+
+
+@app.post("/api/demo/tecnico/en-fechas")
+def demo_tecnico_en_fechas(data: DemoPedidoIn, request: Request):
+    """/api/tecnico/en-fechas de las operaciones del demo (`_pedidos_de_tendencias`)."""
+    import tecnico
+    pedidos, out = _pedidos_de_tendencias(_cuerpo_del_demo(TendenciasEnFechasIn, data))
+
+    def armar(p, q):
+        with db_abierta() as conn:
+            return {"resultados": {**out, **tecnico.tendencias_en_fechas(conn, pedidos)}}
+    return _del_demo(request, data, armar)
+
+
+@app.post("/api/demo/tus-senales")
+def demo_tus_senales(data: DemoPedidoIn, request: Request):
+    """/api/tus-senales de la cuenta de ejemplo (`_tus_senales`)."""
+    def armar(p, q):
+        with db_abierta() as conn:
+            return _tus_senales(conn, None, persona=p, canal=DEMO_CANAL)
+    return _del_demo(request, data, armar)
+
+
+@app.post("/api/demo/backtest/cartera/hoy")
+def demo_backtest_cartera_hoy(data: DemoPedidoIn, request: Request):
+    """/api/backtest/cartera/hoy de la cuenta de ejemplo (`cartera_simulada.de_hoy`)."""
+    import cartera_simulada as cs
+    from fechas import hoy_art_date
+
+    def armar(p, q):
+        with db_abierta() as conn:
+            return cs.de_hoy(p["cartera"], lambda asset, local: cs.ultimo_precio(conn, asset, local), hoy_art_date())
+    return _del_demo(request, data, armar)
+
+
+@app.post("/api/demo/backtest/cartera")
+def demo_backtest_cartera(data: DemoPedidoIn, request: Request, activos: str, pesos: str, local: str = "",
+                          anios: int = 2):
+    """/api/backtest/cartera en el demo (sin bajar lo que nadie sigue)."""
+    import cartera_simulada as cs
+    from fechas import hoy_art_date
+    lista, locales, ps = _pedido_de_cartera_simulada(activos, pesos, local, anios)
+
+    def armar(p, q):
+        with db_abierta() as conn:
+            return cs.para_la_pantalla(conn, [(s, s in locales, x) for s, x in zip(lista, ps)], anios, hoy_art_date())
+    return _del_demo(request, data, armar, tipo="uno")
+
+
+@app.post("/api/demo/comparar/precio")
+def demo_comparar_precio(data: DemoPedidoIn, request: Request, activos: str, local: str = "", moneda: str = "usd",
+                         plazo: str = "1a", desde: str = None):
+    """/api/comparar/precio en el demo (`_comparar_precio`, sin bajar lo que nadie sigue)."""
+    lista, locales, moneda, inicio, anios, hoy = _pedido_de_comparar(activos, local, moneda, plazo, desde)
+
+    def armar(p, q):
+        with db_abierta() as conn:
+            res = _comparar_precio(conn, lista, locales, moneda, inicio, anios, hoy, {})
+        res["plazo"] = plazo
+        return res
+    return _del_demo(request, data, armar, tipo="uno")
+
+
+@app.post("/api/demo/termometro")
+def demo_termometro(data: DemoPedidoIn, request: Request):
+    """/api/termometro con la cuenta de ejemplo (`termometro.tu_plata`)."""
+    import termometro
+    from fechas import hoy_art_date
+
+    def armar(p, q):
+        with db_abierta() as conn:
+            t = termometro.ultimo(conn, hoy_art_date())
+            t["tu_plata"] = termometro.tu_plata(conn, None, t, car=p["cartera"])
+            return t
+    return _del_demo(request, data, armar)
+
+
+@app.post("/api/demo/liquidez/{papel}")
+def demo_liquidez(papel: str, data: DemoPedidoIn, request: Request):
+    """/api/liquidez/{papel} en el demo: es del papel, no de una persona."""
+    import liquidez
+    sym = _simbolo_tecnico(papel)
+    return _del_demo(request, data, lambda p, q: liquidez.para_la_ficha(sym), tipo="uno")
+
+
+@app.post("/api/demo/tecnico/{asset}/horas")
+def demo_tecnico_horas(asset: str, data: DemoPedidoIn, request: Request, cada: str = "1h", moneda: str = "usd",
+                       local: int = 0, desde: Optional[int] = None):
+    """/api/tecnico/{asset}/horas en el demo: el cupo de primeras descargas es
+    el de la dirección y el de entre todos los del demo (velas_horarias)."""
+    import velas_horarias
+    sym = _pedido_de_horas(asset, cada, desde)
+    # Se guarda como lo demás: en el demo terminan en la última rueda cerrada
+    # (velas_horarias), así que el refresco de cada minuto pide lo mismo.
+    return _del_demo(request, data, lambda p, q: velas_horarias.para_la_ficha(
+        db_abierta, sym, cada, moneda, bool(local), desde, q), tipo="uno")
+
+
+@app.post("/api/demo/tecnico/{asset}/hoy")
+def demo_tecnico_hoy(asset: str, data: DemoPedidoIn, request: Request, moneda: str = "usd", local: int = 0):
+    """/api/tecnico/{asset}/hoy en el demo: la misma respuesta, sin velas (el
+    demo no tiene vela de hoy: escala_del_demo.tanda), así la pantalla sabe que
+    la serie que tiene sigue al día y no la vuelve a pedir."""
+    import tecnico
+    sym = _simbolo_tecnico(asset)
+
+    def armar(p, q):
+        with db_abierta() as conn:
+            prep = tecnico.preparar_vela_de_hoy(conn, sym, moneda, bool(local))
+        return tecnico.vela_de_hoy(prep)
+    return _del_demo(request, data, armar, tipo="uno")
+
+
+@app.post("/api/demo/tecnico/{asset}/peso")
+def demo_tecnico_peso(asset: str, data: DemoPedidoIn, request: Request):
+    """/api/tecnico/{asset}/peso de la cuenta de ejemplo (`senales_semana.peso`)."""
+    import senales_semana
+    sym = _simbolo_tecnico(asset)
+    return _del_demo(request, data, lambda p, q: {"peso": senales_semana.peso(p["cartera"], sym)}, tipo="uno")
+
+
+@app.post("/api/demo/tecnico/{asset}/eventos")
+def demo_tecnico_eventos(asset: str, data: DemoPedidoIn, request: Request, moneda: str = "usd", local: int = 0):
+    """/api/tecnico/{asset}/eventos en el demo (`_eventos_de_la_ficha`)."""
+    sym = _simbolo_tecnico(asset)
+
+    def armar(p, q):
+        with db_abierta() as conn:
+            return _eventos_de_la_ficha(conn, sym, moneda, bool(local))
+    return _del_demo(request, data, armar, tipo="uno")
+
+
+@app.post("/api/demo/tecnico/{asset}/backtest")
+def demo_tecnico_backtest(asset: str, data: DemoPedidoIn, request: Request, reglas: str = "media200",
+                          anios: int = 2, local: int = 0):
+    """/api/tecnico/{asset}/backtest en el demo (sin bajar lo que nadie sigue)."""
+    import backtest
+    from fechas import hoy_art_date
+    sym = _simbolo_tecnico(asset)
+    pedidas = _reglas_del_backtest(reglas, anios)
+
+    def armar(p, q):
+        with db_abierta() as conn:
+            res = backtest.para_la_pantalla(conn, sym, pedidas, anios, bool(local), hoy=hoy_art_date())
+        if not res.get("disponible"):
+            res["motivo"] = res.get("motivo") or "sin_serie"
+        return res
+    return _del_demo(request, data, armar, tipo="uno")
+
+
+@app.post("/api/demo/tecnico/{asset}")
+def demo_tecnico(asset: str, data: DemoPedidoIn, request: Request, moneda: str = "usd", local: int = 0,
+                 ref: str = None):
+    """/api/tecnico/{asset} (la ficha) en el demo: la misma `tecnico.para_la_ficha`.
+    Sin velas guardadas, «sin serie» (no se bajan): la ficha dibuja su gráfico de
+    30 días. Sin el resumen de Mervall-E (`resumen` None: la ficha no lo ofrece)."""
+    import tecnico
+    sym = _simbolo_tecnico(asset)
+    ref = _simbolo_tecnico(ref) if (ref or "").strip() else None
+
+    def armar(p, q):
+        with db_abierta() as conn:
+            res = tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+        if not res.get("disponible"):
+            res["motivo"] = res.get("motivo") or "sin_serie"
+        res["resumen"] = None
+        return res
+    return _del_demo(request, data, armar, tipo="uno")
 
 
 # ─── Dibujos a mano en el gráfico de la ficha ────────────────────────────────

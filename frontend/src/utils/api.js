@@ -1,4 +1,4 @@
-import { isDemoMode, handleDemoRequest, EVENTO_MODO_DEMO } from './demo'
+import { isDemoMode, handleDemoRequest, EVENTO_MODO_DEMO, rutaDelDemoEnElServidor, contextoTecnicoDelDemo } from './demo'
 import { quienEs } from './quienEs'
 import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen, borrarLoDeOtrasPersonas } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
@@ -282,11 +282,29 @@ export function entrandoALaSesion() {
 export const VERSION_HEADER = 'X-Rendi-Version'
 /* global __BUILD_ID__ */
 const VERSION_DE_LA_WEB = (typeof __BUILD_ID__ !== 'undefined' && __BUILD_ID__) || 'dev'
-export async function pedirAlServidor(path, init = {}, { freno = true, persona = _personaDeLaPestana } = {}) {
+export async function pedirAlServidor(path, init = {}, { freno = true, persona = _personaDeLaPestana, sinSesion = false } = {}) {
   if (freno) await frenoDeLaPestana()
   const headers = { ...(init.headers || {}), [VERSION_HEADER]: VERSION_DE_LA_WEB }
-  if (persona) headers[PERSONA_HEADER] = encodeURIComponent(persona)   // un encabezado no lleva cualquier letra
-  return fetch('/api' + path, { ...init, headers, credentials: 'include' })
+  if (persona && !sinSesion) headers[PERSONA_HEADER] = encodeURIComponent(persona)   // un encabezado no lleva cualquier letra
+  // `sinSesion`: la puerta del demo (`pedirLoDelDemo`) no lleva la cookie de nadie.
+  return fetch('/api' + path, { ...init, headers, credentials: sinSesion ? 'omit' : 'include' })
+}
+
+// El análisis técnico del demo lo arma el servidor con el motor de las cuentas
+// (utils/demo.js, `rutaDelDemoEnElServidor`; backend/main.py, «La puerta del
+// demo»): un POST con la cuenta de ejemplo y SIN la cookie, así no viaja la
+// sesión de quien tenga su cuenta abierta en este navegador. Es una lectura: si
+// el servidor está ocupado (503), se reintenta sola, como cualquier otra.
+async function pedirLoDelDemo(ruta, cuerpo, opts) {
+  const doFetch = () => pedirAlServidor(ruta, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ demo: contextoTecnicoDelDemo(), cuerpo: cuerpo ?? null }),
+    signal: opts?.signal,
+  }, { sinSesion: true })
+  const res = await withGatewayRetry(doFetch, { signal: opts?.signal })
+  if (!res.ok) throw await buildHttpError(res, { write: false })
+  return res.json()
 }
 
 // 🔴 LAS RECARGAS QUE DECIDE LA PESTAÑA SOLA TIENEN TOPE (re-test a ciegas 5).
@@ -408,6 +426,8 @@ async function req(method, path, body, opts) {
   // una cuenta real lo contestaba el simulador y la sesión real seguía abierta
   // (re-test a ciegas 6). Desfasada, el freno de arriba ya no deja pasar nada.
   if (_demoDeLaPestana) {
+    const delServidor = rutaDelDemoEnElServidor(method, path)
+    if (delServidor) return pedirLoDelDemo(delServidor, body, opts)
     const mock = handleDemoRequest(method, path, body)
     if (mock !== null) {
       // Mini-delay para evitar UI parpadeante "demasiado rápida"

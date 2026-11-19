@@ -79,6 +79,11 @@ TICKERS_MAXIMOS = 20
 # (velas_diarias.A_PEDIDO_*). Lo que ya está en memoria no cuenta.
 NUEVOS_POR_PERSONA_HORA = 30
 NUEVOS_TODOS_HORA = 300
+# Los visitantes del demo (sin cuenta: `uid` es «demo:<ip>», main._DEMO_QUIEN)
+# tienen además un tope ENTRE TODOS, aparte: sin él, visitantes desde muchas
+# direcciones podían gastar el cupo de las cuentas y dejarles el gráfico de 1
+# hora en «tope». La cartera del demo son 15 activos.
+NUEVOS_DEMO_HORA = 30
 # Lo que va a la pantalla: las 1.000 velas más nuevas (1 hora en Nueva York:
 # ~7 meses; 4 horas: los 2 años). Es lo que pesa la serie diaria (~750 días).
 VELAS_A_LA_PANTALLA = 1000
@@ -135,6 +140,10 @@ class SinCupo(Exception):
     """Se llegó al tope de primeras descargas (NUEVOS_*): se dice, no se baja."""
 
 
+def _es_del_demo(uid) -> bool:
+    return isinstance(uid, str) and uid.startswith("demo:")
+
+
 def _hay_cupo(uid) -> bool:
     """¿Entra una primera descarga más en la última hora, para esta persona y
     para todos? Si entra, queda anotada."""
@@ -144,6 +153,8 @@ def _hay_cupo(uid) -> bool:
             _NUEVOS.popleft()
         if (len(_NUEVOS) >= NUEVOS_TODOS_HORA
                 or sum(1 for _, u in _NUEVOS if u == uid) >= NUEVOS_POR_PERSONA_HORA):
+            return False
+        if _es_del_demo(uid) and sum(1 for _, u in _NUEVOS if _es_del_demo(u)) >= NUEVOS_DEMO_HORA:
             return False
         _NUEVOS.append((ahora, uid))
         return True
@@ -377,7 +388,8 @@ def _serie_elegida(conn, asset: str, moneda: str, local: bool):
     s = tecnico.serie(conn, asset, moneda, local, para_horas=True)
     if not s.get("velas"):
         return None
-    return {"ticker": s["ticker"], "convertida": s["convertida"], "escala": s.get("escala")}
+    return {"ticker": s["ticker"], "convertida": s["convertida"], "escala": s.get("escala"),
+            "ultima_diaria": s["velas"][-1]["date"]}
 
 
 def _armar(abrir, ticker: str, crudas: list, cada: str, mercado: str, por, escala=None, dolar="mep",
@@ -455,6 +467,19 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
         return {**base, "disponible": False, "motivo": "tope", "ticker": ticker}
     if not crudas:
         return {**base, "disponible": False, "motivo": "sin_datos", "ticker": ticker}
+    # En un pedido del demo (escala_del_demo): hasta la última rueda que guardó
+    # la noche, como su gráfico diario (el demo no tiene «hoy»), y estiradas para
+    # terminar en su precio. Así el refresco de cada minuto no trae nada nuevo y
+    # el factor no cambia: con la vela en curso, cada refresco estiraba todo con
+    # otro factor y la pantalla, que pega lo nuevo sobre lo que ya tenía, mostraba
+    # un escalón (revisión a ciegas, 19/11).
+    import escala_del_demo
+    del_demo = escala_del_demo.en_el_demo()
+    if del_demo:
+        crudas = escala_del_demo.tuplas_de_hora(
+            ticker, [v for v in crudas if v[1] <= eleccion["ultima_diaria"]])
+        if not crudas:
+            return {**base, "disponible": False, "motivo": "sin_datos", "ticker": ticker}
     por = ("dividir" if moneda == "usd" else "multiplicar") if eleccion["convertida"] else None
     escala = eleccion.get("escala") if por else None
     dolar = eleccion["convertida"] if por else None
@@ -471,14 +496,18 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
     # vuelve a armar si cambia lo guardado del dólar o el de ahora.
     clave = (ticker, cada, por, escala, dolar)
     version = (version, eleccion.get("huella"), de_hoy)
-    hecha = _ARMADAS.get(clave)
+    # Lo del demo no se lee ni se guarda acá: sus precios los manda quien pide, y
+    # cada precio distinto dejaba otra serie armada (~1 MB) que nunca se iba
+    # (revisión a ciegas, 19/11). Lo guarda la puerta del demo, con su tope.
+    hecha = None if del_demo else _ARMADAS.get(clave)
     if not hecha or hecha["version"] != version:
         hecha = _armar(abrir, ticker, crudas, cada, mercado, por, escala, dolar or "mep", de_hoy)
         if not hecha:
             return {**base, "disponible": False, "motivo": "sin_datos", "ticker": ticker}
         hecha["version"] = version
-        with _LOCK:
-            _ARMADAS[clave] = hecha
+        if not del_demo:
+            with _LOCK:
+                _ARMADAS[clave] = hecha
     puntos, ultima = hecha["puntos"], hecha["ultima"]
     if desde is not None:
         puntos = puntos[next((i for i, p in enumerate(puntos) if p["t"] >= desde), len(puntos)):]

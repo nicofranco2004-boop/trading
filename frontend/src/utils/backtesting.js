@@ -195,8 +195,6 @@ export function motivoEnPalabras(res, activo) {
     case 'vieja':
       return `Los precios de ${a} llegan hasta el ${fechaCorta(res.hasta)}: para probar una regla `
         + 'hacen falta los de la última semana.'
-    case 'demo':
-      return 'En el modo demo no hay precios de todos los días para probar reglas.'
     case 'poca_historia': {
       if (res.recorte_hueco) {
         return `${capital(faltanLosPrecios(a, res.recorte_hueco))}: después quedan muy pocos días para probar una regla.`

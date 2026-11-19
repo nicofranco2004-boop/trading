@@ -133,6 +133,17 @@ export async function prepararApp({ ancho = 1280 } = {}) {
   medidas(() => ({ left: 0, top: 0, width: Math.min(ancho, 800), height: 300 }))
   vi.stubGlobal('scrollTo', () => {})
   window.scrollTo = () => {}
+  // El análisis técnico del demo lo arma el servidor (utils/demo.js,
+  // `rutaDelDemoEnElServidor`), que acá no corre: su puerta contesta «no está» al
+  // instante, como un servidor caído. Sin esto el pedido salía a la red, fallaba
+  // y se reintentaba ~8 s (utils/gatewayRetry): la ficha seguía cargando cuando
+  // la prueba la miraba. Lo técnico no lleva tu plata (precios de mercado, y
+  // pesos que no cambian al multiplicar la cartera): lo de acá no lo tapa.
+  const fetchDeAntes = globalThis.fetch
+  vi.stubGlobal('fetch', (entrada, init) => (String(entrada).startsWith('/api/demo/')
+    ? Promise.resolve(new Response(JSON.stringify({ detail: 'La puerta del demo no corre en esta prueba' }),
+      { status: 404, headers: { 'Content-Type': 'application/json' } }))
+    : fetchDeAntes(entrada, init)))
   // Las páginas de App.jsx se cargan a pedido (lazy): se traen antes, para que
   // el primer dibujo de cada una no termine en el esqueleto de carga.
   const fs = await import('fs')

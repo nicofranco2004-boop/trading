@@ -1802,12 +1802,15 @@ def serie(conn, ticker: str, desde: str = None) -> list:
     (XLE.BA cae 50 % el 05/12/2025 sin que nada pase), y esa caída falsa dejaba
     la media de 200 en pesos diciendo "bajista" diez meses. [] si no hay: quien
     la usa tiene que decir "sin datos", nunca inventar. Es LA puerta para leer
-    velas en un gráfico o una lectura: no leer la tabla a mano."""
+    velas en un gráfico o una lectura: no leer la tabla a mano.
+
+    En un pedido del demo salen estiradas a su precio (`escala_del_demo`)."""
+    import escala_del_demo
     velas = _crudas(conn, ticker, desde)
     if not velas or not str(ticker).upper().endswith('.BA'):
-        return velas
+        return escala_del_demo.velas(ticker, velas)
     import cambios_ratio
-    return _empalmar(velas, cambios_ratio.para_el_grafico(conn, ticker))
+    return escala_del_demo.velas(ticker, _empalmar(velas, cambios_ratio.para_el_grafico(conn, ticker)))
 
 
 def ultima_fecha(conn, ticker: str):
@@ -2000,8 +2003,18 @@ def ruedas_recientes(ticker: str):
     low, close, volume}], actualizada} o None (Yahoo sin dato). `hoy` es el día
     de SU mercado (`home.market.session_today`: el UTC para una cripto). Quien
     las dibuja decide cuáles ya están guardadas. Nunca se guardan en
-    `velas_diarias`, y lo que devuelve es compartido: no se modifica."""
+    `velas_diarias`, y lo que devuelve es compartido: no se modifica. En un
+    pedido del demo, None sin salir a Yahoo: el demo no tiene vela de hoy
+    (`escala_del_demo`, su gráfico termina en su precio)."""
+    import escala_del_demo
     t = (ticker or '').strip().upper()
+    if escala_del_demo.en_el_demo():
+        return escala_del_demo.tanda(t, None)
+    return _ruedas_recientes(t)
+
+
+def _ruedas_recientes(t: str):
+    """`ruedas_recientes` tal como la dio Yahoo (o la memoria)."""
     if not t:
         return None
     with _en_curso_lock:

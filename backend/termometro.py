@@ -296,18 +296,19 @@ def sector_de(asset: str, local: bool):
     return sp.get(a) or sp.get(a.replace("-", "."))
 
 
-def tu_plata(conn, uid: int, t: dict):
+def tu_plata(conn, uid: int, t: dict, car: dict = None):
     """{'suben': {pct, sectores}, 'bajan': {pct, sectores}, 'sin_sector': {pct,
     papeles}} con tu plata valuada por el servidor (`senales_semana.cartera`) y
     el peso de cada papel de `senales_semana.peso` (LA cuenta del peso). Cada
     sector: {sector, mercado_pct (% de sus acciones que suben de fondo), pct
     (de tu plata), papeles: [de más a menos plata]}. Los % son enteros que suman
     100 (`_repartir_cien`). None si no tenés nada valuado o el termómetro no
-    tiene número."""
+    tiene número. `car`: una cartera ya valuada que no está en la base (la del
+    demo: main.py, «La puerta del demo»); sin ella, la de `uid`."""
     import senales_semana
     if not t or not t.get("disponible"):
         return None
-    car = senales_semana.cartera(conn, uid)
+    car = car if car is not None else senales_semana.cartera(conn, uid)
     if not car["total"] > 0:
         return None
     mercado = t.get("sectores") or {}

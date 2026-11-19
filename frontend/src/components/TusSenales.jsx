@@ -171,7 +171,11 @@ export function useTusSenales({ pedir = true } = {}) {
     setGuardando(true)
     setErrorCanal(null)
     api.put('/tus-senales/canal', { canal })
-      .catch(() => { setDatos(d => ({ ...d, canal: antes })); setErrorCanal('No pudimos guardar el cambio. Probá de nuevo.') })
+      // En el demo no se guarda (utils/demo.js): lo dice así, y no «probá de nuevo».
+      .catch((e) => {
+        setDatos(d => ({ ...d, canal: antes }))
+        setErrorCanal(e?.demoBlocked ? e.message : 'No pudimos guardar el cambio. Probá de nuevo.')
+      })
       .finally(() => setGuardando(false))
   }
   return { datos, error, cambiarCanal, guardando, errorCanal }

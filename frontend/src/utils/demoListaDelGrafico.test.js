@@ -48,7 +48,10 @@ describe('el demo guarda las banderas del visitante', () => {
     // Sin el efectivo; AAPL una vez (el primer lote, el de Schwab).
     expect(Object.keys(de)).toEqual(['NVDA', 'AAPL', 'MSFT', 'TSLA', 'SPY', 'GGAL', 'YPFD', 'AL30', 'BTC', 'ETH', 'SOL'])
     expect([de.GGAL.cotiza, de.GGAL.local]).toEqual(['GGAL.BA', true])
-    expect([de.AL30.cotiza, de.AL30.local]).toEqual(['AL30.BA', false])
+    // Como el servidor (backend/accion_local.es_lote_local, main.watchlist_cartera):
+    // lo que se cotiza en BYMA y no es CEDEAR ni cripto, un bono en pesos también.
+    // Hasta el 19/11 el demo tenía su propia regla y decía que no.
+    expect([de.AL30.cotiza, de.AL30.local]).toEqual(['AL30.BA', true])
     expect([de.NVDA.cotiza, de.BTC.cotiza, de.BTC.mercado]).toEqual(['NVDA', 'BTC', 'cripto'])
     // La variación es la de Posiciones del demo (+4,4 % NVDA, la del mapa de calor).
     expect(de.NVDA.change_pct).toBeCloseTo(4.4, 1)

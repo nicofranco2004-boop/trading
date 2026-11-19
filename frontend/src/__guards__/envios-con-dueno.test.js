@@ -158,10 +158,14 @@ describe('lo que sale sin pasar por utils/api', () => {
     }
     expect(conFetch).toEqual(['pedirAlServidor'])
     const puerta = cuerpos.pedirAlServidor
-    for (const pieza of ['PERSONA_HEADER', 'VERSION_HEADER', 'await frenoDeLaPestana()', "credentials: 'include'"]) {
+    for (const pieza of ['PERSONA_HEADER', 'VERSION_HEADER', 'await frenoDeLaPestana()', "credentials: sinSesion ? 'omit' : 'include'"]) {
       expect(puerta, `la puerta perdió: ${pieza}`).toContain(pieza)
     }
     expect(puerta.indexOf('await frenoDeLaPestana()')).toBeLessThan(puerta.search(/\bfetch\s*\(/))
+    // Sin la cookie sale UNA cosa: la puerta del demo del servidor (el análisis
+    // técnico de la cuenta de ejemplo, que no es de nadie; 19/11).
+    const sinSesion = Object.entries(cuerpos).filter(([, c]) => /\bsinSesion\s*:\s*true\b/.test(c)).map(([n]) => n)
+    expect(sinSesion).toEqual(['pedirLoDelDemo'])
   })
 
   it('salir sin freno es una lista cerrada; decir otra persona, sólo utils/api', () => {

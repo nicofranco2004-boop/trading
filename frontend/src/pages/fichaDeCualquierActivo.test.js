@@ -393,9 +393,12 @@ describe('lo que encontró la auditoría (22/10)', () => {
     }
   })
 
-  it('en el demo, el gráfico cae a los 30 días (no a "No se pudo cargar")', async () => {
-    const { handleDemoRequest } = await vi.importActual('../utils/demo')
-    expect(handleDemoRequest('GET', '/tecnico/CSCO?moneda=usd')).toMatchObject({ disponible: false, motivo: 'sin_serie' })
+  it('en el demo, la ficha la arma el servidor (y sin velas guardadas cae a los 30 días)', async () => {
+    // Desde el 19/11 la puerta del demo (backend/main.py) corre la ficha de una
+    // cuenta; lo que nadie sigue no se baja y vuelve «sin serie», que dibuja el
+    // gráfico de 30 días y no «No se pudo cargar» (backend/tests/test_demo_tecnico.py).
+    const { rutaDelDemoEnElServidor } = await vi.importActual('../utils/demo')
+    expect(rutaDelDemoEnElServidor('GET', '/tecnico/CSCO?moneda=usd')).toBe('/demo/tecnico/CSCO?moneda=usd')
   })
 })
 

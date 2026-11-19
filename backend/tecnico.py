@@ -1602,6 +1602,14 @@ def _leer_varios(conn, que: str, activos: list, desde: str, armar) -> list:
     claves = _claves(activos)
     if not claves:
         return []
+    import escala_del_demo
+    if escala_del_demo.en_el_demo():
+        # Un pedido del demo (velas estiradas a sus precios) no lee ni guarda lo
+        # de las cuentas: la lectura estirada le llegaría a una cuenta, y como
+        # los precios los manda quien pide, cada precio distinto empujaba afuera
+        # lo ya leído de las cuentas (revisión a ciegas, 19/11). Lo guarda la
+        # puerta del demo, con su tope.
+        return [armar(a, local, serie(conn, a, "usd", local)["velas"]) for a, local in claves]
     tickers = {t for a, _ in claves for t in _tickers_de(a)}
     huellas = _huellas(conn, tickers, desde)
     out = []

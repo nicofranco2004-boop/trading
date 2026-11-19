@@ -31,7 +31,7 @@ import {
   contraMantener, ganaron, lectura, lecturaComparada, motivoEnPalabras, otraRegla, parteAfuera, periodoEnPalabras, porcentaje,
   precio, queSePrueba, reglaDe, reglasDe, sinEstaCompra, textoDelRecorte, tramosComprada,
 } from './backtesting'
-import { handleDemoRequest } from './demo'
+import { rutaDelDemoEnElServidor } from './demo'
 
 const AQUI = dirname(fileURLToPath(import.meta.url))
 const GGAL = JSON.parse(readFileSync(resolve(AQUI, '../../../backend/tests/fixtures/backtest_ggal.json'), 'utf8'))
@@ -382,12 +382,12 @@ describe('M3/M4: por qué no se pudo probar, en oraciones enteras', () => {
       .toBe('JOVEN tiene muy pocos días de precios para probar «RSI 30 / 70»: el RSI necesita 15 días de precios antes.')
   })
 
-  it('A1: en el modo demo lo dice, y no que NVDA es un bono o un fondo', () => {
-    const r = handleDemoRequest('GET', '/tecnico/NVDA/backtest?reglas=rsi&anios=2')
-    expect(r).toEqual({ asset: 'NVDA', disponible: false, motivo: 'demo' })
-    expect(motivoEnPalabras(r, 'NVDA')).toBe('En el modo demo no hay precios de todos los días para probar reglas.')
-    // La ficha del demo sigue como estaba: «sin serie» la manda al gráfico de 30 días.
-    expect(handleDemoRequest('GET', '/tecnico/NVDA?moneda=usd')).toMatchObject({ disponible: false, motivo: 'sin_serie' })
+  it('A1: en el modo demo lo calcula el servidor, con las velas de verdad (19/11)', () => {
+    // Antes el demo contestaba «en el modo demo no hay precios»: ahora la puerta
+    // del demo (backend/main.py) corre el mismo backtesting que una cuenta.
+    expect(rutaDelDemoEnElServidor('GET', '/tecnico/NVDA/backtest?reglas=rsi&anios=2'))
+      .toBe('/demo/tecnico/NVDA/backtest?reglas=rsi&anios=2')
+    expect(rutaDelDemoEnElServidor('GET', '/tecnico/NVDA?moneda=usd')).toBe('/demo/tecnico/NVDA?moneda=usd')
   })
 })
 
@@ -421,7 +421,7 @@ describe('nunca promete', () => {
   it('ni «suele», ni «ayuda», ni «muchas veces», ni «comprá», ni «la mejor regla»', () => {
     // Medido el 04/11 (14 papeles, 2 años): la regla que dio más cambió de papel
     // en papel. Lo que habría pasado no dice nada de lo que va a pasar.
-    const motivos = ['sin_serie', 'sin_datos', 'tope', 'bajando', 'demo', 'poca_historia']
+    const motivos = ['sin_serie', 'sin_datos', 'tope', 'bajando', 'poca_historia']
       .map(motivo => motivoEnPalabras({ motivo, recorte_por: 'media200', reglas: ['rsi', 'media200'] }, 'GGAL'))
     const textos = [
       ...Object.values(GGAL).filter(r => r.disponible)

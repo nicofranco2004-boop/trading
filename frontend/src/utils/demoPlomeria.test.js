@@ -71,6 +71,7 @@ describe('lo que el visitante guarda a mano se bloquea; lo de fondo, no', () => 
     ['POST', '/wallbit/connect'], ['PATCH', '/market-brief/prefs'], ['POST', '/billing/subscribe'],
     ['POST', '/billing/trial/start'], ['DELETE', '/movements/me-1-dep'], ['PATCH', '/positions/group'],
     ['POST', '/positions/12/adjust-ratio'], ['POST', '/monthly'], ['DELETE', '/me'],
+    ['PUT', '/tus-senales/canal'],
   ])('%s %s → "creá una cuenta"', (m, p) => {
     expect(bloqueada(m, p)).toBe(true)
   })

@@ -397,7 +397,10 @@ def reparto(conn, uid: int, hoy: date, *, series: dict = None, dolar=None, car=N
 
 def semana_pasada(conn, uid: int, hoy: date):
     """{'semana', 'pct'} del último % guardado ANTES de hoy (hasta 13 días), o
-    None: para atrás no se reconstruye, mientras no haya dato no aparece."""
+    None: para atrás no se reconstruye, mientras no haya dato no aparece. Sin
+    persona (`uid` None, el demo) no hay nada guardado: None, como una cuenta nueva."""
+    if uid is None:
+        return None
     row = conn.execute(
         "SELECT semana, pct_alcista FROM tendencia_semanal "
         "WHERE user_id=? AND semana < ? AND semana >= ? AND pct_alcista IS NOT NULL "
@@ -407,7 +410,7 @@ def semana_pasada(conn, uid: int, hoy: date):
 
 
 def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, dolar=None,
-                 desde: str = None, desde_de: dict = None) -> dict:
+                 desde: str = None, desde_de: dict = None, persona: dict = None) -> dict:
     """Lo que ve la pestaña y lo que dice el mail del sábado.
 
     {
@@ -424,19 +427,24 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, dolar=None,
     últimos 7 días corridos. El mail cuenta CADA ACTIVO desde lo que ya contó el
     resumen anterior: `desde_de` {(asset, local): fecha} (`desde_del_mail`); el
     activo que no está ahí, desde `desde`. Agrega 'hasta_vela': {"NVDA|0":
-    la última vela que se miró de ese activo} (lo que guarda el sábado)."""
+    la última vela que se miró de ese activo} (lo que guarda el sábado).
+
+    `persona`: lo que tiene y sigue alguien que no está en la base (el demo:
+    main.py, «La puerta del demo»), con las formas de `cartera`, `watchlist`,
+    `agregado_a_la_watchlist` y `_tesis`: {'cartera', 'watchlist', 'agregado',
+    'tesis'}. Con ella no se lee nada de la cuenta `uid`."""
     import tecnico
     series = {} if series is None else series
     desde = desde or (hoy - timedelta(days=DIAS_SEMANA)).isoformat()
-    car = cartera(conn, uid, dolar)
-    wl = watchlist(conn, uid)
-    tesis = _tesis(conn, uid)
+    car = persona["cartera"] if persona else cartera(conn, uid, dolar)
+    wl = persona["watchlist"] if persona else watchlist(conn, uid)
+    tesis = (persona.get("tesis") or {}) if persona else _tesis(conn, uid)
     import tesis as _t
     # Lo que seguís en la watchlist (y no tenés) cuenta desde el día en que lo
     # agregaste: si lo sacaste y lo volviste a poner, lo que cruzó mientras no
     # lo seguías no es «tu semana» (decisión de Nico, 29/10). Lo que TENÉS
     # cuenta siempre, aunque además esté en la watchlist.
-    agregado = agregado_a_la_watchlist(conn, uid)
+    agregado = (persona.get("agregado") or {}) if persona else agregado_a_la_watchlist(conn, uid)
     recorte = {k: (date.fromisoformat(agregado[k]) - timedelta(days=1)).isoformat()
                for k in wl if k in agregado and k not in car["tenencias"]}
 
@@ -524,7 +532,8 @@ def proximo_resumen(conn, uid: int, now: datetime = None) -> str:
     from fechas import dia_art
     hoy = dia_art(now or _ahora())
     sabado = hoy + timedelta(days=(DIA_RESUMEN - hoy.weekday()) % 7)
-    if sabado == hoy and conn.execute("SELECT 1 FROM tendencia_semanal WHERE user_id=? AND semana=?",
+    if sabado == hoy and uid is not None and conn.execute(
+            "SELECT 1 FROM tendencia_semanal WHERE user_id=? AND semana=?",
                                       (uid, hoy.isoformat())).fetchone():
         sabado += timedelta(days=7)
     return sabado.isoformat()
