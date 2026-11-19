@@ -32,36 +32,25 @@ import { esLecturaPorPost } from '../utils/api'
 
 const SRC = join(__dirname, '..')
 
-// Pantallas a las que el visitante del demo no entra: no hace falta contestarlas.
+// Lo que el demo no pide nunca: pantallas a las que el visitante no entra, o
+// lecturas que la pantalla saltea en el demo. No hace falta contestarlas.
 const FUERA_DEL_DEMO = [
   [/^\/admin\//, 'el panel del administrador: el usuario del demo no es administrador'],
   [/^\/advisor\//, 'el Plan Asesor: el usuario del demo no es asesor'],
+  [/^\/iol\/lab\//, 'el laboratorio de IOL (/lab/iol, escondido): sólo para las cuentas habilitadas '
+    + '(backend `_iol_lab_gate`), y el usuario del demo no lo está'],
   [/^\/auth\/me$/, 'AuthContext no la pide en el demo: arma el usuario del demo sin preguntar'],
+  [/^\/preferencias\/modo-rendimiento$/, 'ModoRendimientoContext no la pide en el demo: sin persona '
+    + 'logueada ni la lee ni la guarda (la elección queda en el navegador)'],
+  [/^\/billing\/preview-change-plan$/, 'Planes no la pide en el demo: cambiar de plan lleva a crear la '
+    + 'cuenta (`desdeElDemoACrearCuenta`), como «Suscribirme»'],
 ]
 
 // Lecturas que el demo todavía no contesta: la pantalla muestra su error o se
-// queda sin esa parte. SIN REVISAR qué ve el visitante en cada una (se
-// encontraron al escribir esta prueba, 19/11/2026).
-const SIN_RESPUESTA = {
-  'GET /fci/catalog': 'el catálogo de fondos (buscador y alta de una posición)',
-  'GET /pf/banks': 'los bancos del alta de un plazo fijo',
-  'GET /tickers/search?q=X': 'el buscador de Fundamentals',
-  'GET /primeros-pasos': 'la lista «Tu setup en Rendi» del inicio',
-  'GET /cobros': 'Cobros de Movimientos',
-  'GET /preferencias/modo-rendimiento': 'el modo de rendimiento elegido',
-  'GET /bond-indices/CER': 'la serie del CER (bonos que ajustan)',
-  'GET /tesis': 'las tesis del diario de operaciones',
-  'GET /dividendos/historial?tickers=X': 'los dividendos por cobrar',
-  'GET /dividendos/salteados': 'los dividendos salteados',
-  'GET /push/vapid-public-key': 'la clave para avisos al celular',
-  'GET /alerts/lineas': 'las líneas con aviso de Alertas',
-  'GET /me/reset-data/status': '«Empezar de cero» de Configuración',
-  'GET /iol/lab/status': 'el laboratorio de IOL',
-  'GET /billing/preview-change-plan?plan=X&period=X': 'cuánto sale cambiar de plan',
-  'GET /positions/group/context?X': 'el contexto de una fila agrupada de la Cartera',
-  'GET /positions/regla-de-venta': 'la regla de venta de la Cartera',
-  'GET /cedears': 'la lista de CEDEARs del alta',
-}
+// queda sin esa parte. Vacía desde el 19/11/2026: las 18 que encontró esta
+// prueba al escribirse tienen respuesta (utils/demo.js) o están arriba, en
+// FUERA_DEL_DEMO, con su porqué. Una que se anote acá lleva qué ve el visitante.
+const SIN_RESPUESTA = {}
 
 function archivos(dir = SRC, out = []) {
   for (const n of readdirSync(dir)) {
@@ -136,6 +125,18 @@ describe('el demo contesta todo lo que lee la pantalla', () => {
     for (const [metodo, ruta] of [['GET', '/tecnico/NVDA/dibujos?moneda=usd'], ['PUT', '/tecnico/NVDA/dibujos'],
       ['GET', '/tecnico/NVDA/lineas'], ['POST', '/tecnico/NVDA/resumen'], ['PUT', '/tus-senales/canal']]) {
       expect(rutaDelDemoEnElServidor(metodo, ruta), ruta).toBeNull()
+    }
+  })
+
+  it('lo del mercado lo contesta el servidor; lo de la persona, el demo', () => {
+    for (const ruta of ['/fci/catalog', '/cedears', '/pf/banks', '/bond-indices/CER',
+      '/dividendos/historial?tickers=AAPL%2CMSFT', '/tickers/search?q=intel']) {
+      expect(rutaDelDemoEnElServidor('GET', ruta), ruta).toBe(`/demo${ruta}`)
+    }
+    // Los «No lo cobré», las tesis, los cobros: son de cada persona.
+    for (const ruta of ['/dividendos/salteados', '/tesis', '/cobros', '/primeros-pasos', '/alerts/lineas',
+      '/positions/regla-de-venta', '/positions/group/context?broker=Schwab&asset=NVDA']) {
+      expect(rutaDelDemoEnElServidor('GET', ruta), ruta).toBeNull()
     }
   })
 })

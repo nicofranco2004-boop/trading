@@ -3230,24 +3230,7 @@ export function handleDemoRequest(method, path, body) {
       const year = parseInt(yearStr, 10) || new Date().getFullYear()
       return WRAPPED(year)
     }
-    // ── Alertas — una alerta de precio + un evento disparado (sin ver hasta
-    //    que el user entra a /alertas) para showcasear el badge del sidebar.
-    if (basePath === '/alerts') {
-      const firedAt = new Date(Date.now() - 90 * 60 * 1000)  // hace ~1.5h
-        .toISOString().slice(0, 19).replace('T', ' ')
-      return {
-        items: [
-          { id: 1, kind: 'price_target', symbol: 'AAPL', direction: 'above',
-            threshold: 180, currency: 'USD', active: 1, armed: 0,
-            last_fired_at: firedAt, last_fired_price: 182.5 },
-        ],
-        events: [
-          { id: 1, alert_id: 1, symbol: 'AAPL', fired_at: firedAt, price: 182.5,
-            message: 'AAPL superó tu objetivo de US$180 (llegó a US$182,5)',
-            seen: _demoAlertsSeen ? 1 : 0 },
-        ],
-      }
-    }
+    if (basePath === '/alerts') return _alertasDemo()
     // ── AI v2 endpoints — usage + topics ────────────────────────────────
     if (basePath === '/ai/usage') {
       // En demo simulamos un user "Pro" para que vea respuestas premium
@@ -3292,7 +3275,7 @@ export function handleDemoRequest(method, path, body) {
           brokers_grandfather: false,
           behavioral_tags_visible: null,
           alerts_max: null,
-          alerts_current: 1,          // la de AAPL de GET /alerts
+          alerts_current: _alertasDemo().items.length,
           alerts_can_create: true,
         },
         access: {
@@ -3379,6 +3362,44 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/wallbit/status')         return { connected: false }
     if (basePath === '/advisor/alerts')         return { history: [] }
     if (basePath === '/fx-rates')               return _demoFxRates()
+
+    // ⚠️ ESTAS SE QUEDABAN SIN RESPUESTA (las encontró el 19/11/2026
+    // __guards__/demo-contesta-todo, que recorre todo lo que lee la pantalla):
+    // Cobros decía «Esta sección no está disponible en modo demo», el modal
+    // «Editar» no avisaba de las ventas ya registradas y «Vender» no mostraba la
+    // ganancia estimada. Cada una con la forma del servidor y lo que es cierto de
+    // ESTA cuenta de ejemplo.
+    // Los primeros pasos de Inicio (main.primeros_pasos): sus alertas, sin el
+    // resumen diario (como /market-brief/prefs) y sin la app ni los avisos en
+    // ningún celular.
+    if (basePath === '/primeros-pasos') {
+      return {
+        app_instalada: false,
+        dispositivos_push: 0,
+        alertas: _alertasDemo().items.filter(a => a.kind !== 'recordatorio').length,
+        resumen_activo: false,
+      }
+    }
+    if (basePath === '/cobros')                 return _demoCobros()
+    // Las tesis (main.tesis_list): la cuenta de ejemplo no escribió ninguna, y
+    // escribir una pide la cuenta (`_BASES_DEL_VISITANTE`).
+    if (basePath === '/tesis')                  return { items: [], hoy: {} }
+    // Los «No lo cobré» de la bandeja de dividendos: ninguno.
+    if (basePath === '/dividendos/salteados')   return []
+    // Las líneas con aviso de Alertas: la única alerta del demo es de precio.
+    if (basePath === '/alerts/lineas')          return { lineas: {} }
+    // «Empezar de cero» de Configuración: nunca se empezó (apretarlo pide la cuenta).
+    if (basePath === '/me/reset-data/status')   return { estado: 'inactivo' }
+    if (basePath === '/positions/group/context') return _contextoDelGrupoDemo(query)
+    // Con qué regla anota el resultado en dólares de una venta en pesos: la de
+    // las ventas del propio demo (OPERATIONS: la ganancia en pesos ÷ el dólar de
+    // la venta), que es la que el servidor usa en una cuenta con historia (v1,
+    // backend/fx.py `fx_version_lectura`).
+    if (basePath === '/positions/regla-de-venta') return { cada_punta_a_su_dolar: false }
+    // Activar los avisos al celular es de una cuenta (POST /push/subscribe lo
+    // guarda en ella). hooks/usePushNotifications lo dice antes de pedirle
+    // permiso al navegador; esto, por si algo pide la clave igual.
+    if (basePath === '/push/vapid-public-key')  return blocked()
 
     if (basePath === '/reports/years') {
       const años = [...new Set(REPORTS_TIMELINE.map(r => parseInt(r.period_key.slice(0, 4), 10)))]
@@ -4151,11 +4172,27 @@ const _TECNICO_EN_EL_SERVIDOR = [
   ['GET', /^\/liquidez\/[^/]+$/],
 ]
 
+// Lo del mercado que pide el resto de la pantalla —igual para todos, no de una
+// persona— también lo contesta el servidor, con lo que ya tiene guardado: sin
+// cuenta no sale a buscar nada afuera (backend/main.py, «Lo del mercado, en el
+// demo»). Hasta el 19/11/2026 el demo no los contestaba: el alta no ofrecía
+// fondos ni CEDEARs en dólares, la bandeja de dividendos no aparecía y un bono
+// CER agregado ajustaba sin serie.
+const _MERCADO_EN_EL_SERVIDOR = [
+  ['GET', /^\/fci\/catalog$/],             // los fondos del alta y del buscador
+  ['GET', /^\/cedears$/],                  // los CEDEARs del alta, con su precio en dólares
+  ['GET', /^\/pf\/banks$/],                // las tasas de cada banco, en el alta de un plazo fijo
+  ['GET', /^\/bond-indices\/CER$/],        // la serie con que ajusta un bono CER
+  ['GET', /^\/dividendos\/historial$/],    // lo que pagó cada empresa (la bandeja de dividendos)
+  ['GET', /^\/tickers\/search$/],          // el buscador por nombre de Fundamentals
+]
+
 /** La ruta de la puerta del demo para este pedido de la pantalla
  *  ('/demo/tecnico/NVDA?moneda=usd'), o null si lo contesta `handleDemoRequest`. */
 export function rutaDelDemoEnElServidor(method, path) {
   const [base, query] = String(path || '').split('?')
-  if (!_TECNICO_EN_EL_SERVIDOR.some(([m, re]) => m === method && re.test(base))) return null
+  const delServidor = ([m, re]) => m === method && re.test(base)
+  if (!_TECNICO_EN_EL_SERVIDOR.some(delServidor) && !_MERCADO_EN_EL_SERVIDOR.some(delServidor)) return null
   return `/demo${base}${query ? `?${query}` : ''}`
 }
 
@@ -4211,6 +4248,10 @@ const _BASES_DEL_VISITANTE = [
   // Cómo te llega el resumen de los sábados: el demo lo muestra con «Mail»
   // elegido (backend/main.py DEMO_CANAL); cambiarlo es de una cuenta.
   '/tus-senales',
+  // Confirmar un dividendo o «No lo cobré» (la bandeja de dividendos), y
+  // escribir una tesis: desde que el demo contesta sus lecturas (19/11/2026)
+  // se pueden apretar, y sin esto el demo decía «listo» sin guardar nada.
+  '/dividendos', '/tesis',
 ]
 function _esEscrituraDelVisitante(method, path) {
   if (method === 'GET') return false
@@ -4274,6 +4315,68 @@ function _demoMovimientos() {
       amount_usd: enPesos ? bruto / blueEn(o.date) : bruto, pnl_usd: o.pnl_usd })
   }
   return filas.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+}
+
+// ─── /cobros del demo ────────────────────────────────────────────────────────
+// La pestaña Cobros de Movimientos con la forma de `cobros.cobros` (backend) y
+// sobre las MISMAS filas que Movimientos (`_demoMovimientos`), como el servidor
+// (`_build_movements`): la pestaña y el «Cobrado» de Movimientos cuentan con la
+// misma regla. El demo no tiene dividendos ni cupones cobrados, así que la lista
+// viene vacía y la pantalla muestra lo que espera cobrar (su estimado).
+function _demoCobros() {
+  const hoy = hoyISO()
+  const desde = `${Number(hoy.slice(0, 4)) - 1}-01-01`
+  const cobros = []
+  const previos = {}
+  for (const m of _demoMovimientos()) {
+    if ((m.type !== 'DIVIDEND' && m.type !== 'INTEREST') || !m.amount_usd) continue
+    const fecha = String(m.date).slice(0, 10)
+    if (fecha >= desde) cobros.push({ fecha, activo: (m.asset || '').toUpperCase(), tipo: m.type, usd: m.amount_usd })
+    else previos[fecha.slice(0, 4)] = (previos[fecha.slice(0, 4)] || 0) + m.amount_usd
+  }
+  return {
+    hoy,
+    dias_hasta_el_pago: 21,   // backend/dividendos.py REGLAS (lo compara demoPlomeria.test.js)
+    cobros: cobros.sort((a, b) => (a.fecha < b.fecha ? -1 : 1)),
+    pagos_mixtos: [],         // sólo los importados de un bono traen cupón y amortización juntos
+    anios_previos: Object.keys(previos).sort().map(a => ({ anio: Number(a), usd: Math.round(previos[a] * 100) / 100 })),
+  }
+}
+
+// ─── La alerta del demo ──────────────────────────────────────────────────────
+// Una de precio de AAPL y su aviso, disparado hace ~1,5 h y sin ver hasta que se
+// entra a Alertas (para que se vea el aviso del menú). La leen GET /alerts y,
+// para contar, /plan/features y /primeros-pasos.
+function _alertasDemo() {
+  const firedAt = new Date(Date.now() - 90 * 60 * 1000)
+    .toISOString().slice(0, 19).replace('T', ' ')
+  return {
+    items: [
+      { id: 1, kind: 'price_target', symbol: 'AAPL', direction: 'above',
+        threshold: 180, currency: 'USD', active: 1, armed: 0,
+        last_fired_at: firedAt, last_fired_price: 182.5 },
+    ],
+    events: [
+      { id: 1, alert_id: 1, symbol: 'AAPL', fired_at: firedAt, price: 182.5,
+        message: 'AAPL superó tu objetivo de US$180 (llegó a US$182,5)',
+        seen: _demoAlertsSeen ? 1 : 0 },
+    ],
+  }
+}
+
+// ─── El aviso del modal «Editar» de la Cartera ───────────────────────────────
+// Con la forma de main.position_group_context: cuántos lotes tiene el grupo,
+// cuántas ventas ya registradas (las de OPERATIONS: NVDA en Schwab tiene dos, y
+// el modal avisa que conservan el resultado con el costo anterior) y cuántos
+// lotes vienen de un import (ninguno: el demo no importó nada).
+function _contextoDelGrupoDemo(query) {
+  const q = new URLSearchParams(query || '')
+  const broker = (q.get('broker') || '').trim()
+  const asset = (q.get('asset') || '').trim()
+  const lots = [...POSITIONS, ...getDemoOverlay().positions]
+    .filter(p => !p.is_cash && p.broker === broker && p.asset === asset)
+  const sales = OPERATIONS.filter(o => o.broker === broker && o.asset === asset).length
+  return { lots: lots.length, sales, imported_lots: 0 }
 }
 
 // ─── /fx-rates del demo ──────────────────────────────────────────────────────

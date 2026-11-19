@@ -12,6 +12,8 @@
  *   · Quien volvía otro día a rendi.finance veía el demo, no la portada.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { handleDemoRequest, demoVencido, DEMO_DURA_MS, enableDemoMode, isDemoMode, vencerDemoSiCorresponde } from './demo.js'
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -39,6 +41,41 @@ describe('el demo contesta lo que piden sus pantallas', () => {
       expect(formaOk(r)).toBe(true)
     })
   }
+
+  // Las que encontró el 19/11/2026 __guards__/demo-contesta-todo, con la forma
+  // del endpoint de backend/main.py que nombra cada una.
+  it.each([
+    ['/primeros-pasos', r => r.app_instalada === false && r.dispositivos_push === 0
+      && r.alertas === handleDemoRequest('GET', '/alerts').items.length && r.resumen_activo === false],
+    ['/tesis', r => Array.isArray(r.items) && typeof r.hoy === 'object'],
+    ['/dividendos/salteados', r => Array.isArray(r)],
+    ['/alerts/lineas', r => typeof r.lineas === 'object' && !Array.isArray(r.lineas)],
+    ['/me/reset-data/status', r => r.estado === 'inactivo'],
+    ['/positions/regla-de-venta', r => r.cada_punta_a_su_dolar === false],
+    ['/cobros', r => Array.isArray(r.cobros) && Array.isArray(r.pagos_mixtos) && Array.isArray(r.anios_previos)
+      && /^\d{4}-\d{2}-\d{2}$/.test(r.hoy)],
+  ])('GET %s (main.py)', (path, formaOk) => {
+    expect(formaOk(handleDemoRequest('GET', path))).toBe(true)
+  })
+
+  it('Cobros cuenta lo mismo que Movimientos (las mismas filas, la misma regla)', () => {
+    const movs = handleDemoRequest('GET', '/movements')
+    const r = handleDemoRequest('GET', '/cobros')
+    const cobrado = movs.filter(m => m.type === 'DIVIDEND' || m.type === 'INTEREST').reduce((s, m) => s + m.amount_usd, 0)
+    const enCobros = r.cobros.reduce((s, c) => s + c.usd, 0) + r.anios_previos.reduce((s, a) => s + a.usd, 0)
+    expect(enCobros).toBeCloseTo(cobrado, 2)
+    // Los días hasta el pago son la regla medida del servidor, no una copia que envejece sola.
+    const reglas = readFileSync(join(__dirname, '../../../backend/dividendos.py'), 'utf8')
+    expect(reglas).toContain(`"dias_hasta_el_pago": ${r.dias_hasta_el_pago},`)
+  })
+
+  it('el modal «Editar» avisa de las ventas ya registradas de ese activo', () => {
+    // NVDA en Schwab: un lote abierto y dos ventas en OPERATIONS.
+    const r = handleDemoRequest('GET', '/positions/group/context?broker=Schwab&asset=NVDA')
+    const ventas = handleDemoRequest('GET', '/operations').filter(o => o.broker === 'Schwab' && o.asset === 'NVDA')
+    expect(r).toEqual({ lots: 1, sales: ventas.length, imported_lots: 0 })
+    expect(ventas.length).toBeGreaterThan(0)
+  })
 
   it('Movimientos cuenta la misma historia que las operaciones cerradas', () => {
     const movs = handleDemoRequest('GET', '/movements')
@@ -72,6 +109,11 @@ describe('lo que el visitante guarda a mano se bloquea; lo de fondo, no', () => 
     ['POST', '/billing/trial/start'], ['DELETE', '/movements/me-1-dep'], ['PATCH', '/positions/group'],
     ['POST', '/positions/12/adjust-ratio'], ['POST', '/monthly'], ['DELETE', '/me'],
     ['PUT', '/tus-senales/canal'],
+    // Desde que el demo contesta la bandeja de dividendos y las tesis (19/11/2026).
+    ['POST', '/dividendos/cobro'], ['POST', '/dividendos/saltear'], ['DELETE', '/dividendos/saltear'],
+    ['PUT', '/tesis'], ['DELETE', '/tesis/3'], ['PUT', '/tesis/3/recordatorio'],
+    // Activar los avisos al celular: la clave ya dice «creá una cuenta».
+    ['GET', '/push/vapid-public-key'],
   ])('%s %s → "creá una cuenta"', (m, p) => {
     expect(bloqueada(m, p)).toBe(true)
   })

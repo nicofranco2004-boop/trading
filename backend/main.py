@@ -9308,8 +9308,9 @@ def _ensure_index_cached(conn, index_name: str):
     _indices_fetched[index_name] = now
 
 
-def _serie_cer_o_uva(conn, index_name: str) -> str:
+def _serie_cer_o_uva(conn, index_name: str, refrescar: bool = True) -> str:
     """Con qué serie se ajusta DE VERDAD. Devuelve el `basis` a servir.
+    `refrescar=False` (la puerta del demo): no sale a buscar la UVA.
 
     ⚠️ EL CER SE SIRVE CON UVA CUANDO SU FUENTE NO RESPONDE, Y SE DICE.
 
@@ -9342,10 +9343,11 @@ def _serie_cer_o_uva(conn, index_name: str) -> str:
 
     if index_name != "CER" or _hay("CER"):
         return index_name
-    try:
-        _ensure_index_cached(conn, "UVA")
-    except Exception:
-        pass
+    if refrescar:
+        try:
+            _ensure_index_cached(conn, "UVA")
+        except Exception:
+            pass
     return "UVA" if _hay("UVA") else "CER"
 
 
@@ -9392,39 +9394,45 @@ def get_bond_index_series(
             _ensure_index_cached(conn, index_name)
         except Exception:
             pass
-
-        basis = _serie_cer_o_uva(conn, index_name)
-
-        q = "SELECT date, value FROM bond_indices_daily WHERE index_name = ?"
-        params = [basis]
-        if date_from:
-            q += " AND date >= ?"
-            params.append(date_from)
-        if date_to:
-            q += " AND date <= ?"
-            params.append(date_to)
-        q += " ORDER BY date ASC"
-        rows = conn.execute(q, params).fetchall()
-        series = {r["date"]: r["value"] for r in rows}
-
-        # Stale check: si no se actualizó hace TTL+1h Y no hay data fresh.
-        # Se mide sobre la serie que SE SIRVIÓ (`basis`), no sobre la pedida: con
-        # el CER muerto, `_indices_fetched['CER']` no se toca nunca y la respuesta
-        # salía `stale: true` aunque la UVA se hubiera bajado recién.
-        last_fetch = _indices_fetched.get(basis, 0)
-        stale = (time.time() - last_fetch) > (INDICES_TTL + 3600)
-
-        latest_date = rows[-1]["date"] if rows else None
-        return {
-            "index_name": index_name,
-            "basis": basis,          # con qué serie se ajusta de verdad
-            "series": series,
-            "count": len(series),
-            "latest_date": latest_date,
-            "stale": stale,
-        }
+        return _serie_del_indice(conn, index_name, date_from, date_to)
     finally:
         conn.close()
+
+
+def _serie_del_indice(conn, index_name: str, date_from: Optional[str] = None,
+                      date_to: Optional[str] = None, refrescar: bool = True) -> dict:
+    """La respuesta de GET /api/bond-indices/{index_name} con lo que hay en la
+    base. `refrescar=False` (la puerta del demo): tampoco sale a buscar la UVA."""
+    basis = _serie_cer_o_uva(conn, index_name, refrescar=refrescar)
+
+    q = "SELECT date, value FROM bond_indices_daily WHERE index_name = ?"
+    params = [basis]
+    if date_from:
+        q += " AND date >= ?"
+        params.append(date_from)
+    if date_to:
+        q += " AND date <= ?"
+        params.append(date_to)
+    q += " ORDER BY date ASC"
+    rows = conn.execute(q, params).fetchall()
+    series = {r["date"]: r["value"] for r in rows}
+
+    # Stale check: si no se actualizó hace TTL+1h Y no hay data fresh.
+    # Se mide sobre la serie que SE SIRVIÓ (`basis`), no sobre la pedida: con
+    # el CER muerto, `_indices_fetched['CER']` no se toca nunca y la respuesta
+    # salía `stale: true` aunque la UVA se hubiera bajado recién.
+    last_fetch = _indices_fetched.get(basis, 0)
+    stale = (time.time() - last_fetch) > (INDICES_TTL + 3600)
+
+    latest_date = rows[-1]["date"] if rows else None
+    return {
+        "index_name": index_name,
+        "basis": basis,          # con qué serie se ajusta de verdad
+        "series": series,
+        "count": len(series),
+        "latest_date": latest_date,
+        "stale": stale,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -13898,6 +13906,9 @@ def _eventos_de_la_ficha(conn, sym: str, moneda: str, local: bool) -> dict:
 #     llamada a la IA y hablaría de los precios de verdad, no de los estirados),
 #     «la semana pasada» del % de tu plata (no hay nada guardado, como en una
 #     cuenta nueva) y los dibujos y avisos de cada persona.
+#   · Lo del mercado que pide el resto de la pantalla del demo (los fondos, los
+#     CEDEARs, el CER, lo que pagó cada empresa…) entra por la misma puerta, con
+#     lo que el servidor ya tiene: ver «Lo del mercado, en el demo», más abajo.
 _DEMO_QUIEN = "demo:"
 DEMO_MAX_PRECIOS = 60
 DEMO_MAX_TENENCIAS = 60
@@ -14282,6 +14293,87 @@ def demo_tecnico(asset: str, data: DemoPedidoIn, request: Request, moneda: str =
         res["resumen"] = None
         return res
     return _del_demo(request, data, armar, tipo="uno")
+
+
+# ─── Lo del mercado, en el demo ──────────────────────────────────────────────
+# Lo que la pantalla del demo pide y no es de nadie: los fondos y los CEDEARs del
+# alta, las tasas de los bancos del plazo fijo, la serie del CER, lo que pagó cada
+# empresa (la bandeja de dividendos) y el buscador por nombre de Fundamentals.
+# Hasta el 19/11/2026 el demo no los contestaba y esas partes quedaban vacías o
+# con un error (frontend/src/__guards__/demo-contesta-todo.test.js).
+#
+# Lo contesta el servidor CON LO QUE YA TIENE: un pedido sin cuenta no lo hace
+# salir a buscar nada afuera, como el técnico de arriba («no baja historia»). La
+# búsqueda y los dividendos irían a Yahoo con lo que escribe o agrega el
+# visitante; el CER y los bancos reintentan su fuente en CADA pedido mientras está
+# caída (la del CER lo está desde septiembre: `_ensure_index_cached`). Lo único
+# que puede salir es el feed de BYMA de los CEDEARs, que tiene su propio reloj y
+# su freno de caída (`_fetch_data912_equities`): lo pidan cuantos lo pidan, sale
+# una vez cada pocos minutos, igual que para las cuentas.
+#
+# Tampoco deja nada en las memorias de las cuentas (la búsqueda sólo LEE
+# `_symsearch_cache`, que no tiene tope). Es igual para todos: no usa la cuenta de
+# ejemplo que manda la pantalla, y no se guarda aparte (lo de abajo ya es una
+# lectura de la base o de una memoria). Pasa por el freno del demo.
+def _mercado_del_demo(request: Request, armar):
+    with _freno_tecnico(request, _quien_del_demo(request), "uno"):
+        return armar()
+
+
+def _con_la_base(leer):
+    def armar():
+        with db_abierta() as conn:
+            return leer(conn)
+    return armar
+
+
+@app.post("/api/demo/fci/catalog")
+def demo_fci_catalog(request: Request):
+    """/api/fci/catalog en el demo: el catálogo de fondos, de la base."""
+    from pricing import fci as fci_mod
+    return _mercado_del_demo(request, _con_la_base(fci_mod.list_catalog))
+
+
+@app.post("/api/demo/cedears")
+def demo_cedears(request: Request):
+    """/api/cedears en el demo: la misma lista (`cedears_con_dolares`)."""
+    return _mercado_del_demo(request, cedears_con_dolares)
+
+
+@app.post("/api/demo/pf/banks")
+def demo_pf_banks(request: Request):
+    """/api/pf/banks en el demo: las tasas que ya bajó el servidor para una
+    cuenta (`_PF_BANKS_CACHE`). Si todavía no hay, la lista vacía: el alta del
+    plazo fijo se completa a mano, como cuando la fuente no contesta."""
+    return _mercado_del_demo(request, lambda: list(_PF_BANKS_CACHE.get("data") or []))
+
+
+@app.post("/api/demo/bond-indices/{index_name}")
+def demo_bond_index(index_name: str, request: Request):
+    """/api/bond-indices/{index_name} en el demo: la serie entera de la base, sin
+    refrescarla (`_serie_del_indice`, `refrescar=False`)."""
+    if index_name not in ("CER", "UVA", "A3500"):
+        raise HTTPException(400, f"Índice no soportado: {index_name}")
+    return _mercado_del_demo(request, _con_la_base(
+        lambda conn: _serie_del_indice(conn, index_name, refrescar=False)))
+
+
+@app.post("/api/demo/dividendos/historial")
+def demo_dividendos_historial(request: Request, tickers: str = ""):
+    """/api/dividendos/historial en el demo: lo que ya está en la caché, sin
+    preguntarle a Yahoo (nada queda «sin respuesta»: no se preguntó)."""
+    lista = _tickers_del_historial(tickers)
+    return _mercado_del_demo(request, _con_la_base(lambda conn: _historial_de_dividendos(conn, lista, [])))
+
+
+@app.post("/api/demo/tickers/search")
+def demo_search_tickers(request: Request, q: str = ""):
+    """/api/tickers/search en el demo: lo que Yahoo ya contestó para esa búsqueda
+    a una cuenta (`_busqueda_guardada`). Si nadie la hizo en el último día, la
+    lista vacía, y la pantalla sigue con su lista propia de activos."""
+    query = (q or "").strip()
+    return _mercado_del_demo(request, lambda: {
+        "results": (_busqueda_guardada(query) or []) if len(query) >= 2 else []})
 
 
 # ─── Dibujos a mano en el gráfico de la ficha ────────────────────────────────
@@ -19041,12 +19133,7 @@ def dividendos_historial(tickers: str = "", uid: int = Depends(get_effective_use
     `tickers`: los símbolos de la acción en EE.UU. separados por coma (KO,PEP).
     Lo que no está en caché o venció se pide a Yahoo con UN tope para todos; lo
     que no llega a tiempo vuelve en `sin_respuesta` y se sirve lo que había."""
-    lista = []
-    for t in (tickers or "").split(","):
-        t = t.strip().upper()
-        if t and _SYMBOL_RE.match(t) and t not in lista:
-            lista.append(t)
-    lista = lista[:80]
+    lista = _tickers_del_historial(tickers)
     conn = get_db()
     try:
         sin_respuesta = []
@@ -19056,16 +19143,31 @@ def dividendos_historial(tickers: str = "", uid: int = Depends(get_effective_use
             except Exception as ex:   # Yahoo caído: se sirve la caché
                 log.warning("dividendos: no se pudo actualizar el historial: %s", ex)
                 sin_respuesta = lista
-        desde = (_hoy_art_date() - timedelta(
-            days=_dividendos.REGLAS["dias_hacia_atras"] + 5)).isoformat()
-        return {
-            "hoy": _iso_today(),
-            "reglas": _dividendos.REGLAS,
-            "tickers": _dividendos.historial(conn, lista, desde),
-            "sin_respuesta": sin_respuesta,
-        }
+        return _historial_de_dividendos(conn, lista, sin_respuesta)
     finally:
         conn.close()
+
+
+def _tickers_del_historial(tickers: str) -> list:
+    """Los símbolos de `?tickers=` sin repetir y con tope (los válidos)."""
+    lista = []
+    for t in (tickers or "").split(","):
+        t = t.strip().upper()
+        if t and _SYMBOL_RE.match(t) and t not in lista:
+            lista.append(t)
+    return lista[:80]
+
+
+def _historial_de_dividendos(conn, lista: list, sin_respuesta: list) -> dict:
+    """La respuesta de GET /api/dividendos/historial con lo que hay en la caché."""
+    desde = (_hoy_art_date() - timedelta(
+        days=_dividendos.REGLAS["dias_hacia_atras"] + 5)).isoformat()
+    return {
+        "hoy": _iso_today(),
+        "reglas": _dividendos.REGLAS,
+        "tickers": _dividendos.historial(conn, lista, desde),
+        "sin_respuesta": sin_respuesta,
+    }
 
 
 class DividendoSalteadoIn(BaseModel):
@@ -41233,6 +41335,14 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
 # nombre→ticker no cambia.
 _symsearch_cache: dict = {}
 _SYMSEARCH_TTL = 24 * 3600
+
+
+def _busqueda_guardada(query: str):
+    """Lo que ya contestó Yahoo para esta búsqueda (hace menos de un día), o None."""
+    hit = _symsearch_cache.get((query or "").strip().lower())
+    if hit and (time.time() - hit["ts"]) < _SYMSEARCH_TTL:
+        return hit["data"]
+    return None
 # Bolsas US. yfinance devuelve el MISMO nombre listado en Frankfurt (FRA), Gettex
 # (GER), São Paulo (SAO)… y hasta pares de monedas: sin este filtro, buscar "amd"
 # ofrecía AUDAMD=X y "uber" ofrecía UT8.F antes que UBER.
@@ -41258,9 +41368,9 @@ def search_tickers(q: str, uid: int = Depends(get_effective_user)):
     if len(query) < 2:
         return {"results": []}
     key = query.lower()
-    hit = _symsearch_cache.get(key)
-    if hit and (time.time() - hit["ts"]) < _SYMSEARCH_TTL:
-        return {"results": hit["data"]}
+    guardada = _busqueda_guardada(query)
+    if guardada is not None:
+        return {"results": guardada}
 
     out = []
     try:

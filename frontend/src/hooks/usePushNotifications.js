@@ -27,9 +27,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../utils/api'
+import { isDemoMode } from '../utils/demo'
 import { plataformaDe, yaInstalada } from '../utils/instalarApp'
 import {
-  motivoSinPush, textoSinPush, MENSAJE_CERRO_EL_PEDIDO, MENSAJE_FALLA,
+  motivoSinPush, textoSinPush, MENSAJE_CERRO_EL_PEDIDO, MENSAJE_FALLA, MENSAJE_DEMO,
 } from '../utils/notificaciones'
 
 const SW_PATH = '/sw.js'
@@ -150,6 +151,10 @@ export function usePushNotifications() {
     setLoading(true)
     setError(null)
     try {
+      // El demo no tiene cuenta donde anotar este celular (POST /push/subscribe
+      // se bloquea): se dice ANTES de pedirle permiso al navegador. Sin esto el
+      // visitante daba el permiso y terminaba en «No pudimos activarlas».
+      if (isDemoMode()) throw errorCon('demo', MENSAJE_DEMO)
       const sinPush = motivoSinPush({
         supported, permission: supported ? Notification.permission : 'default', plataforma, instalada,
       })

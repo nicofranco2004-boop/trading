@@ -104,3 +104,5 @@ export const MENSAJE_CERRO_EL_PEDIDO = 'No se activaron. Cuando quieras, tocá �
 // Brave, una ventana privada de Firefox: el navegador dice que sí y después
 // falla. Reintentar ahí no sirve, por eso se ofrece otro camino.
 export const MENSAJE_FALLA = 'No pudimos activarlas en este navegador. Probá de nuevo en un rato, o desde Chrome o el celular.'
+// En el demo no hay cuenta donde anotar el celular (hooks/usePushNotifications).
+export const MENSAJE_DEMO = 'En modo demo no podés activar los avisos. Creá una cuenta gratis para recibirlos en tu celular.'
