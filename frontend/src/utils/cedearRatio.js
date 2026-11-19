@@ -98,6 +98,13 @@ export const CEDEAR_RATIOS = {
   //    existe (ver "CUANDO COMAFI CUENTA OTRA COSA"). Verificado a mano.
   AZN: 4,
 
+  // ── Lanzados DESPUÉS de la última lista de Comafi (la del 30.9.2026 no los
+  //    trae): el ratio que anunció el programa, verificado con el precio.
+  //    ANT (Anthropic): empezó a cotizar el 19/11/2026, Comafi 15:1. Medido ese
+  //    día con el contado con liqui: 14,89 (con NVDA 23,94, AAPL 19,96 y SPCX
+  //    49,77 como control). Cuando Comafi lo sume a su lista, el chequeo lo cruza.
+  ANT: 15,
+
   // ── Sin fila en la lista de Comafi (ETFs, y acciones de otros emisores):
   //    ratio MEDIDO del precio. Contra los 131 que sí se pudieron cruzar, el
   //    método erró 2, por 1 — o sea que acá puede haber alguno corrido en 1.

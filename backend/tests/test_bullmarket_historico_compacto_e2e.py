@@ -78,6 +78,16 @@ HC_CON_SALDO = (
     "02/01/23;COBA;6668;-500000;;;CREDITO CTA. CTE.\n"
 ).encode("utf-8")
 
+# El CEDEAR de Anthropic (cotiza desde el 19/11/2026) se llama ANT, y «ANT»
+# también es un pedazo del `S.ANTERIOR`. La compra lo trae DESPUÉS de la
+# cantidad; el saldo, suelto y sin fecha. Los dos tienen que seguir leyéndose.
+HC_ANTHROPIC = (
+    "F.Liquid;Cpbt;N.Cpbt;Importe;Dolares;Mda;Ref./Cantidad\n"
+    ";S.ANT;ERIOR;-1000;;;\n"
+    "19/11/26;COBA;7001;-600000;;;CREDITO CTA. CTE.\n"
+    "20/11/26;CPRA;7002;577500;;;50.0000  ANT\n"
+).encode("utf-8")
+
 
 def _helpers():
     h = main._ImportHelpers()
@@ -222,6 +232,17 @@ class BullMarketHistoricoCompactoE2E(unittest.TestCase):
         payload = self._import_bytes(HC_CON_SALDO)
         self.assertEqual(payload["summary"]["valid_rows"], 2)
         self.assertAlmostEqual(self._cash_ars(), 501000.0, places=2)
+
+    def test_la_compra_del_cedear_de_anthropic_entra_con_su_activo(self):
+        # «ANT» estaba en la lista de palabras que no son un código (por el
+        # S.ANTERIOR) y la compra entraba SIN activo: la plata salía de la cuenta
+        # y los 50 CEDEARs no aparecían en ningún lado.
+        payload = self._import_bytes(HC_ANTHROPIC)
+        self.assertEqual(payload.get("errors") or [], [])
+        self.assertAlmostEqual(self._held("ANT"), 50.0, places=6)
+        # El saldo de apertura sigue entrando como plata, no como un activo «ANT»:
+        # 1.000 + 600.000 − 577.500 = 23.500.
+        self.assertAlmostEqual(self._cash_ars(), 23500.0, places=2)
 
 
 if __name__ == "__main__":

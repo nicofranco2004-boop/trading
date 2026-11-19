@@ -56,6 +56,7 @@ ASSET_NAMES = {
     'AMZN': 'Amazon',
     'ANET': 'Arista Networks',
     'ANKR': 'Ankr',
+    'ANT': 'Anthropic',
     'AO28': 'Bonar 2028',
     'AO29': 'Bonar 2029',
     'APE': 'ApeCoin',

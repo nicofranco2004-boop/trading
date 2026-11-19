@@ -85,7 +85,7 @@ export const STOCKS_US = [
   { s: 'GM', n: 'General Motors' }, { s: 'BA', n: 'Boeing' }, { s: 'LMT', n: 'Lockheed Martin' },
   { s: 'RTX', n: 'RTX Corporation' }, { s: 'NOC', n: 'Northrop Grumman' }, { s: 'GD', n: 'General Dynamics' },
   { s: 'RKLB', n: 'Rocket Lab' }, { s: 'ASTS', n: 'AST SpaceMobile' }, { s: 'ANET', n: 'Arista Networks' },
-  { s: 'SPCX', n: 'SpaceX' },
+  { s: 'SPCX', n: 'SpaceX' }, { s: 'ANT', n: 'Anthropic' },
   { s: 'SBUX', n: 'Starbucks' }, { s: 'CMG', n: 'Chipotle' }, { s: 'MDLZ', n: 'Mondelez' },
   { s: 'ETSY', n: 'Etsy' }, { s: 'TGT', n: 'Target' }, { s: 'LOW', n: "Lowe's" },
   { s: 'DASH', n: 'DoorDash' }, { s: 'LYFT', n: 'Lyft' }, { s: 'ROKU', n: 'Roku' },
@@ -218,7 +218,7 @@ export const CEDEARS_LIST = [
   { s: 'GM', n: 'General Motors' }, { s: 'UBER', n: 'Uber' }, { s: 'ABNB', n: 'Airbnb' },
   { s: 'SHOP', n: 'Shopify' }, { s: 'XYZ', n: 'Block (ex-Square)' }, { s: 'COIN', n: 'Coinbase' },
   { s: 'HOOD', n: 'Robinhood' }, { s: 'RKLB', n: 'Rocket Lab' }, { s: 'ASTS', n: 'AST SpaceMobile' }, { s: 'ANET', n: 'Arista Networks' },
-  { s: 'SPCX', n: 'SpaceX' },
+  { s: 'SPCX', n: 'SpaceX' }, { s: 'ANT', n: 'Anthropic' },
   { s: 'PLTR', n: 'Palantir' }, { s: 'SNOW', n: 'Snowflake' }, { s: 'PANW', n: 'Palo Alto' },
   { s: 'CRWD', n: 'CrowdStrike' }, { s: 'NET', n: 'Cloudflare' }, { s: 'DDOG', n: 'Datadog' },
   { s: 'DOCU', n: 'DocuSign' }, { s: 'ZM', n: 'Zoom' }, { s: 'TWLO', n: 'Twilio' },
@@ -544,6 +544,7 @@ export const POPULAR_TICKERS = [
   { symbol: 'BRK-B', name: 'Berkshire Hathaway',      exchange: 'NYSE',   type: 'stock_us' },
   { symbol: 'MELI',  name: 'MercadoLibre',            exchange: 'NASDAQ', type: 'stock_us' },
   { symbol: 'GLOB',  name: 'Globant',                 exchange: 'NYSE',   type: 'stock_us' },
+  { symbol: 'ANT',   name: 'Anthropic',               exchange: 'NASDAQ', type: 'stock_us' },
 
   // Acciones argentinas (Merval / panel líder)
   { symbol: 'GGAL',  name: 'Grupo Financiero Galicia', exchange: 'BCBA', type: 'stock_ar' },
@@ -585,6 +586,7 @@ export const POPULAR_TICKERS = [
   { symbol: 'DISN.BA',  name: 'Disney (CEDEAR)',       exchange: 'BCBA', type: 'cedear' },
   { symbol: 'BA.BA',    name: 'Boeing (CEDEAR)',       exchange: 'BCBA', type: 'cedear' },
   { symbol: 'PFE.BA',   name: 'Pfizer (CEDEAR)',       exchange: 'BCBA', type: 'cedear' },
+  { symbol: 'ANT.BA',   name: 'Anthropic (CEDEAR)',    exchange: 'BCBA', type: 'cedear' },
 
   // Bonos soberanos AR (USD ley NY + ARS CER)
   { symbol: 'AL29',  name: 'Bonar 2029 (USD ley AR)',   exchange: 'BCBA', type: 'bond' },

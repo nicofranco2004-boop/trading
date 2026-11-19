@@ -48,6 +48,13 @@ CEDEAR_RATIOS = {
     #    COMAFI CUENTA OTRA COSA» en la tabla de la pantalla). Verificado a mano.
     "AZN": 4,
 
+    # ── Lanzados DESPUÉS de la última lista de Comafi (la del 30.9.2026 no los
+    #    trae): el ratio que anunció el programa, verificado con el precio.
+    #    ANT (Anthropic): empezó a cotizar el 19/11/2026, Comafi 15:1. Medido ese
+    #    día con el contado con liqui: 14,89 (NVDA 23,94, AAPL 19,96 y SPCX 49,77
+    #    como control).
+    "ANT": 15,
+
     # ── Sin fila en la lista de Comafi (ETFs, y acciones de otros emisores):
     #    ratio MEDIDO del precio (puede haber alguno corrido en 1).
     "ABNB": 15, "ARKK": 10, "EA": 14, "EEM": 5, "ETHA": 5, "EWY": 50, "EWZ": 2, "F": 1, "GLD": 50, "HUT": 5,

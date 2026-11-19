@@ -208,8 +208,14 @@ _HIST_NOTA_USD = ("du$v", "cu$v")
 _HIST_NO_TICKER = {
     "BYMA", "MAE", "RET", "DEV", "PAGO", "FRACC", "CONV", "CABLE", "TENENCIA",
     "CREDITO", "DEBITO", "TRANSFERENCIA", "GTOS", "GTO", "RETENCION",
-    "RETENCIONES", "CTA", "S", "ANT", "TOTAL", "DOLAR", "DOLARES", "MEP",
+    "RETENCIONES", "CTA", "S", "TOTAL", "DOLAR", "DOLARES", "MEP",
 }
+# Palabras que sólo NO son un ticker cuando vienen sueltas, como texto libre.
+# «ANT» es un pedazo de «S.ANTERIOR»; pero desde el 19/11/2026 también es el
+# CEDEAR de Anthropic, y una operación lo trae DESPUÉS de la cantidad
+# («50.0000 ANT»). Estaba en la lista de arriba y esa compra se importaba sin
+# activo.
+_HIST_NO_TICKER_SUELTO = {"ANT"}
 
 # Normalización de tickers Bull Market → símbolo BYMA/Rendi. Pass-through si no
 # está en el mapa. Crecé este dict si aparecen precios que no resuelven.
@@ -348,7 +354,9 @@ def _split_ref_hist(s: str):
     cand = toks[1] if (qty is not None and len(toks) > 1) else (toks[0] if qty is None else None)
     if cand:
         c = cand.strip().upper()
-        if c not in _HIST_NO_TICKER and re.match(r"^[A-Z][A-Z0-9]{0,9}$", c):
+        suelto = qty is None
+        if (c not in _HIST_NO_TICKER and not (suelto and c in _HIST_NO_TICKER_SUELTO)
+                and re.match(r"^[A-Z][A-Z0-9]{0,9}$", c)):
             tk = c
     return (qty, tk, s)
 

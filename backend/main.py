@@ -9526,6 +9526,8 @@ POPULAR_TICKERS_US = [
     'NVDA', 'MSFT', 'AAPL', 'GOOGL', 'AMZN', 'META', 'TSLA',
     # Otras grandes US que generan ruido
     'NFLX', 'AMD', 'INTC', 'COIN', 'DIS', 'PYPL',
+    # La mayor salida a la bolsa de la historia (19/11/2026)
+    'ANT',
 ]
 
 # ADRs argentinos populares (cotizan en NYSE/NASDAQ — yfinance los tiene)

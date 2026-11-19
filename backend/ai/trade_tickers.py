@@ -25,7 +25,7 @@ CRYPTO_TICKERS = {
 
 US_TICKERS = {
     'AAL', 'AAPL', 'ABBV', 'ABEV', 'ABNB', 'ABT', 'ACN', 'ADBE', 'ADSK', 'AFRM',
-    'AGG', 'ALAB', 'AMAT', 'AMC', 'AMD', 'AMGN', 'AMZN', 'ANET', 'ARGT', 'ARKG',
+    'AGG', 'ALAB', 'AMAT', 'AMC', 'AMD', 'AMGN', 'AMZN', 'ANET', 'ANT', 'ARGT', 'ARKG',
     'ARKK', 'ASML', 'ASTS', 'AVGO', 'AXP', 'AZN', 'BA', 'BABA', 'BAC', 'BAK', 'BB',
     'BBD', 'BIDU', 'BIOX', 'BKNG', 'BLK', 'BMNR', 'BMY', 'BND', 'BNTX', 'BRK-B',
     'BSX', 'BX', 'C', 'CAT', 'CEG', 'CMCSA', 'CMG', 'COIN', 'COP', 'COST', 'CRM',
@@ -57,7 +57,7 @@ US_TICKERS = {
 # copia del servidor; tests/test_fuera_de_horario.py la compara con la pantalla.
 CEDEAR_TICKERS = {
     'AAL', 'AAPL', 'ABBV', 'ABEV', 'ABNB', 'ACWI', 'ADBE', 'ALAB', 'AMC', 'AMD',
-    'AMGN', 'AMZN', 'ANET', 'ARKK', 'ASML', 'ASTS', 'AVGO', 'AXP', 'AZN', 'BA',
+    'AMGN', 'AMZN', 'ANET', 'ANT', 'ARKK', 'ASML', 'ASTS', 'AVGO', 'AXP', 'AZN', 'BA',
     'BABA', 'BAC', 'BAK', 'BB', 'BBD', 'BIDU', 'BIOX', 'BLK', 'BMNR', 'BMY',
     'BRK-B', 'BRKB', 'C', 'CAT', 'CEG', 'COIN', 'COP', 'COPX', 'COST', 'CRM',
     'CRWD', 'CRWV', 'CSCO', 'CVX', 'DDOG', 'DE', 'DISN', 'DOCU', 'DOW', 'EA', 'EEM',
@@ -110,6 +110,7 @@ NAME_ALIASES = {
     'AMAZON': 'AMZN',
     'AMBEV': 'ABEV',
     'AMGEN': 'AMGN',
+    'ANTHROPIC': 'ANT',
     'APECOIN': 'APE',
     'APPLE': 'AAPL',
     'APTOS': 'APT',
