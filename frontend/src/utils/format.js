@@ -81,6 +81,21 @@ export const fmtCurrency = (n, currency) => {
   return fmtUsd(n)
 }
 
+// ── Un PRECIO en su moneda: «$ 6.240» (pesos) o «US$ 172,42» (dólares) ───────
+// Para precios que el servidor manda con su `moneda` al lado (ver
+// MONEDA_DE_LOS_PRECIOS en backend/behavioral.py). A diferencia de fmtCurrency,
+// NO hay moneda por defecto: si no viene, sale el número solo. Dar por hecho
+// «dólares» es justo lo que hizo que Galicia en pesos se leyera
+// «Compraste a US$ 6.240» (23/11/2026).
+export const precioEnMoneda = (n, moneda, maxDecimals = 2) => {
+  if (n == null || isNaN(n)) return '—'
+  const num = Number(n).toLocaleString(LOCALE, { maximumFractionDigits: maxDecimals })
+  const m = String(moneda || '').toUpperCase()
+  if (m === 'ARS') return `$ ${num}`
+  if (m === 'USD' || m === 'USDT') return `US$ ${num}`
+  return num
+}
+
 // ── Currency con formato del audit: "+$1,037.74 USD" ─────────────────────────
 // signed=true incluye + cuando positivo, − cuando negativo (sin paréntesis).
 // signed=false omite signo en positivo (igual al formato bancario clásico).

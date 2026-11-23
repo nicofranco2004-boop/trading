@@ -1112,11 +1112,11 @@ const BEHAVIORAL_INSIGHTS = {
         delta_total_usd: 642,
         trades_analyzed: 14,
         top_misses: [
-          { asset: 'NVDA',  exit_price: 142, current_price: 178.50, delta_usd: 365, exit_date: '2024-06-12' },
-          { asset: 'GOOGL', exit_price: 182, current_price: 195.60, delta_usd: 108, exit_date: '2024-08-20' },
-          { asset: 'AVGO',  exit_price: 168, current_price: 198.40, delta_usd: 304, exit_date: '2025-04-15' },
-          { asset: 'BTC',   exit_price: 67500, current_price: 81595, delta_usd: 564, exit_date: '2024-10-02' },
-          { asset: 'TSLA',  exit_price: 218, current_price: 248.10, delta_usd: 150, exit_date: '2024-11-08' },
+          { asset: 'NVDA',  exit_price: 142, current_price: 178.50, moneda: 'USD', delta_usd: 365, exit_date: '2024-06-12' },
+          { asset: 'GOOGL', exit_price: 182, current_price: 195.60, moneda: 'USD', delta_usd: 108, exit_date: '2024-08-20' },
+          { asset: 'AVGO',  exit_price: 168, current_price: 198.40, moneda: 'USD', delta_usd: 304, exit_date: '2025-04-15' },
+          { asset: 'BTC',   exit_price: 67500, current_price: 81595, moneda: 'USD', delta_usd: 564, exit_date: '2024-10-02' },
+          { asset: 'TSLA',  exit_price: 218, current_price: 248.10, moneda: 'USD', delta_usd: 150, exit_date: '2024-11-08' },
         ],
       },
       references: ['Kahneman (2011) — Thinking, Fast and Slow (counterfactual thinking).'],
@@ -1192,8 +1192,8 @@ const BEHAVIORAL_INSIGHTS = {
         total_invested_usd: 22300,
         flagged_count: 2,
         flagged_assets: [
-          { asset: 'TSLA', buy_price: 215.30, current_price: 248.10, drawdown_pct: 13.2, invested_usd: 1290 },
-          { asset: 'SOL',  buy_price: 165,    current_price: 198.40, drawdown_pct: 16.8, invested_usd: 1490 },
+          { asset: 'TSLA', buy_price: 215.30, current_price: 248.10, moneda: 'USD', drawdown_pct: 13.2, invested_usd: 1290 },
+          { asset: 'SOL',  buy_price: 165,    current_price: 198.40, moneda: 'USD', drawdown_pct: 16.8, invested_usd: 1490 },
         ],
       },
       references: ['Barber & Odean (2008) — All that glitters: the effect of attention and news on individual investor behavior.'],
@@ -3781,7 +3781,9 @@ function _comportamientoDemo() {
     Object.assign(cf.evidence, { realized_total_usd: Math.round(realizado), hypothetical_total_usd: Math.round(realizado + deltaTotal),
       delta_total_usd: Math.round(deltaTotal), trades_analyzed: analizadas.length,
       top_misses: deltas.filter(d => d.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 5).map(({ o, delta }) => ({
-        asset: o.asset, exit_price: o.exit_price, current_price: precioHoy(o), delta_usd: Math.round(delta), exit_date: o.date })) })
+        asset: o.asset, exit_price: o.exit_price, current_price: precioHoy(o),
+        // Cocos opera en pesos: su venta y su precio .BA son pesos (MONEDA_DE_LOS_PRECIOS).
+        moneda: o.broker === 'Cocos' ? 'ARS' : 'USD', delta_usd: Math.round(delta), exit_date: o.date })) })
     cf.value_label = `${deltaTotal >= 0 ? '+' : '−'}US$ ${Math.abs(Math.round(deltaTotal))}`
     cf.one_liner = deltaTotal >= 0
       ? `Sumando todas tus ventas, hubieras hecho ~US$ ${Math.round(deltaTotal)} más si mantenías (algunas bajaron después, otras subieron).`

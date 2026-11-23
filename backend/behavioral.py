@@ -219,6 +219,20 @@ def _price_is_ars(p: Dict[str, Any]) -> bool:
     return (p.get("currency") or "").strip().upper() == "ARS"
 
 
+# ─── MONEDA_DE_LOS_PRECIOS ───────────────────────────────────────────────────
+# Todo PRECIO que un detector pone en `evidence` para mostrar (precio de compra,
+# de venta, de hoy) viaja con un campo `moneda` ('ARS' | 'USD') al lado. Los
+# MONTOS ya convertidos llevan `_usd` en el nombre y no lo necesitan; los
+# precios no se convierten (se comparan en su moneda nativa), así que su moneda
+# depende del broker y sólo la sabe el detector.
+#
+# Por qué: los detectores aprendieron a comparar pesos con pesos (.BA), pero la
+# pantalla siguió escribiendo «US$» delante de cada precio, y Galicia en Cocos
+# se leía «Compraste a US$ 6.240 · hoy US$ 4.557,5» (23/11/2026). La pantalla
+# no puede adivinar la moneda; el detector, que eligió el precio, sí la sabe.
+# Lo vigila tests/test_behavioral.py::MonedaDeLosPreciosTest.
+
+
 def _native_ccy(p: Dict[str, Any]) -> str:
     """Moneda nativa REAL de una position/op: 'ARS' o 'USD'.
 
@@ -859,7 +873,10 @@ def detect_averaging_down(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
             d = _parse_date(o.get("date"))
             price = o.get("entry_price")
             if d and price is not None and price > 0:
-                buys.append({"asset": o.get("asset"), "date": d, "price": float(price)})
+                # entry_price está en la moneda de la op (pesos en un broker
+                # argentino). Ver MONEDA_DE_LOS_PRECIOS.
+                buys.append({"asset": o.get("asset"), "date": d, "price": float(price),
+                             "moneda": _native_ccy(o)})
 
     if not buys:
         # Sin compras detectables → no es "data insuficiente" sino "no aplica".
@@ -884,16 +901,19 @@ def detect_averaging_down(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
             ],
         }
 
-    # Agrupar por asset y ordenar cronológicamente
-    by_asset: Dict[str, List[Dict[str, Any]]] = {}
+    # Agrupar por (asset, moneda) y ordenar cronológicamente. La moneda entra
+    # en la clave porque sólo se comparan precios de la MISMA moneda: GGAL en
+    # Cocos (pesos) y GGAL en IBKR (el ADR, dólares) comparten ticker, y una
+    # compra a $6.000 seguida de otra a US$ 30 se leía «bajó 99 %».
+    by_asset: Dict[Any, List[Dict[str, Any]]] = {}
     for b in buys:
-        by_asset.setdefault(b["asset"], []).append(b)
-    for asset, group in by_asset.items():
+        by_asset.setdefault((b["asset"], b["moneda"]), []).append(b)
+    for group in by_asset.values():
         group.sort(key=lambda x: x["date"])
 
     # Detectar secuencias de compras descendentes en < 60 días
     instances = []
-    for asset, group in by_asset.items():
+    for (asset, moneda), group in by_asset.items():
         if len(group) < 2:
             continue
         for i in range(1, len(group)):
@@ -906,6 +926,7 @@ def detect_averaging_down(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
                 drop_pct = (cur["price"] / prev["price"] - 1) * 100
                 instances.append({
                     "asset": asset,
+                    "moneda": moneda,  # de los dos precios de abajo
                     "first_buy": {"date": prev["date"].isoformat()[:10], "price": prev["price"]},
                     "second_buy": {"date": cur["date"].isoformat()[:10], "price": cur["price"]},
                     "gap_days": gap_days,
@@ -925,7 +946,7 @@ def detect_averaging_down(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "instances": [],
                 "total_instances": 0,
                 "avg_drop_pct": 0,
-                "total_assets_checked": len(by_asset),
+                "total_assets_checked": len({a for a, _ in by_asset}),
             },
             "references": [
                 "Odean (1998) — Are investors reluctant to realize their losses?",
@@ -967,7 +988,7 @@ def detect_averaging_down(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
             "instances": instances[:10],  # cap por payload
             "total_instances": instances_count,
             "avg_drop_pct": round(avg_drop, 2),
-            "total_assets_checked": len(by_asset),
+            "total_assets_checked": len({a for a, _ in by_asset}),
         },
         "references": [
             "Odean (1998) — Are investors reluctant to realize their losses?",
@@ -1546,6 +1567,9 @@ def detect_counterfactual(ops: List[Dict[str, Any]], prices: Optional[Dict[str, 
             "asset": asset,
             "exit_price": exit_price,
             "current_price": cur_price,
+            # Siempre USD: el guard de arriba descarta toda venta que no se
+            # pueda confirmar en dólares. Ver MONEDA_DE_LOS_PRECIOS.
+            "moneda": "USD",
             "delta_usd": round(delta, 2),
             "exit_date": o.get("date"),
         })
@@ -1644,16 +1668,23 @@ def detect_recency_bias(positions: List[Dict[str, Any]],
         if buy_price is None or buy_price <= 0:
             continue
         # CRÍTICO: el precio actual tiene que ser en la MISMA moneda que
-        # buy_price. _resolve_price() garantiza eso (busca .BA si el broker
-        # es AR, evita mezclar US$ con AR$ que daba "drawdown -98%" absurdos).
+        # buy_price. _resolve_price() garantiza eso (busca .BA si cotiza en
+        # pesos, evita mezclar US$ con AR$ que daba "drawdown -98%" absurdos).
+        # ¿Cotiza en pesos? Se decide por ESTRUCTURA (_price_is_ars: CEDEAR,
+        # moneda del broker y de su padre), la MISMA pregunta que contestan
+        # fetch_ba_aware_prices al pedir el precio y _position_value_usd al
+        # valuar esta fila. Antes se decidía acá por el NOMBRE del broker: un
+        # broker en pesos sin nombre conocido (Santander, Mercado Pago…) quedaba
+        # afuera del detector aunque su precio .BA estuviera pedido.
         broker = p.get("broker")
-        current_price = _resolve_price(asset, broker, prices)
+        precio_en_pesos = _price_is_ars(p)
+        current_price = _resolve_price(asset, broker, prices, is_ars=precio_en_pesos)
         if current_price is None or current_price <= 0:
             continue
         # buy_price y current_price deben estar en la MISMA moneda para que el
-        # ratio tenga sentido. _resolve_price devuelve ARS (.BA) para brokers AR;
-        # el buy_price de un sub-broker '· USD' está en USD → mismatch → omitir.
-        if _is_ars_broker(broker) != (_native_ccy(p) == "ARS"):
+        # ratio tenga sentido. El buy_price de un CEDEAR en un sub-broker
+        # '· USD' está en USD y su precio .BA en pesos → mismatch → omitir.
+        if precio_en_pesos != (_native_ccy(p) == "ARS"):
             continue
         invested_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
         if invested_usd <= 0:
@@ -1667,6 +1698,10 @@ def detect_recency_bias(positions: List[Dict[str, Any]],
                 "asset": asset,
                 "buy_price": buy_price,
                 "current_price": current_price,
+                # La moneda de los DOS precios de arriba (iguales por el guard).
+                # Sin ella la pantalla le ponía «US$» a todo, y Galicia en pesos
+                # se leía «Compraste a US$ 6.240». Ver MONEDA_DE_LOS_PRECIOS.
+                "moneda": "ARS" if precio_en_pesos else "USD",
                 "drawdown_pct": round((1 / ratio - 1) * 100, 1),
                 "invested_usd": round(invested_usd, 2),
             })

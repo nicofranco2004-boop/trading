@@ -807,5 +807,138 @@ class CurrencyAuditTest(unittest.TestCase):
         self.assertEqual(r["evidence"]["cash_ars_pesos"], 0)
 
 
+# ─── MONEDA_DE_LOS_PRECIOS (behavioral.py) ───────────────────────────────────
+
+
+def _precios_con_moneda(evidence):
+    """Cada fila de la evidencia que muestra un PRECIO (compra, venta, hoy)."""
+    filas = []
+    for v in (evidence or {}).values():
+        if not isinstance(v, list):
+            continue
+        for item in v:
+            if isinstance(item, dict) and any(
+                    k.endswith("_price") or k in ("first_buy", "second_buy") for k in item):
+                filas.append(item)
+    return filas
+
+
+class MonedaDeLosPreciosTest(unittest.TestCase):
+    """23/11/2026, cuenta de ejemplo: «Chase the pump» decía de Galicia (Cocos,
+    en pesos) «Compraste a US$ 6.240 · hoy US$ 4.557,5». El detector comparaba
+    bien pesos con pesos; lo que faltaba era DECIR la moneda: la pantalla le
+    ponía «US$» a todo precio.
+
+    Por el camino de producción: el pedido a /api/behavioral/insights, con el
+    estampado de monedas por broker (currency_context) y el pedido de precios
+    .BA de verdad (fetch_ba_aware_prices). Lo único reemplazado es la llamada a
+    internet (_fetch_batch_quotes), por precios fijos."""
+
+    PRECIOS = {"GGAL.BA": 4557.5, "PAMP.BA": 2900.0, "NVDA": 170.0}
+
+    def setUp(self):
+        import main
+        from tests._limpieza import vaciar
+        self.main = main
+        conn = main.get_db()
+        self.addCleanup(conn.close)
+        vaciar(conn, "operations", "positions", "brokers", "users")
+        self.uid = conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
+            "VALUES (?,?,1,1,'pro')", ("moneda-precios@rendi.test", "x")).lastrowid
+        for nombre, moneda in (("Cocos", "ARS"), ("Banco Santander", "ARS"),
+                               ("Interactive Brokers", "USD")):
+            conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                         (self.uid, nombre, moneda))
+        # Galicia en Cocos (como la cuenta de ejemplo); Pampa en un broker en
+        # pesos SIN nombre conocido y sin moneda en la fila (la estampa el broker);
+        # NVDA en dólares.
+        for broker, asset, moneda, compra, qty in (
+                ("Cocos", "GGAL", "ARS", 6240.0, 400),
+                ("Banco Santander", "PAMP", None, 4030.0, 500),
+                ("Interactive Brokers", "NVDA", "USD", 250.0, 10)):
+            conn.execute(
+                "INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity, "
+                "invested, currency) VALUES (?,?,?,0,?,?,?,?)",
+                (self.uid, broker, asset, compra, qty, compra * qty, moneda))
+        # Compras de GGAL: dos en pesos que bajan (una instancia real de
+        # «promediar a la baja») y después el ADR en dólares, que comparte
+        # ticker: $5.000 → US$ 30 NO es una caída del 99 %.
+        for fecha, broker, precio, moneda in (("2024-03-01", "Cocos", 6000.0, "ARS"),
+                                              ("2024-03-10", "Cocos", 5000.0, "ARS"),
+                                              ("2024-03-20", "Interactive Brokers", 30.0, "USD")):
+            conn.execute(
+                "INSERT INTO operations (user_id, date, asset, broker, op_type, quantity, "
+                "entry_price, entry_date, currency) VALUES (?,?,?,?,?,?,?,?,?)",
+                (self.uid, fecha, "GGAL", broker, "Compra", 10, precio, fecha, moneda))
+        # Tres ventas en dólares para que corra la contrafáctica.
+        # (de NVDA: el servidor sólo pide el precio de hoy de lo que está en cartera)
+        for i, (asset, entrada, salida) in enumerate((("NVDA", 90, 120), ("NVDA", 110, 130),
+                                                      ("NVDA", 100, 140))):
+            fecha = f"2024-0{i + 4}-15"
+            conn.execute(
+                "INSERT INTO operations (user_id, date, asset, broker, op_type, quantity, "
+                "entry_price, exit_price, entry_date, pnl_usd, currency) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (self.uid, fecha, asset, "Interactive Brokers", "LONG", 1, entrada, salida,
+                 "2024-01-02", salida - entrada, "USD"))
+        conn.commit()
+
+    def _tarjetas(self):
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        main = self.main
+        main.app.dependency_overrides[main.get_effective_user] = lambda: self.uid
+        self.addCleanup(main.app.dependency_overrides.pop, main.get_effective_user, None)
+
+        def cotizaciones(simbolos, *a, **k):
+            return {s: {"price": self.PRECIOS[s]} for s in simbolos if s in self.PRECIOS}
+
+        with patch("home.market._fetch_batch_quotes", side_effect=cotizaciones):
+            r = TestClient(main.app).get("/api/behavioral/insights")
+        self.assertEqual(r.status_code, 200, r.text)
+        return {c["code"]: c for c in r.json()["cards"]}
+
+    def test_chase_the_pump_dice_la_moneda_de_cada_precio(self):
+        ev = self._tarjetas()["recency_bias"]["evidence"]
+        por_activo = {a["asset"]: a for a in ev["flagged_assets"]}
+        galicia = por_activo["GGAL"]
+        self.assertEqual((galicia["buy_price"], galicia["current_price"], galicia["moneda"]),
+                         (6240.0, 4557.5, "ARS"))
+        self.assertEqual(por_activo["NVDA"]["moneda"], "USD")
+
+    def test_broker_en_pesos_sin_nombre_conocido_entra_al_detector(self):
+        """Antes la moneda del precio se decidía por el NOMBRE del broker: un
+        «Banco Santander» en pesos quedaba afuera aunque su precio .BA estaba
+        pedido. Ahora se decide igual que al pedir el precio y al valuar."""
+        ev = self._tarjetas()["recency_bias"]["evidence"]
+        pampa = {a["asset"]: a for a in ev["flagged_assets"]}.get("PAMP")
+        self.assertIsNotNone(pampa, ev)
+        self.assertEqual((pampa["current_price"], pampa["moneda"]), (2900.0, "ARS"))
+
+    def test_promediar_a_la_baja_no_mezcla_pesos_con_dolares(self):
+        ev = self._tarjetas()["averaging_down"]["evidence"]
+        self.assertEqual(ev["total_instances"], 1, ev)
+        par = ev["instances"][0]
+        self.assertEqual(par["moneda"], "ARS")
+        self.assertEqual((par["first_buy"]["price"], par["second_buy"]["price"]), (6000.0, 5000.0))
+        self.assertEqual(ev["total_assets_checked"], 1)  # GGAL es UN activo, en dos monedas
+
+    def test_contrafactica_dice_dolares(self):
+        ev = self._tarjetas()["counterfactual"]["evidence"]
+        self.assertTrue(ev["top_misses"], ev)
+        self.assertEqual({m["moneda"] for m in ev["top_misses"]}, {"USD"})
+
+    def test_ningun_precio_viaja_sin_moneda(self):
+        """La regla general: un detector nuevo que muestre precios sin decir la
+        moneda falla acá, antes de que la pantalla tenga que adivinarla."""
+        vistos = 0
+        for code, card in self._tarjetas().items():
+            for fila in _precios_con_moneda(card.get("evidence")):
+                vistos += 1
+                self.assertIn(fila.get("moneda"), ("ARS", "USD"), f"{code}: {fila}")
+        self.assertGreaterEqual(vistos, 5)  # que el recorrido no pase vacío
+
+
 if __name__ == "__main__":
     unittest.main()

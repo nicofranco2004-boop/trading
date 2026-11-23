@@ -31,7 +31,7 @@ import { useAlVerse, entrada } from '../hooks/useAlVerse'
 import AnimatedNumber from '../components/AnimatedNumber'
 import { detectoresVisibles } from '../utils/detectoresVisibles'
 import { planQueDestraba } from '../utils/planes'
-import { pctTxt } from '../utils/format'
+import { pctTxt, precioEnMoneda } from '../utils/format'
 import { usePrivacy } from '../contexts/PrivacyContext'
 import { taparMontosEnTodo } from '../utils/ocultarSaldos'
 import { porcionColor } from '../utils/chartTheme'
@@ -410,7 +410,8 @@ function BehavioralModal({ card, onClose }) {
 
 // ─── Evidencia por detector ─────────────────────────────────────────────────
 
-function ModalEvidence({ card }) {
+// Exportado para Behavioral.moneda.render.test.jsx (la moneda de los precios).
+export function ModalEvidence({ card }) {
   const ev = card.evidence || {}
   switch (card.code) {
     case 'disposition_effect':
@@ -465,7 +466,7 @@ function ModalEvidence({ card }) {
                     <span className="font-mono tabular text-rendi-neg">{pctTxt(inst.price_drop_pct)}</span>
                   </div>
                   <div className="text-[11px] text-ink-3 tabular">
-                    {inst.first_buy.date}: US$ {inst.first_buy.price} → {inst.second_buy.date}: US$ {inst.second_buy.price}
+                    {inst.first_buy.date}: {precioEnMoneda(inst.first_buy.price, inst.moneda)} → {inst.second_buy.date}: {precioEnMoneda(inst.second_buy.price, inst.moneda)}
                     <span className="ml-1">· {inst.gap_days} días</span>
                   </div>
                 </div>
@@ -530,10 +531,10 @@ function ModalEvidence({ card }) {
                 <div key={i} className="flex items-center justify-between text-xs">
                   <span className="text-ink-1 font-mono">{m.asset}</span>
                   <span className="text-[11px] text-ink-3 tabular">
-                    US$ {m.exit_price} → {m.current_price}
+                    {precioEnMoneda(m.exit_price, m.moneda)} → {precioEnMoneda(m.current_price, m.moneda)}
                   </span>
                   <span className={`font-mono tabular ${m.delta_usd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                    {m.delta_usd >= 0 ? '+' : '−'}${Math.abs(m.delta_usd).toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+                    {m.delta_usd >= 0 ? '+' : '−'}US$ {Math.abs(m.delta_usd).toLocaleString('es-AR', { maximumFractionDigits: 0 })}
                   </span>
                 </div>
               ))}
@@ -602,7 +603,7 @@ function ModalEvidence({ card }) {
                     <span className="font-mono tabular text-rendi-neg">{pctTxt(a.drawdown_pct)}</span>
                   </div>
                   <div className="text-[11px] text-ink-3 tabular">
-                    Compraste a US$ {a.buy_price?.toLocaleString('es-AR', { maximumFractionDigits: 2 })} · hoy US$ {a.current_price?.toLocaleString('es-AR', { maximumFractionDigits: 2 })} · invested US$ {a.invested_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+                    Compraste a {precioEnMoneda(a.buy_price, a.moneda)} · hoy {precioEnMoneda(a.current_price, a.moneda)} · invested US$ {a.invested_usd?.toLocaleString('es-AR', { maximumFractionDigits: 0 })}
                   </div>
                 </div>
               ))}
