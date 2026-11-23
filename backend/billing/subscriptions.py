@@ -289,6 +289,7 @@ def run_lifecycle_job(conn, solo_avisos: bool = False) -> dict:
     cuota —; y el resumen de pruebas terminadas le llegaba al admin dos veces."""
     from billing import emails
     from billing import trial as _trial
+    from billing import vigia_dias as _vigia_dias
     # UNA tanda para todos los avisos de la corrida: si Resend se cae a mitad de
     # los de la prueba, los de vencimiento no siguen quemando gente.
     tanda = emails.Tanda()
@@ -303,6 +304,7 @@ def run_lifecycle_job(conn, solo_avisos: bool = False) -> dict:
         "trial_emails_sent": 0,
         "cancellation_emails_sent": 0,
         "unverified_accounts_deleted": 0,
+        "vigia_dias": 0,
         "avisos_frenados": False,
         "solo_avisos": solo_avisos,
         "errors": 0,
@@ -326,6 +328,10 @@ def run_lifecycle_job(conn, solo_avisos: bool = False) -> dict:
         ("stale_pending_cancelled", lambda: _cancel_stale_pending(conn), False),
         ("expiration_reminders_sent", lambda: _send_expiration_reminders(conn, tanda=tanda), True),
         ("unverified_accounts_deleted", lambda: _delete_unverified_accounts(conn), False),
+        # Al final: lee lo que dejaron los pasos de arriba (una baja de esta
+        # misma corrida ya no cuenta como plan vigente). Va con las bajas y no
+        # con los avisos para que el mail al admin salga UNA vez por día.
+        ("vigia_dias", lambda: _vigia_dias.correr_y_avisar(conn, tanda), False),
     )
     for clave, paso, es_aviso in pasos:
         if solo_avisos and not es_aviso:

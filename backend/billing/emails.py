@@ -2105,6 +2105,75 @@ def send_trials_ended_admin(*, emails_list: list) -> bool:
                  from_addr=_from_noreply())
 
 
+# ─── Aviso INTERNO: cuentas cuyos días no cierran con lo que pagaron ────────
+
+_VIGIA_MOTIVOS = {
+    "cobro_repetido": "un aviso de Rebill se contó como cobro más de una vez",
+    "sin_explicacion": "tiene más días de los que explica su historial",
+    "sin_registro": "tiene plan vigente sin ningún renglón en su historial",
+}
+
+
+def send_vigia_dias_admin(*, hallazgos: list) -> bool:
+    """Aviso INTERNO del vigía de días (`billing.vigia_dias`): las cuentas con
+    plan vigente que vencen más tarde de lo que su historial de cobros explica.
+
+    Sale todas las noches mientras la lista no esté vacía: es un pendiente que
+    tiene que decidirse (corregir o dejar como está, desde /admin), no un
+    parte informativo. Ver el docstring del módulo para el porqué.
+
+    SECURITY: email, nombre y notas los escribe gente o Rebill → html.escape."""
+    if not hallazgos:
+        return False
+    to = (os.environ.get("ADMIN_NOTIFY_EMAIL") or "soporte@rendi.finance").strip()
+    if not to:
+        return False
+    n = len(hallazgos)
+    cuentas = "cuenta tiene" if n == 1 else "cuentas tienen"
+    subject = f"Rendi · {n} {cuentas} días de plan que no cierran con lo pagado"
+
+    def _dia(iso):
+        s = str(iso or "")[:10]
+        return f"{s[8:10]}/{s[5:7]}/{s[0:4]}" if len(s) == 10 else "—"
+
+    filas_html, filas_txt = [], []
+    for h in hallazgos:
+        quien = html.escape(f"{h.get('name') or ''} · {h.get('email') or ''} (id {h.get('id')})")
+        motivo = _VIGIA_MOTIVOS.get(h.get("motivo"), h.get("motivo") or "")
+        deberia = _dia(h.get("deberia_vencer")) if h.get("deberia_vencer") else "sin dato"
+        rep = "".join(
+            f'<li>{html.escape(r["fecha"])}: +{r["dias"]} días, '
+            f'{r["dias_despues_del_anterior"]} días después del cobro anterior</li>'
+            for r in h.get("repetidos") or [])
+        filas_html.append(f"""
+          <tr><td style="padding:10px 0;border-top:1px solid #E5E7EB;font-size:14px;color:#374151;line-height:1.5;">
+            <b>{quien}</b><br>
+            Plan {html.escape(str(h.get('plan') or ''))} · vence {_dia(h.get('vence'))} ·
+            según lo que pagó, {deberia} · <b>{h.get('dias_de_mas')} días de más</b><br>
+            <span style="color:#6B7280;">{html.escape(motivo)}</span>
+            {f'<ul style="margin:4px 0 0;padding-left:18px;color:#6B7280;">{rep}</ul>' if rep else ''}
+          </td></tr>""")
+        filas_txt.append(
+            f"- {h.get('name') or ''} {h.get('email') or ''} (id {h.get('id')}): "
+            f"vence {_dia(h.get('vence'))}, según lo pagado {deberia}, "
+            f"{h.get('dias_de_mas')} días de más — {motivo}")
+
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{n} {cuentas} días de más</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Su plan vence más tarde de lo que explican sus cobros. Entrá a /admin →
+        «Días que no cierran» y, en cada una, corregí la fecha o dejala como está.
+        Este mail sale todas las noches hasta que no quede ninguna.
+      </p>
+      <table cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:0 0 20px;">{''.join(filas_html)}</table>
+    """
+    text = (f"{n} {cuentas} días de plan que no cierran con lo pagado.\n"
+            "Corregilas o dejalas como están en /admin → «Días que no cierran».\n\n"
+            + "\n".join(filas_txt) + "\n")
+    return _send(to, subject, _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
+
+
 # ─── Aviso INTERNO: cómo salió el resumen del mercado de hoy ────────────────
 
 # Cómo se dice cada motivo en castellano. La clave la escribe el motor

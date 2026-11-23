@@ -34204,6 +34204,53 @@ def admin_billing_regalo_masivo(data: RegaloMasivoIn, uid: int = Depends(get_adm
         conn.close()
 
 
+# ─── Vigía de días: planes que vencen más tarde de lo que pagaron ───────────
+# La regla y el porqué viven en `billing/vigia_dias.py`. Acá sólo la puerta del
+# panel: la lista (sólo lee) y la corrección de UNA cuenta (vista previa sin
+# `confirm`, escribe con él).
+
+@app.get("/api/admin/billing/vigia-dias")
+def admin_billing_vigia_dias(uid: int = Depends(get_admin_user)):
+    from billing import vigia_dias as _vigia
+    with db_abierta() as conn:
+        return _vigia.revisar(conn)
+
+
+class CorregirVencimientoIn(BaseModel):
+    user_id: int
+    # YYYY-MM-DD. None = «dejar como está»: no mueve la fecha, deja constancia.
+    fecha: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    motivo: str = Field("", max_length=500)
+    confirm: bool = False
+    # El vencimiento que mostró la vista previa (su campo `antes`). Para
+    # escribir tiene que seguir siendo ése: si entró un cobro, no se pisa.
+    antes_visto: Optional[str] = Field(None, max_length=40)
+
+
+_CORREGIR_ERRORES = {
+    "no_existe": (404, "No existe esa cuenta."),
+    "sin_plan": (400, "Esa cuenta no tiene fecha de vencimiento."),
+    "fecha_invalida": (400, "La fecha no es válida."),
+    "alarga": (400, "Esa fecha alarga el plan. Para dar días usá «Regalar Pro»."),
+    "falta_motivo": (400, "Escribí el motivo (queda en el historial de la cuenta)."),
+    "cambio_mientras_mirabas": (409, "El vencimiento cambió mientras mirabas (¿entró un cobro?). Volvé a cargar la lista."),
+}
+
+
+@app.post("/api/admin/billing/corregir-vencimiento")
+def admin_billing_corregir_vencimiento(data: CorregirVencimientoIn,
+                                       uid: int = Depends(get_admin_user)):
+    from billing import vigia_dias as _vigia
+    with db_abierta() as conn:
+        r = _vigia.corregir(conn, data.user_id, data.fecha, data.motivo,
+                            admin_uid=uid, confirm=data.confirm,
+                            antes_visto=data.antes_visto)
+    if not r.get("ok"):
+        status, texto = _CORREGIR_ERRORES.get(r.get("motivo"), (400, "No se pudo corregir."))
+        raise HTTPException(status, texto)
+    return r
+
+
 @app.get("/api/admin/fci/probe")
 def admin_fci_probe(uid: int = Depends(get_admin_user)):
     """Fase 0 — Probe READ-ONLY desde el server (Railway) para validar si las

@@ -9,6 +9,7 @@ import {
 import StatCard from '../components/StatCard'
 import UsoDeRendi from '../components/admin/UsoDeRendi'
 import RegistrosPorOrigen from '../components/admin/RegistrosPorOrigen'
+import VigiaDiasPanel from '../components/admin/VigiaDias'
 import { PageSkeleton } from '../components/Skeleton'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
@@ -427,6 +428,9 @@ export default function Admin() {
 
       {/* ── Regalo masivo: N días de plan a todas las cuentas que no pagan ── */}
       <RegaloMasivoPanel toast={toast} />
+
+      {/* ── Vigía: planes que vencen más tarde de lo que pagaron ── */}
+      <VigiaDiasPanel toast={toast} />
 
       {/* ── Backup manual (S3) — hacelo ANTES de cualquier recompute/repair ── */}
       <BackupPanel toast={toast} />
