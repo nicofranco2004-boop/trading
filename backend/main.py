@@ -2489,6 +2489,15 @@ def init_db():
             _c = _table_cols(conn, _tbl)
             if _c and 'undo_meta_json' not in _c:
                 conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN undo_meta_json TEXT")
+        # «Mover a otro broker» (2026-11): desde qué día el lote está en ESTE broker.
+        # Un lote que llegó por un pase conserva su `entry_date` (la compra original)
+        # y acá guarda el día en que llegó. NULL = igual a `entry_date`. ALTER literal
+        # y sin índice: `positions` no está en el censo de columnas
+        # (tests/fixtures/columnas_de_las_tablas.json), así que este ALTER es lo único
+        # que la lleva a una base SQLite vieja; y test_schema_pg_al_dia lo busca así.
+        _c = _table_cols(conn, 'positions')
+        if _c and 'en_broker_desde' not in _c:
+            conn.execute("ALTER TABLE positions ADD COLUMN en_broker_desde TEXT")
         # Migración Phase 3D: tracking de moneda nativa y FX al momento del evento.
         # Esto permite convertir operations.pnl_usd (que históricamente guardaba
         # el monto en moneda del broker, no necesariamente USD) a un USD canónico
@@ -4494,6 +4503,31 @@ def init_db():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_import_norm_excluded "
                          "ON import_normalized_tx(batch_id, excluded_at)")
 
+        # Migración (2026-11): «Mover a otro broker». Las filas que escribe un pase
+        # entre dos brokers del usuario (importing/traspaso_a_mano.py):
+        #   · traspaso_id  → id del pase (= traspasos_a_mano.id), en TODAS sus filas;
+        #   · fecha_compra → la compra original del lote, sólo en las BUY del destino;
+        #   · valor_usd / valor_ars → lo que valían los títulos el día del pase (V);
+        #     en la FEE del pase, valor_usd es el gasto en USD;
+        #   · costo_usd / costo_nativo → lo que costaron (C), en USD y en su moneda.
+        # El valor NO va en gross_amount/gross_amount_usd: el rebuild trataría la SELL
+        # del pase como venta real y el reestampado de USD lo pisaría.
+        # ALTER literales (test_schema_pg_al_dia los busca con una expresión regular)
+        # y SIN índice: toda lectura por traspaso_id llega por batch_id, que ya lo tiene.
+        norm_cols = _table_cols(conn, 'import_normalized_tx')
+        if norm_cols and 'traspaso_id' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN traspaso_id TEXT")
+        if norm_cols and 'fecha_compra' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN fecha_compra TEXT")
+        if norm_cols and 'valor_usd' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN valor_usd REAL")
+        if norm_cols and 'valor_ars' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN valor_ars REAL")
+        if norm_cols and 'costo_usd' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN costo_usd REAL")
+        if norm_cols and 'costo_nativo' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN costo_nativo REAL")
+
         # Migración: route_by_currency en import_batches. Cuando es 1 y el broker
         # del batch es ARS, las filas USD/USDT se ruteán al sub-broker USD al persistir.
         batch_cols = _table_cols(conn, 'import_batches')
@@ -4547,6 +4581,37 @@ def init_db():
                 UNIQUE(user_id, name)
             );
             CREATE INDEX IF NOT EXISTS idx_import_mappings_user ON import_mappings(user_id);
+        """)
+
+        # «Mover a otro broker» (2026-11): cada pase entre dos brokers del usuario.
+        # Une los dos import_batches que escribe (uno con broker = cuenta de origen y
+        # otro con la de destino) y guarda la receta para deshacerlo
+        # (importing/traspaso_a_mano.py). Las patas de capital NO se leen de acá:
+        # salen del registro de lo importado, así borrar un broker hace lo correcto.
+        #   · Sin REFERENCES (no aplica test_referencias_con_indice).
+        #   · Ninguna columna con «broker» en el nombre: los nombres de broker viven
+        #     sólo adentro de `receta_json`, bajo claves que dicen «broker», y los
+        #     reescribe `renombre_broker.COLUMNAS_JSON`. `omitidas_json` guarda sólo
+        #     ids de lote e índices de fila.
+        #   · Al agregarle una columna: ALTER literal + censo de columnas.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS traspasos_a_mano (
+                id TEXT PRIMARY KEY,            -- = import_normalized_tx.traspaso_id
+                user_id INTEGER NOT NULL,
+                lote_salida TEXT NOT NULL,      -- import_batches.id del lote de origen
+                lote_entrada TEXT NOT NULL,     -- import_batches.id del lote de destino
+                fecha TEXT NOT NULL,            -- fecha del pase YYYY-MM-DD
+                asset TEXT NOT NULL,
+                cantidad REAL NOT NULL,
+                moneda TEXT NOT NULL,           -- 'ARS' | 'USD': moneda de los lotes movidos
+                receta_json TEXT NOT NULL,
+                creado_at TEXT DEFAULT (datetime('now')),
+                deshecho_at TEXT,
+                desfasado_at TEXT,              -- la historia cambió y el pase ya no cuadra
+                desfasado_motivo TEXT,          -- 'origen' | 'destino'
+                omitidas_json TEXT              -- filas de imports posteriores omitidas por este pase
+            );
+            CREATE INDEX IF NOT EXISTS idx_traspasos_a_mano_user ON traspasos_a_mano(user_id);
         """)
 
 
@@ -6174,6 +6239,10 @@ _RESET_PORTFOLIO_TABLES = (
     # ESTA cartera. Sin borrarlo, la cuenta vaciada mostraba «la semana pasada
     # era 61 %» de la cartera de antes.
     "tendencia_semanal",
+    # Agregada 2026-11 («Mover a otro broker»): los pases entre brokers y su receta.
+    # Sus dos import_batches se van por el paso de import del reset; sin borrar
+    # esto, la cuenta vaciada guardaba pases que apuntan a lotes que ya no existen.
+    "traspasos_a_mano",
 )
 # Keys de config que son de CARTERA (se borran); el resto —onboarding,
 # welcome_email_sent_at, diag_*— son prefs de UX y sobreviven. Borrar fx_version
@@ -7174,6 +7243,12 @@ BROKER_POR_NOMBRE = {
     # broker de verdad, a la vista — no una fila bajo un nombre que nadie lista
     # (`test_plantillas_importador.py::test_un_broker_nuevo_de_verdad_se_sigue_creando`).
     "import_mappings":      ("json",      "conservar"),
+    # Los pases entre brokers («Mover a otro broker», 2026-11). Sin columna `broker`:
+    # los nombres de la cuenta de origen y de destino viven adentro de `receta_json`
+    # (bajo claves que dicen «broker»). Al borrar uno de los dos brokers la receta
+    # QUEDA: sus import_batches quedan revertidos por la política de arriba, el pase
+    # pasa a «incompleto» y se puede deshacer lo que sobrevive del otro lado.
+    "traspasos_a_mano":     ("json",      "conservar"),
 }
 
 # Las que el renombre reescribe por columna. Se DERIVA de la lista de arriba: no

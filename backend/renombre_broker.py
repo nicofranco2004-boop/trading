@@ -39,6 +39,18 @@ from typing import Dict, Optional, Tuple
 # la cuenta en pesos donde un dividendo de la bandeja cobró su comisión.
 _CLAVES_DE_BROKER_SIN_LA_PALABRA = frozenset({"pair", "pairs", "cuenta_pesos"})
 
+# Y al revés: nombres que dicen "broker" y NO guardan el nombre de un broker. Una sola
+# lista para las dos preguntas: qué CLAVE de un JSON es de broker (`es_clave_de_broker`)
+# y qué COLUMNA de una tabla lo es (`test_renombre_broker_recetas.py::
+# CadaColumnaDeBrokerSeRenombra`).
+#   · parent_broker_id → el id (un número) del broker padre de un «· USD».
+#   · en_broker_desde  → una FECHA: desde qué día el lote está en ese broker
+#     («Mover a otro broker», positions.en_broker_desde). Viaja en la foto de cada lote
+#     de la receta de un pase y de una venta a mano. Tomada como broker, el chequeo de
+#     recetas (`invariantes`, con `nombres_en_json`) avisaba de un broker «2026-11-20»
+#     que no existe.
+NO_SON_UN_BROKER = frozenset({"parent_broker_id", "en_broker_desde"})
+
 # Columnas de texto JSON con nombres de broker adentro: (tabla, columna). Las que no
 # tienen user_id se acotan por el import del usuario (`batch_id`).
 COLUMNAS_JSON = (
@@ -65,6 +77,12 @@ COLUMNAS_JSON = (
     # todo el archivo ahí (medido el 2026-10-10: dos brokers donde había uno). Sólo lo
     # de `defaults`: ver SOLO_BAJO.
     ("import_mappings", "mapping_json"),
+    # La receta de cada pase entre brokers («Mover a otro broker», 2026-11): la cuenta
+    # de origen y la de destino, la pata de cada lote, la caja del gasto y las
+    # subcuentas «· USD» que creó. Toda clave que guarda un nombre dice «broker»
+    # (`brokers_usd_creados`, no `patas_usd_creadas`): con el nombre viejo, deshacer
+    # después de renombrar devolvía los lotes a un broker que ya no existe.
+    ("traspasos_a_mano", "receta_json"),
 )
 
 # Columnas donde el nombre de un broker vive SÓLO adentro de ciertas claves de primer
@@ -117,8 +135,8 @@ PLANTILLAS_MAX_POR_CUENTA = 100
 
 
 def es_clave_de_broker(clave) -> bool:
-    return isinstance(clave, str) and ("broker" in clave.lower()
-                                       or clave in _CLAVES_DE_BROKER_SIN_LA_PALABRA)
+    return (isinstance(clave, str) and clave not in NO_SON_UN_BROKER
+            and ("broker" in clave.lower() or clave in _CLAVES_DE_BROKER_SIN_LA_PALABRA))
 
 
 def _dumps_como(original: str, valor) -> str:

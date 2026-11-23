@@ -1743,13 +1743,19 @@ def store_preview_txs(conn, uid: int, *, broker: str, parser_format: str,
                                             conn=conn if _hist else None,
                                             date=tx.date if _hist else None)
         tx.gross_amount_usd = gross_usd
+        # Las seis de «Mover a otro broker» (traspaso_id … costo_nativo) van tal cual:
+        # sólo las llena un pase entre brokers (importing/traspaso_a_mano.py), que
+        # escribe sus dos lotes por acá; en el resto de las filas quedan NULL.
+        # `load_session_for_confirm` las devuelve: el persister las necesita en el
+        # confirm, que rehidrata de la base y no de la lista en memoria.
         conn.execute(
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                 quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
                 fingerprint, gross_amount_usd, transfer_out, transfer_in, tc_compra,
-                asset_symbol_raw)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                asset_symbol_raw,
+                traspaso_id, fecha_compra, valor_usd, valor_ars, costo_usd, costo_nativo)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (batch_id, raw_id, tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
@@ -1758,7 +1764,13 @@ def store_preview_txs(conn, uid: int, *, broker: str, parser_format: str,
              1 if getattr(tx, "transfer_out", False) else 0,
              1 if getattr(tx, "transfer_in", False) else 0,
              getattr(tx, "tc_compra", None),
-             getattr(tx, "asset_symbol_raw", None)))
+             getattr(tx, "asset_symbol_raw", None),
+             getattr(tx, "traspaso_id", None),
+             getattr(tx, "fecha_compra", None),
+             getattr(tx, "valor_usd", None),
+             getattr(tx, "valor_ars", None),
+             getattr(tx, "costo_usd", None),
+             getattr(tx, "costo_nativo", None)))
     return batch_id
 
 
@@ -1828,6 +1840,17 @@ def load_session_for_confirm(conn, *, uid: int, session_id: str
             # pantalla avisó «ya estaba importada» entra de nuevo. NULL en filas
             # anteriores a la columna → cae al ticker de Rendi, como antes.
             asset_symbol_raw=(r["asset_symbol_raw"] if "asset_symbol_raw" in r.keys() else None),
+            # «Mover a otro broker»: las seis vuelven igual que tc_compra (no hay de
+            # dónde re-derivarlas). Sin traspaso_id el persister no reconoce las
+            # patas TRASPASO_* del pase; sin fecha_compra el lote del destino
+            # perdería su compra original; sin V y C no hay patas de capital.
+            # NULL en las filas que no son de un pase (y en bases viejas sin la columna).
+            traspaso_id=(r["traspaso_id"] if "traspaso_id" in r.keys() else None),
+            fecha_compra=(r["fecha_compra"] if "fecha_compra" in r.keys() else None),
+            valor_usd=(r["valor_usd"] if "valor_usd" in r.keys() else None),
+            valor_ars=(r["valor_ars"] if "valor_ars" in r.keys() else None),
+            costo_usd=(r["costo_usd"] if "costo_usd" in r.keys() else None),
+            costo_nativo=(r["costo_nativo"] if "costo_nativo" in r.keys() else None),
         )
         txs.append(tx)
         raw_id_by_index[r["r_idx"]] = r["raw_row_id"]

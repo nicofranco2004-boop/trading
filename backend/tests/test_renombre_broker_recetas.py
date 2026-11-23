@@ -1273,6 +1273,10 @@ _TABLAS_CON_BROKER_QUE_NO_SE_RENOMBRAN = {
 
 class CadaColumnaDeBrokerSeRenombra(unittest.TestCase):
     def test_toda_tabla_con_columna_de_broker_esta_en_la_lista(self):
+        # Las columnas que dicen "broker" sin guardar un nombre (el id del padre, la
+        # fecha `en_broker_desde`) salen de la MISMA lista con que el renombre decide
+        # qué clave de un JSON es de broker: no son dos listas que se desincronicen.
+        import renombre_broker
         conn = main.get_db()
         try:
             tablas = [r[0] for r in conn.execute(
@@ -1280,7 +1284,8 @@ class CadaColumnaDeBrokerSeRenombra(unittest.TestCase):
             con_broker = {}
             for t in tablas:
                 cols = [r[1] for r in conn.execute(f"PRAGMA table_info({t})")
-                        if "broker" in r[1].lower() and r[1] != "parent_broker_id"]
+                        if "broker" in r[1].lower()
+                        and r[1] not in renombre_broker.NO_SON_UN_BROKER]
                 if cols:
                     con_broker[t] = cols
         finally:

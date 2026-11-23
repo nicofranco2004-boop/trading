@@ -45,7 +45,8 @@
    "commissions": 0.0,
    "currency": "USD",
    "asset_type": "CRYPTO",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Binance",
@@ -61,7 +62,8 @@
    "commissions": 0.0,
    "currency": "USD",
    "asset_type": "CRYPTO",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Binance",
@@ -77,7 +79,8 @@
    "commissions": 0.0,
    "currency": "USD",
    "asset_type": "CRYPTO",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Binance",
@@ -93,7 +96,8 @@
    "commissions": 0.0,
    "currency": null,
    "asset_type": null,
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Cocos",
@@ -110,6 +114,7 @@
    "currency": "ARS",
    "asset_type": "BOND",
    "split_adjusted_through": null,
+   "en_broker_desde": null,
    "nominal_por_barrido": false,
    "nominal_original": 1000.0
   },
@@ -127,7 +132,8 @@
    "commissions": 0.0,
    "currency": null,
    "asset_type": null,
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Cocos",
@@ -143,7 +149,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "OTHER",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Cocos",
@@ -159,7 +166,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "OTHER",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -175,7 +183,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "CEDEAR",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -192,6 +201,7 @@
    "currency": "ARS",
    "asset_type": "BONO",
    "split_adjusted_through": null,
+   "en_broker_desde": null,
    "nominal_por_barrido": false,
    "nominal_al_cargar": 10.0
   },
@@ -209,7 +219,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "ACCION",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -225,7 +236,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "CEDEAR",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -241,7 +253,8 @@
    "commissions": 0.0,
    "currency": null,
    "asset_type": null,
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -257,7 +270,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "ACCION",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -273,7 +287,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "CEDEAR",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -289,7 +304,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "ACCION",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -306,6 +322,7 @@
    "currency": "ARS",
    "asset_type": "BONO",
    "split_adjusted_through": null,
+   "en_broker_desde": null,
    "nominal_por_barrido": false,
    "nominal_al_cargar": 10.0
   },
@@ -323,7 +340,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "ACCION",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -339,7 +357,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "CEDEAR",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -355,7 +374,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "CEDEAR",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -371,7 +391,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "CEDEAR",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -387,7 +408,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "CEDEAR",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -403,7 +425,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "ACCION",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -419,7 +442,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "CEDEAR",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -435,7 +459,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "ACCION",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -451,7 +476,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "BONO",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -467,7 +493,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "ACCION",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "IOL",
@@ -483,7 +510,8 @@
    "commissions": 0.0,
    "currency": "ARS",
    "asset_type": "ACCION",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Schwab",
@@ -499,7 +527,8 @@
    "commissions": 0.0,
    "currency": "USD",
    "asset_type": "STOCK",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Schwab",
@@ -515,7 +544,8 @@
    "commissions": 0.0,
    "currency": "USD",
    "asset_type": "STOCK",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Schwab",
@@ -531,7 +561,8 @@
    "commissions": 0.0,
    "currency": "USD",
    "asset_type": "STOCK",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Schwab",
@@ -547,7 +578,8 @@
    "commissions": 0.0,
    "currency": "USD",
    "asset_type": "STOCK",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Schwab",
@@ -563,7 +595,8 @@
    "commissions": 0.0,
    "currency": "USD",
    "asset_type": "ETF",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Schwab",
@@ -579,7 +612,8 @@
    "commissions": 0.0,
    "currency": null,
    "asset_type": null,
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   },
   {
    "broker": "Schwab",
@@ -595,7 +629,8 @@
    "commissions": 0.0,
    "currency": "USD",
    "asset_type": "ETF",
-   "split_adjusted_through": null
+   "split_adjusted_through": null,
+   "en_broker_desde": null
   }
  ],
  "brokers": [

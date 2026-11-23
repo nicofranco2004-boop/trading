@@ -95,6 +95,16 @@ OPERATION_TYPES = {
     OP_TRANSFER, OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_TAX, OP_FUTURES_PNL,
 }
 
+# Las dos patas de capital de un pase entre brokers del usuario («Mover a otro
+# broker», importing/traspaso_a_mano.py): lo que valían los títulos el día del pase
+# sale de la cuenta de origen y entra en la de destino. Sólo las escribe el servidor.
+# ⚠️ NO van en OPERATION_TYPES ni en OP_TYPE_ALIASES, a propósito: un CSV del
+# usuario, el formato genérico o el mapeo que arma la IA nunca tienen que poder
+# fabricar una pata de capital (subiría el aportado de un broker sin plata real).
+OP_TRASPASO_SALIDA = "TRASPASO_SALIDA"
+OP_TRASPASO_ENTRADA = "TRASPASO_ENTRADA"
+OPERATION_TYPES_INTERNOS = frozenset({OP_TRASPASO_SALIDA, OP_TRASPASO_ENTRADA})
+
 # Aliases que aceptamos en el CSV — castellano + inglés + variantes comunes de brokers
 OP_TYPE_ALIASES = {
     # Compra (incluye stock splits y dividend reinvestments — añaden qty / costo)
@@ -331,6 +341,26 @@ class NormalizedTx:
     # la vista "costo al dólar de la compra" (dólares reales invertidos) sin
     # tocar el modelo FX-neutral por defecto. NULL = sin dato → cae a hoy.
     tc_compra: Optional[float] = None
+
+    # ── «Mover a otro broker» (importing/traspaso_a_mano.py) ──────────────────
+    # Sólo los llenan las filas que escribe un pase entre dos brokers del usuario;
+    # en cualquier otra fila quedan en None. Viajan a import_normalized_tx (columnas
+    # del mismo nombre) por `pipeline.store_preview_txs` y vuelven por
+    # `pipeline.load_session_for_confirm`.
+    # Id del pase (= traspasos_a_mano.id), en TODAS sus filas.
+    traspaso_id: Optional[str] = None
+    # Compra original del lote (YYYY-MM-DD), sólo en las BUY del destino. None = `date`.
+    fecha_compra: Optional[str] = None
+    # Lo que valían los títulos el día del pase (V), en USD y en pesos, en las patas
+    # TRASPASO_*. En la FEE del pase, `valor_usd` es el gasto en USD. NO va en
+    # gross_amount/gross_amount_usd: el rebuild tomaría la SELL del pase como venta
+    # real y el reestampado de USD lo pisaría.
+    valor_usd: Optional[float] = None
+    valor_ars: Optional[float] = None
+    # Lo que costaron (C): en USD con comisiones (TRASPASO_*), y en la moneda de los
+    # lotes: con comisiones en las TRASPASO_*, sin comisiones en la SELL del pase.
+    costo_usd: Optional[float] = None
+    costo_nativo: Optional[float] = None
 
     def __post_init__(self):
         # Código viejo → vigente (SQ → XYZ): ver tickers_renombrados.py. Va ACÁ

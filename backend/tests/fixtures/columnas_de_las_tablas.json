@@ -717,6 +717,22 @@
   "nuevas",
   "user_id"
  ],
+ "traspasos_a_mano": [
+  "asset",
+  "cantidad",
+  "creado_at",
+  "desfasado_at",
+  "desfasado_motivo",
+  "deshecho_at",
+  "fecha",
+  "id",
+  "lote_entrada",
+  "lote_salida",
+  "moneda",
+  "omitidas_json",
+  "receta_json",
+  "user_id"
+ ],
  "trial_consumed": [
   "consumed_at",
   "email_key"
