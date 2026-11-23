@@ -37363,8 +37363,8 @@ def _estado_mercado(mercado, rueda, hoy, ahora=None) -> str:
     if not rueda:
         return "no pudimos confirmar de qué día es la última cotización"
     zona, (h1, m1), (h2, m2) = _RUEDA_HORARIO[mercado]
-    _d = _ch.dia_txt(rueda, hoy)
-    ultima = f"la rueda del {_d[3:]}" if _d.startswith("el ") else f"la rueda de {_d}"
+    _d = _ch.dia_con_de(_ch.dia_txt(rueda, hoy))
+    ultima = f"la rueda {_d}" if _d else "una rueda sin fecha confirmada"
     try:
         from zoneinfo import ZoneInfo
         art = ZoneInfo("America/Argentina/Buenos_Aires")

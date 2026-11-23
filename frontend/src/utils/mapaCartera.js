@@ -85,6 +85,9 @@ export function conElDia(cuadritos = [], delDia = null, moneda = {}) {
       ...c,
       hoy: a?.hoy ? { pct: a.hoy.pct / 100, usd: a.hoy.usd } : null,
       diaTxt: a?.dia_txt || null,
+      // La fecha lista para ir detrás de «de» («del viernes 20/11»): la arma el
+      // servidor (cartera_hoy.dia_con_de), la única regla de esa contracción.
+      diaConDe: a?.dia_con_de || null,
       promedio: prom.pct,
       promedioSinDato: prom.sinDato,
     }

@@ -104,3 +104,38 @@ describe('D3: cargando y falló no son «sin dato»', () => {
     expect(await pedirElDia(async (url) => (url === '/cartera/mapa-del-dia' ? r : null))).toEqual({ estado: 'listo', datos: r })
   })
 })
+
+describe('el globo de un cuadrito sin movimiento de hoy (23/11/2026)', () => {
+  // Decía «lo último es de el viernes 20/11»: la pantalla le pegaba «de» a
+  // `dia_txt`, que abre frases («el viernes…»). Ahora usa `dia_con_de`, la
+  // fecha que el servidor arma para ir detrás de «de» (cartera_hoy.dia_con_de;
+  // tests/test_mapa_del_dia_rueda.py::TestDiaConDe la prueba por el endpoint).
+  const globo = (activoGgal) => {
+    const datos = LISTO(VIERNES_HOY)
+    datos.datos.activos[0] = activoGgal
+    const html = renderToStaticMarkup(
+      <MemoryRouter><MapaCartera filas={FILAS} cargando={false} error={false} hidden={false} dia={datos} /></MemoryRouter>)
+    // El globo es el `title` (y el aria-label) del cuadrito de GGAL.
+    return (html.match(/title="(GGAL[^"]*)"/) || [])[1] || ''
+  }
+
+  it('«del viernes 20/11», no «de el viernes 20/11»', () => {
+    const t = globo({ ...activo('GGAL', null), dia_txt: 'el viernes 20/11', dia_con_de: 'del viernes 20/11' })
+    expect(t).toContain('sin movimiento de hoy (lo último es del viernes 20/11)')
+    expect(t).not.toContain('de el')
+  })
+
+  it('«de ayer» sigue igual', () => {
+    const t = globo({ ...activo('GGAL', null), dia_txt: 'ayer', dia_con_de: 'de ayer' })
+    expect(t).toContain('sin movimiento de hoy (lo último es de ayer)')
+  })
+
+  it('sin fecha confirmada (o un servidor viejo sin `dia_con_de`): sin la fecha, nunca «de el»', () => {
+    for (const a of [{ ...activo('GGAL', null), dia_txt: 'sin fecha confirmada', dia_con_de: null },
+      { ...activo('GGAL', null), dia_txt: 'el viernes 20/11' }]) {
+      const t = globo(a)
+      expect(t).toContain('sin movimiento de hoy')
+      expect(t).not.toMatch(/de el|de sin fecha/)
+    }
+  })
+})

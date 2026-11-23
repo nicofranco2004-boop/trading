@@ -87,6 +87,24 @@ def dia_txt(rueda: Optional[str], hoy: str) -> str:
     return f"el {_DIAS[r.weekday()]} {r.day}/{r.month}"
 
 
+def dia_con_de(txt: Optional[str]) -> Optional[str]:
+    """`dia_txt` detrás de la preposición «de», con la contracción del
+    castellano: «el viernes 3/10» → «del viernes 3/10»; «ayer» → «de ayer».
+
+    `dia_txt` está pensado para ABRIR una frase («el viernes 3/10 tu cartera
+    subió»), y quien le pegaba «de» adelante escribía «lo último es de el viernes
+    20/11» (mapa de la cartera, 23/11/2026). La regla vivía a mano en un solo
+    lugar (`main._estado_mercado`) y no llegó a la pantalla: ahora es ésta.
+
+    Sin fecha confirmada (o sin texto) → None: «de sin fecha confirmada» no se
+    dice; quien arma la frase dice otra cosa."""
+    if not txt or txt == "sin fecha confirmada":
+        return None
+    if txt.startswith("el "):
+        return "del " + txt[3:]
+    return "de " + txt
+
+
 def _no_hoy(txt: str) -> str:
     """Invariante: "hoy" se escribe SÓLO si es_hoy. Un número cuya rueda tiene
     la fecha de hoy pero que su mercado no confirma como de hoy no se llama
@@ -303,6 +321,9 @@ def por_activo(lotes: list, hoy: str) -> list:
         p_ars = None if sd else round((g["valor"] - g["costo_hoy"]) / g["costo_hoy"] * 100, 2)
         out.append({"asset": asset, "local": local, "valor": round(g["valor"], 2),
                     "hoy": hoy_d, "dia_txt": dia,
+                    # La misma fecha lista para ir detrás de «de» («del viernes
+                    # 20/11»): el globo del mapa dice «lo último es …».
+                    "dia_con_de": dia_con_de(dia),
                     "promedio_pct_usd": p_usd, "promedio_pct_ars": p_ars,
                     "promedio_sin_dato": MOTIVOS_PROMEDIO[sd] if sd else None})
     return out

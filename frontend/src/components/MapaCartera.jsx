@@ -48,7 +48,13 @@ const PALABRA = { alcista: 'tendencia alcista', bajista: 'tendencia bajista', si
 function valorDelModo(c, modo, hidden, estado = 'listo') {
   if (hidden || modo === 'tendencia' || c.tendencia === 'otros' || c.clave === 'efectivo') return null
   if (estado !== 'listo') return SIN_EL_DIA[estado]
-  if (modo === 'hoy') return c.hoy ? `${pctSigned(c.hoy.pct)} hoy` : (c.diaTxt ? `sin movimiento de hoy (lo último es de ${c.diaTxt})` : 'sin dato de hoy')
+  if (modo === 'hoy') {
+    if (c.hoy) return `${pctSigned(c.hoy.pct)} hoy`
+    // «de» + la fecha la arma el servidor (`dia_con_de`): pegarle «de» a
+    // `diaTxt` («el viernes 20/11») escribía «lo último es de el viernes 20/11».
+    if (c.diaConDe) return `sin movimiento de hoy (lo último es ${c.diaConDe})`
+    return c.diaTxt ? 'sin movimiento de hoy' : 'sin dato de hoy'
+  }
   if (c.promedio != null) return `${pctSigned(c.promedio)} contra lo que pagaste`
   return c.promedioSinDato ? `sin dato contra lo que pagaste: ${c.promedioSinDato}` : 'sin lo que pagaste'
 }

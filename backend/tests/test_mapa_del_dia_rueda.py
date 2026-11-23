@@ -56,5 +56,47 @@ class TestUltimaRueda(unittest.TestCase):
         self.assertIsNone(r["ultima_rueda"])
 
 
+class TestDiaConDe(unittest.TestCase):
+    """23/11/2026: el globo de un cuadrito sin movimiento de hoy decía «lo último
+    es de el viernes 20/11». `dia_txt` abre frases («el viernes…»); detrás de
+    «de» va `dia_con_de`, que el servidor manda armado. Por el endpoint de
+    verdad, como TestUltimaRueda."""
+
+    def correr(self, hoy, lotes):
+        main._MAPA_DEL_DIA_CACHE.clear()
+        with patch.object(main, "_lotes_del_dia", return_value=(hoy, lotes, {}, 1000.0)):
+            return {a["asset"]: a for a in main.get_mapa_del_dia(uid=987655)["activos"]}
+
+    def test_un_dia_con_nombre_va_con_del(self):
+        a = self.correr(SABADO, [lote("GGAL", 990.0, 1000.0, JUEVES, False, "byma"),
+                                 lote("AAPL", 1010.0, 1000.0, VIERNES, False)])
+        self.assertEqual(a["GGAL"]["dia_txt"], "el jueves 29/10")
+        self.assertEqual(a["GGAL"]["dia_con_de"], "del jueves 29/10")
+        self.assertEqual(a["AAPL"]["dia_con_de"], "de ayer")
+
+    def test_sin_fecha_confirmada_no_se_pega_a_de(self):
+        # Un lote con la fecha de hoy que su mercado no confirma como de hoy.
+        a = self.correr(VIERNES, [lote("MELI", 990.0, 1000.0, VIERNES, False)])
+        self.assertEqual(a["MELI"]["dia_txt"], "sin fecha confirmada")
+        self.assertIsNone(a["MELI"]["dia_con_de"])
+
+    def test_la_regla_de_la_contraccion(self):
+        import cartera_hoy
+        self.assertEqual(cartera_hoy.dia_con_de("el viernes 20/11"), "del viernes 20/11")
+        self.assertEqual(cartera_hoy.dia_con_de("ayer"), "de ayer")
+        self.assertEqual(cartera_hoy.dia_con_de("hoy"), "de hoy")
+        self.assertIsNone(cartera_hoy.dia_con_de("sin fecha confirmada"))
+        self.assertIsNone(cartera_hoy.dia_con_de(None))
+
+    def test_la_frase_para_la_ia_usa_la_misma_regla(self):
+        """`_estado_mercado` tenía la contracción escrita a mano; ahora usa la
+        misma función. Un sábado, «lo último es la rueda del jueves 29/10»."""
+        from datetime import datetime, timezone
+        sabado_mediodia = datetime(2026, 10, 31, 15, 0, tzinfo=timezone.utc)
+        t = main._estado_mercado("byma", JUEVES, SABADO, ahora=sabado_mediodia)
+        self.assertIn("lo último es la rueda del jueves 29/10", t)
+        self.assertNotIn("de el", t)
+
+
 if __name__ == "__main__":
     unittest.main()
