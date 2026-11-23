@@ -82,6 +82,24 @@ export function armarEscala(lo, hi, alto, escala) {
   }
 }
 
+/**
+ * El precio a la altura `f` (0 = arriba, 1 = abajo) de un gráfico que muestra
+ * de `lo` a `hi`, o null si a esa altura no hay precio.
+ *
+ * En la escala de siempre, el aire de abajo y el lugar del volumen
+ * (`rangoConAire` con `abajo`) se hacen corriendo `lo` hacia abajo, y cuando lo
+ * que se ve arranca cerca de cero («Todo» en bitcoin, de US$ 200 a 126.000) esa
+ * franja queda bajo cero. Es lugar vacío, no un precio: la mira del mouse no lo
+ * rotula, el toque no pone un dibujo ahí y el pincel no guarda esos puntos
+ * (que tu cuenta rechazaría). Los rótulos del eje siguen la misma regla
+ * (ejesGrafico.marcasDePrecio). Antes cada uno lo cuidaba —o no— por su lado:
+ * la mira mostraba «−20.000» (23/11/2026).
+ */
+export function precioALaAltura(lo, hi, f, escala) {
+  const p = armarEscala(lo, hi, 1, escala).precio(Math.min(1, Math.max(0, f)))
+  return p > 0 ? p : null
+}
+
 /** Lo que mide el rango [lo, hi] en el eje (para pasar un arrastre de pantalla a eje). */
 export function largoEnEje(lo, hi, escala) {
   return aEje(hi, escala) - aEje(lo, escala)

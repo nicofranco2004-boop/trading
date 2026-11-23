@@ -53,6 +53,22 @@ describe('eje de precios', () => {
   })
 })
 
+describe('eje de precios: nunca bajo cero (23/11/2026)', () => {
+  it('el lugar del volumen bajo cero no se rotula, y el paso queda igual', () => {
+    // «Todo» en bitcoin con el lugar del volumen: de −46.814 a 137.425.
+    const r = marcasDePrecio(-46814, 137425, 600)
+    expect(r).toEqual([0, 20000, 40000, 60000, 80000, 100000, 120000])
+  })
+  it('sin «−0» (Math.ceil(−0,3) da −0, que se escribía «-0»)', () => {
+    const r = marcasDePrecio(-0.3, 10, 250)
+    expect(Object.is(r[0], -0)).toBe(false)
+    expect(r[0]).toBe(0)
+  })
+  it('todo bajo cero (arrastrado a mano): ningún rótulo', () => {
+    expect(marcasDePrecio(-50, -10, 250)).toEqual([])
+  })
+})
+
 describe('eje de fechas', () => {
   it('a la izquierda acerca (menos días), a la derecha aleja', () => {
     // A la izquierda (dx < 0) acerca: la mitad de días; a la derecha aleja.

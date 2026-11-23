@@ -60,7 +60,7 @@ import { BotonMervalle, PanelMervalle, useResumenMervalle } from './ResumenMerva
 import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
 import { api, getClientContext } from '../../utils/api'
 import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecioEn, empezarAMano, correrAMano, estirarAMano, arrastreDentroDelTope } from '../../utils/ejesGrafico'
-import { ESCALA_DE_FABRICA, anchoQueVale, armarEscala, cabeEnLaEscala, escalaDe, esLog, ladoDeAfuera, largoEnEje, precioCorrido, rangoConAire } from '../../utils/escalaPrecio'
+import { ESCALA_DE_FABRICA, anchoQueVale, armarEscala, cabeEnLaEscala, escalaDe, esLog, ladoDeAfuera, largoEnEje, precioALaAltura, precioCorrido, rangoConAire } from '../../utils/escalaPrecio'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
 import { ANCHO_DEL_GRAFICO, archivoDelGrafico, specDelGrafico } from '../../utils/imagenGrafico'
 import {
@@ -2319,10 +2319,12 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
     if (!r || !r.width) return null
     return Math.min(lugares - 1, Math.max(0, Math.round(((clientX - r.left) / r.width) * (lugares - 1))))
   }
+  // null en la franja de abajo que no es precio (bajo cero, en la escala de
+  // siempre): la mira no la rotula y el toque y el pincel no ponen nada ahí.
   function precioEn(clientY) {
     const r = ref.current?.getBoundingClientRect()
     if (!r || !r.height) return null
-    return armarEscala(min, max, 1, escalaDePrecio).precio(Math.min(1, Math.max(0, (clientY - r.top) / r.height)))
+    return precioALaAltura(min, max, (clientY - r.top) / r.height, escalaDePrecio)
   }
   function tocarEn(clientX, clientY) {
     const k = lugarEn(clientX), precio = precioEn(clientY)
@@ -2378,15 +2380,21 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
     const r = ref.current.getBoundingClientRect()
     return Math.min(lugares - 1, Math.max(0, ((clientX - r.left) / r.width) * (lugares - 1)))
   }
+  // Un punto del trazo, o ninguno si cae en la franja sin precio (precioEn):
+  // lo que se ve mientras se dibuja es lo que después se guarda.
+  const puntoDelPincel = (x, y) => {
+    const precio = precioEn(y)
+    return precio == null ? [] : [{ k: lugarExacto(x), precio }]
+  }
   function empezarPincel(x, y) {
-    trazoPincel.current = { x, y, puntos: [{ k: lugarExacto(x), precio: precioEn(y) }] }
+    trazoPincel.current = { x, y, puntos: puntoDelPincel(x, y) }
     setPincel(trazoPincel.current.puntos)
   }
   function seguirPincel(x, y) {
     const t = trazoPincel.current
     if (!t || Math.hypot(x - t.x, y - t.y) < 3) return
     t.x = x; t.y = y
-    t.puntos = [...t.puntos, { k: lugarExacto(x), precio: precioEn(y) }]
+    t.puntos = [...t.puntos, ...puntoDelPincel(x, y)]
     setPincel(t.puntos)
   }
   function terminarPincel() {

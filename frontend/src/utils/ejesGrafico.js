@@ -109,7 +109,15 @@ export function factorDeFechas(dx) {
 const MESES_CORTOS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
 
 /** Los precios redondos para la columna entre `lo` y `hi` (lo de abajo y lo de
- *  arriba de lo que se ve), para un gráfico de `altoPx` de alto. */
+ *  arriba de lo que se ve), para un gráfico de `altoPx` de alto.
+ *
+ *  Nunca uno bajo cero: el aire de abajo y el lugar del volumen pueden dejar
+ *  `lo` negativo en la escala de siempre (con «Todo», bitcoin rotulaba
+ *  «−20.000» y Galicia «−2», 23/11/2026), y esa franja no es un precio (ver
+ *  escalaPrecio.precioALaAltura, la misma regla para la mira del mouse). El
+ *  paso se elige con el rango entero, así los rótulos quedan donde estaban y
+ *  sólo se van los de abajo de cero. Lo usan la ficha y la imagen de
+ *  «Compartir» (imagenGrafico.js). */
 export function marcasDePrecio(lo, hi, altoPx, cadaPx = 56) {
   if (!(hi > lo) || !(altoPx > 0)) return []
   const cuantos = Math.max(2, Math.floor(altoPx / cadaPx))
@@ -120,8 +128,10 @@ export function marcasDePrecio(lo, hi, altoPx, cadaPx = 56) {
   const out = []
   // Redondeado al paso para no arrastrar 0,30000000000000004.
   const dec = Math.max(0, -Math.floor(Math.log10(paso)) + 2)
-  for (let v = Math.ceil(lo / paso) * paso; v <= hi + paso * 1e-9 && out.length < 60; v += paso) {
-    out.push(Number(v.toFixed(dec)))
+  // Desde el primer múltiplo del paso que no es negativo. El `|| 0` borra el
+  // «−0» (Math.ceil(−0,3) da −0), que se escribía «-0».
+  for (let v = Math.max(0, Math.ceil(lo / paso)) * paso; v <= hi + paso * 1e-9 && out.length < 60; v += paso) {
+    out.push(Number(v.toFixed(dec)) || 0)
   }
   return out
 }

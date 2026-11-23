@@ -4,6 +4,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { archivoDelGrafico, specDelGrafico } from './imagenGrafico'
 import { renderShareCard } from './shareCard'
+import { rangoConAire } from './escalaPrecio'
 
 const dia = (i) => new Date(Date.UTC(2026, 0, 1) + i * 86400000).toISOString().slice(0, 10)
 function velas(n, f, extra = () => ({})) {
@@ -125,6 +126,18 @@ describe('specDelGrafico: qué lleva la imagen', () => {
     expect(textos.length).toBeGreaterThan(2)
     expect(new Set(textos).size).toBe(textos.length)
     expect(textos.every(t => t !== '0' && t !== '0,00')).toBe(true)
+  })
+
+  it('«Todo» en la escala de siempre: ningún precio del costado bajo cero (23/11/2026)', () => {
+    // Como Galicia en dólares con «Todo»: de US$ 0,5 a 9,5. El rango es el de
+    // la pantalla (`compartible`: rangoConAire con el lugar del volumen), que
+    // queda bajo cero; la imagen rotulaba «−2,5». Ver EjeSinNegativos.test.js.
+    const [lo, hi] = rangoConAire(0.5, 9.5, 'lineal', 0.08, 0.25)
+    expect(lo).toBeLessThan(0)                               // la franja existe
+    const s = specDelGrafico(base({ puntos: velas(60, i => 0.5 + (i * 9) / 59), lo, hi }))
+    const textos = s.grafico.eje.map(t => t.texto)
+    expect(textos.length).toBeGreaterThan(2)
+    expect(textos.filter(t => /^[-−]/.test(t))).toEqual([])
   })
 
   it('el Fibonacci y las ondas automáticas, sólo si están prendidos', () => {
