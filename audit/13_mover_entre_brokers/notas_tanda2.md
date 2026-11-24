@@ -52,3 +52,26 @@ Si encontrás que la pantalla supone algo distinto a lo que conviene en el servi
 
 ## Medición pendiente (NO la hagas: necesita OK del dueño)
 - G.1 E3 / Publicación 1: medición sobre la copia de producción (R2). No se toca producción en esta tanda.
+
+## Del control a mitad de camino (revisión adversarial de E4–E6)
+Arreglado en el commit «E4-E6 — arreglos del control a mitad de camino» (detalle en su mensaje y en las pruebas):
+#16 desde el mismo día en B; el precio cargado sólo a las patas de B que reciben y en la moneda en que lo lee
+Cartera; la «· USD» suelta con movimientos frena (409); el turno del confirmar en los dos motores; la etiqueta y la
+fecha del precio las decide el servidor; piso de cantidad (1e-6); el capital final del MES EN CURSO lleva lo que
+cambia el recálculo (patas de pase y de conversión); las pruebas de «la vista previa no escribe» miran la sentencia
+(`tests/_sentencias.py`).
+
+Pendientes que quedan para las etapas siguientes:
+- **E7**: el deshacer corre `_cascade_after_movement_delete` → el recálculo ya deja al día el capital del mes en
+  curso (no hace falta nada aparte). Filtrar `traspasos_a_mano WHERE id=? AND user_id=?`; tomar `_tomar_turno` (no el
+  de la puerta) antes de leer. `fila_destino_raw_row_id` y `fila_origen` ya están fijados por prueba (PaseTotal).
+  `precio_cargado_en_destino.brokers_destino` ahora son exactamente las patas que lo recibieron.
+- **E8**: C.11 lado B sigue con `date < fecha` para lo que llega DESPUÉS del pase (correcto: el persister y el rebuild
+  consumen igual). El borde «mismo día» es sólo para lo que ya estaba (B.6 #16).
+- **E11**: `migrate_user_fx` / `_auto_migrar_fx_post_import` no toman el turno: agregarlo junto con `revaluar_patas`
+  (el turno solo no arregla nada: una migración posterior al pase igual deja las patas con números v1). Cualquier
+  import posterior pasa sola una cuenta v1 a v2 (medido por el revisor contable): `revaluar_patas` tiene que estar
+  antes de prender el interruptor. `receta.precio.fecha` ya es siempre una fecha válida.
+- **Integración / pantalla**: `traspaso_neto_pesos` de 'global' suma `valor_ars` de todas las patas (también las de
+  lotes en dólares, que en las filas por broker van a `traspaso_usd_con_dia`); sólo se nota con una pata huérfana.
+  Los avisos nuevos: «Vamos a sumar tu broker «X · USD» como la cuenta en dólares de X.» y el 409 de la pata suelta.

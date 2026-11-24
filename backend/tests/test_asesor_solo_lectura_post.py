@@ -37,6 +37,9 @@ from fastapi.testclient import TestClient
 import main
 from fechas import hoy_art_date
 
+sys.path.insert(0, HERE)
+from _sentencias import escrituras  # noqa: E402
+
 LISTA = {"activos": [{"asset": "AAPL"}, {"asset": "KO"}]}
 
 
@@ -111,8 +114,9 @@ class AsesorSoloLecturaTest(unittest.TestCase):
 
     def test_la_vista_previa_del_pase_no_escribe_en_el_cliente(self):
         """«Mover a otro broker» (especificación B.2): la vista previa es un POST que sólo
-        LEE. Con sólo lectura, la asesora la puede pedir para su cliente y la base queda
-        IGUAL (todas las tablas, contadas antes y después)."""
+        LEE. Con sólo lectura, la asesora la puede pedir para su cliente: no corre
+        ninguna sentencia que escriba y la base queda IGUAL (todas las tablas, contadas
+        antes y después)."""
         with main.db_abierta() as conn:
             for nombre in ("Cocos", "Balanz"):
                 conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?, ?, 'ARS')",
@@ -132,15 +136,19 @@ class AsesorSoloLecturaTest(unittest.TestCase):
                 conn.commit()
         self.addCleanup(_apagar)
         antes = self._filas()
-        # Los cambios de ratio de Yahoo (lo único que iría a internet), vacíos.
+        # Los cambios de ratio de Yahoo (lo único que iría a internet), vacíos. Y cada
+        # sentencia que escribe, mirada al correr (`_sentencias.escrituras`): contar
+        # filas no ve un UPDATE, y lo que no se commitea se deshace solo al cerrar.
         with mock.patch("main._splits_de_yahoo", lambda sym: {}), \
-                mock.patch.dict(main._splits_cache, clear=True):
+                mock.patch.dict(main._splits_cache, clear=True), \
+                escrituras(main) as escribio:
             r = self.client.post("/api/positions/traspaso/vista-previa", json={
                 "broker_origen": "Cocos", "asset": "GGAL", "moneda": "ARS",
                 "broker_destino": "Balanz", "fecha": "2025-06-16", "precio_manual": 6000},
                 headers=self._h(self.ana))
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["cantidad"], 10.0)
+        self.assertEqual(escribio, [], "la vista previa escribió en la base")
         self.assertEqual(self._filas(), antes, "la vista previa dejó filas en la base")
 
     def test_con_escritura_todo_como_antes(self):

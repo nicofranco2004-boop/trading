@@ -415,6 +415,9 @@ DIAS_DE_VELA = 7
 DIAS_DE_PRECIO_FRESCO = 5
 # La banda de «este precio está muy lejos de lo que pagaste» (B.6, aviso), en dólares.
 BANDA_DEL_PRECIO = (0.002, 50.0)
+# Las fuentes de un precio de mercado (se mueven solas entre la vista previa y el
+# confirmar); las otras dos, `precio_a_mano` y `precio_cargado`, no.
+_FUENTES_DE_MERCADO = ("cierre_del_dia", "ultimo_precio")
 
 MSG_APAGADO = "Esta opción no está disponible por ahora."
 MSG_CARTERA_CAMBIO = ("Tu cartera cambió desde que armaste la vista previa. "
@@ -428,6 +431,20 @@ MSG_DOLAR_CAMBIO = ("El dólar de ese día cambió (de {antes} a {ahora}). Revis
 TOLERANCIA_DEL_DOLAR = 0.03
 MSG_LISTO = "Listo: pasaste {q} {asset} de {A} a {B}."
 SUFIJO_USD = " · USD"
+# La cantidad más chica que se mueve, y el resto de un lote partido que no se deja:
+# Rendi muestra los títulos con 6 decimales (`_cant`) y compara cantidades con
+# 1e-6 (`_coinciden`). Por debajo, el plan quedaba sin lotes («se cotizan de dos
+# formas distintas»), no coincidía con el registro, o decía «pasaste 0 NVDA».
+CANTIDAD_MINIMA = 1e-6
+MSG_CANTIDAD_CHICA = ("La cantidad es demasiado chica para pasarla: Rendi lleva los títulos "
+                      "con hasta 6 decimales.")
+# «B · USD» (o «A · USD», para un gasto en dólares) existe como broker SUELTO, con
+# movimientos: el confirmar lo sumaría a la cuenta (`_ensure_usd_sibling` lo adopta)
+# sin que el plan hubiera mirado sus ventas, sus llegadas ni sus lotes.
+MSG_PATA_SUELTA = ("Tenés un broker «{nombre}» con movimientos que no está unido a {cuenta}. "
+                   "Para pasar estos títulos Rendi lo tendría que sumar como la cuenta en "
+                   "dólares de {cuenta}, y eso cambiaría su historia. Escribinos y lo "
+                   "acomodamos.")
 
 # Las notas de las filas (A.6). Sin nombres de broker (H16): el renombre no las
 # toca y un pase no puede dejar escrito un nombre viejo.
@@ -478,6 +495,10 @@ def _ddmmaaaa(iso) -> str:
 def _dia_de_la_semana(iso) -> str:
     """'2026-11-20' → 'viernes 20/11'."""
     return f"{_DIAS_SEMANA[date.fromisoformat(str(iso)[:10]).weekday()]} {_ddmm(iso)}"
+
+
+def _dia_siguiente(iso) -> str:
+    return (date.fromisoformat(str(iso)[:10]) + timedelta(days=1)).isoformat()
 
 
 def _dias_entre(a, b) -> int:
@@ -775,12 +796,14 @@ class Plan:
         confirmó. Aceptar el precio del pedido no abre nada nuevo: con `precio_manual`
         ya puede escribir el que quiera.
 
-        Valida tres cosas (B.6 #29): que venga (400), que el precio esté en la moneda
-        de la clave de precio de este activo (400 «Precio inválido.»), y que el dólar
-        que vio esté a ±3 % del que el servidor calcula para esa fecha (409: si no, la
-        vista previa se armó con otra historia del dólar). El dólar con que se escribe
-        es SIEMPRE el del servidor: el del pedido sólo se compara. V se recalcula solo
-        (sale de `pares()`); C no depende del precio."""
+        Valida (B.6 #29): que venga (400), que el precio esté en la moneda del precio
+        de este plan (400 «Precio inválido.»), que el dólar que vio esté a ±3 % del que
+        el servidor calcula para esa fecha (409: si no, la vista previa se armó con otra
+        historia del dólar) y que la fecha del precio sea un día entre la semana
+        anterior y el pase (400 «Precio inválido.»). El dólar con que se escribe es
+        SIEMPRE el del servidor: el del pedido sólo se compara. La etiqueta del precio
+        tampoco la decide el pedido (ver abajo). V se recalcula solo (sale de
+        `pares()`); C no depende del precio."""
         if valuacion is None:
             raise PaseInvalido(400, MSG_FALTA_LA_VISTA)
         v = valuacion if isinstance(valuacion, dict) else valuacion.model_dump()
@@ -791,10 +814,30 @@ class Plan:
         if servidor <= 0 or abs(visto - servidor) > TOLERANCIA_DEL_DOLAR * servidor:
             raise PaseInvalido(409, MSG_DOLAR_CAMBIO.format(antes=_cotizacion(visto),
                                                             ahora=_cotizacion(servidor)))
+        # La fecha del precio tiene que ser un día de verdad, entre la última vela que
+        # vale como «el precio de ese día» y el día del pase: la receta la guarda y la
+        # leen el deshacer y la revaluación de las patas (C.10).
+        fecha_v = str(v.get("fecha_precio") or "")
+        desde = (date.fromisoformat(self.fecha) - timedelta(days=DIAS_DE_VELA)).isoformat()
+        if not _fecha_valida(fecha_v) or not (desde <= fecha_v <= self.fecha):
+            raise PaseInvalido(400, MSG_PRECIO_INVALIDO)
+        precio = float(v["precio_unitario"])
+        fuente = str(v.get("fuente") or "")
+        # La etiqueta del precio no la decide el pedido. Si es el precio del servidor,
+        # van su fuente y su fecha. Si no lo es, sólo se conserva la del pedido cuando
+        # las dos son de mercado y el precio está cerca del de ahora (el último precio
+        # se reescribe cada minuto: es el motivo de que el confirmar use el que vio la
+        # persona). Cualquier otro precio es lo que es: uno que vino en el pedido
+        # («precio_a_mano», con la fecha del pase).
+        if abs(precio - self.precio) <= 1e-9 * max(1.0, abs(self.precio)):
+            fuente, fecha_v = self.fuente, self.fecha_precio
+        elif not (fuente in _FUENTES_DE_MERCADO and self.fuente in _FUENTES_DE_MERCADO
+                  and self.precio > 0 and 0.5 <= precio / self.precio <= 2.0):
+            fuente, fecha_v = "precio_a_mano", self.fecha
         banda_antes = self.aviso_de_banda()
-        self.precio = float(v["precio_unitario"])
-        self.fuente = str(v["fuente"])
-        self.fecha_precio = str(v.get("fecha_precio") or self.fecha)[:10]
+        self.precio = precio
+        self.fuente = fuente
+        self.fecha_precio = fecha_v
         self.avisos = [a for a in self.avisos if a != banda_antes]
         banda = self.aviso_de_banda()
         if banda:
@@ -1076,22 +1119,31 @@ def _contraparte_de_pase(conn, uid, traspaso_id) -> str:
         return "otro broker"
 
 
-def _salida_posterior(conn, uid, patas, asset, fecha):
-    """El último movimiento que sacó `asset` de esas patas DESPUÉS de `fecha`: una
-    'Venta' de `operations` o una SELL viva del registro (las de un pase llevan
-    `traspaso_id`). None si no hay. Devuelve {fecha, traspaso_id}."""
+def _salida_posterior(conn, uid, patas, asset, fecha, *, desde_el_mismo_dia=False):
+    """El último movimiento que sacó `asset` de esas patas DESPUÉS de `fecha` (o
+    desde ese mismo día, con `desde_el_mismo_dia`): una 'Venta' de `operations` o
+    una SELL viva del registro (las de un pase llevan `traspaso_id`). None si no
+    hay. Devuelve {fecha, traspaso_id}.
+
+    `desde_el_mismo_dia` es para B (#16). Una venta de B del MISMO día del pase que
+    ya estaba consumió, cuando se guardó, un lote propio de B; el próximo rebuild de
+    B ordena el mismo día «la compra antes que la venta» y, por fecha de compra
+    (H2), la haría consumir el lote que llegó, que es más viejo: cambiarían los
+    lotes y el resultado de esa venta sin que nadie haga nada. En A no pasa: las dos
+    salidas del mismo día se ordenan por id y la del pase va después."""
     mejor = None
+    op = ">=" if desde_el_mismo_dia else ">"
     r = conn.execute(
         f"SELECT MAX(substr(date, 1, 10)) AS d FROM operations WHERE user_id=? "
         f"AND broker IN ({_ph(patas)}) AND asset=? AND op_type='Venta' "
-        f"AND substr(date, 1, 10) > ?", (uid, *patas, asset, fecha)).fetchone()
+        f"AND substr(date, 1, 10) {op} ?", (uid, *patas, asset, fecha)).fetchone()
     if r and r["d"]:
         mejor = {"fecha": r["d"], "traspaso_id": None}
     for s in conn.execute(
             f"""SELECT substr(n.date, 1, 10) AS d, n.traspaso_id AS tid FROM {TX_VIVAS}
                  WHERE b.user_id = ? AND n.broker IN ({_ph(patas)})
                    AND n.asset_symbol = ? AND n.operation_type = 'SELL'
-                   AND substr(n.date, 1, 10) > ?
+                   AND substr(n.date, 1, 10) {op} ?
                  ORDER BY substr(n.date, 1, 10) DESC, n.id DESC""",
             (uid, *patas, asset, fecha)).fetchall():
         # La más nueva gana; a igual fecha, la de un pase (su texto pide deshacerlo).
@@ -1250,6 +1302,28 @@ def _simbolo_de_velas(clave: str) -> str:
     return yahoo_de_cripto(clave) or velas_diarias.ticker_de_afuera(clave)
 
 
+def _moneda_del_precio_cargado(lote: Dict[str, Any], pata: str,
+                               brokers: List[Dict[str, Any]]) -> str:
+    """En qué moneda lee Cartera el precio cargado a mano (`price_override`) de este
+    lote si vive en `pata`. Es la regla de la valuación (`snapshots_job.
+    compute_broker_value_usd` y `valuation.js`), y NO la de la clave de precio:
+      · una cripto: el spot en dólares (también en una cuenta en pesos: con precio
+        cargado no lleva el factor del dólar cripto, `crypto_broker_factor`);
+      · un lote en dólares en una cuenta en dólares (un CEDEAR en «Cocos · USD»): en
+        dólares, aunque su clave de precio sea la .BA en pesos;
+      · todo lo demás (un lote en pesos, o uno en dólares en una cuenta en pesos,
+        que se valúa por su .BA): en pesos.
+    Una pata que todavía no existe (la «· USD» que el confirmar va a crear) es una
+    cuenta en dólares."""
+    import snapshots_job
+    from behavioral import _native_ccy
+    if str(lote.get("asset") or "").upper() in snapshots_job._crypto_symbol_set():
+        return "USD"
+    fila = next((b for b in brokers if b["name"] == pata), None)
+    en_pesos = bool(fila) and (fila.get("currency") or "").upper() == "ARS"
+    return "USD" if (not en_pesos and _native_ccy(dict(lote)) == "USD") else "ARS"
+
+
 def _buscar_precio(conn, c: Cuentas, lotes: List[LoteDelPlan], pedido, *, hoy, clave,
                    moneda_precio, cripto_en_pesos, helpers):
     """(precio unitario, moneda del precio, fuente, fecha del precio, aviso | None),
@@ -1260,10 +1334,10 @@ def _buscar_precio(conn, c: Cuentas, lotes: List[LoteDelPlan], pedido, *, hoy, c
     if c.fecha == hoy:
         for l in lotes:
             if l.lote.get("price_override") is not None:
-                # El precio que la persona cargó a mano. Para una cripto en una cuenta
-                # en pesos es el spot en dólares: la valuación no le aplica el factor
-                # del dólar cripto cuando hay precio cargado (`crypto_broker_factor`).
-                moneda = "USD" if cripto_en_pesos else moneda_precio
+                # El precio que la persona cargó a mano, en la moneda en que lo lee
+                # Cartera en la pata donde vive el lote (no en la de la clave de
+                # precio: un CEDEAR en «Cocos · USD» lo tiene en dólares).
+                moneda = _moneda_del_precio_cargado(l.lote, l.pata_a, c.brokers)
                 return float(l.lote["price_override"]), moneda, "precio_cargado", hoy, None
     fresco = (date.fromisoformat(hoy) - timedelta(days=DIAS_DE_PRECIO_FRESCO)).isoformat()
     if cripto_en_pesos:
@@ -1291,6 +1365,29 @@ def _buscar_precio(conn, c: Cuentas, lotes: List[LoteDelPlan], pedido, *, hoy, c
         return (float(v["close"]), moneda_precio, "ultimo_precio", dia,
                 f"Usamos el cierre del {_dia_de_la_semana(dia)}.")
     raise _sin_precio(c.asset, c.fecha, moneda_precio)
+
+
+def _aviso_de_la_pata_a_crear(conn, uid: int, nombre: str, cuenta: str, para: str) -> str:
+    """El aviso de la «· USD» que el confirmar va a crear (C.1.3, #24), o el 409 si ya
+    existe un broker con ese nombre SUELTO y con movimientos.
+
+    Si existe con ese nombre es que no es la pata de la cuenta (si lo fuera, el plan
+    la usaría y no la crearía), y el confirmar lo ADOPTA (`_ensure_usd_sibling`: le
+    pone el padre y lo pasa a dólares; `por_que_no_hay_pata_usd` ya frenó al que
+    está en pesos con datos o es de otro). El plan no miró sus ventas (#16), sus
+    llegadas (#13), su capital declarado (#14) ni sus lotes: una venta suya
+    posterior pasaba a consumir el lote que llegó, más viejo, en el próximo rebuild;
+    y del lado de A, la salida del pase podía llevarse un lote suyo. Vacío, adoptarlo
+    no cambia nada: se avisa que se suma."""
+    from importing import pipeline
+    if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?",
+                        (uid, nombre)).fetchone():
+        return f"Vamos a crear «{nombre}» para {para}."
+    if pipeline.broker_tiene_datos(conn, uid, nombre) or conn.execute(
+            "SELECT 1 FROM flujos_a_mano WHERE user_id=? AND broker=? LIMIT 1",
+            (uid, nombre)).fetchone():
+        raise PaseInvalido(409, MSG_PATA_SUELTA.format(nombre=nombre, cuenta=cuenta))
+    return f"Vamos a sumar tu broker «{nombre}» como la cuenta en dólares de {cuenta}."
 
 
 # ── armar_plan ─────────────────────────────────────────────────────────────────
@@ -1408,18 +1505,22 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
         raise PaseInvalido(409, (
             f"Después del {_ddmmaaaa(fecha)} vendiste {asset} en {A}. Para no cambiar esas "
             f"ventas, elegí una fecha del {_ddmmaaaa(post['fecha'])} en adelante."))
-    # #16 — ventas posteriores en B (FIFO en B haría que se comieran los lotes movidos).
-    post = _salida_posterior(conn, uid, c.patas_b, asset, fecha)
+    # #16 — ventas en B desde ese mismo día (FIFO en B haría que se comieran los lotes
+    # movidos, que son más viejos). Desde el mismo día: ver `_salida_posterior`. Por eso
+    # la fecha que se propone es la del día SIGUIENTE a la última salida.
+    post = _salida_posterior(conn, uid, c.patas_b, asset, fecha, desde_el_mismo_dia=True)
     if post:
+        siguiente = _ddmmaaaa(_dia_siguiente(post["fecha"]))
         if post["traspaso_id"]:
             otro = _contraparte_de_pase(conn, uid, post["traspaso_id"])
             raise PaseInvalido(409, (
                 f"El {_ddmmaaaa(post['fecha'])} ya pasaste {asset} de {B} a {otro}. Elegí una "
-                f"fecha del {_ddmmaaaa(post['fecha'])} en adelante, o deshacé primero ese pase."))
+                f"fecha del {siguiente} en adelante, o deshacé primero ese pase."))
+        cuando = (f"El {_ddmmaaaa(fecha)}" if post["fecha"] == fecha
+                  else f"Después del {_ddmmaaaa(fecha)}")
         raise PaseInvalido(409, (
-            f"Después del {_ddmmaaaa(fecha)} vendiste {asset} en {B}. Si lo pasamos con esa "
-            f"fecha cambiarían esas ventas: elegí una fecha del {_ddmmaaaa(post['fecha'])} en "
-            "adelante."))
+            f"{cuando} vendiste {asset} en {B}. Si lo pasamos con esa fecha cambiarían esas "
+            f"ventas: elegí una fecha del {siguiente} en adelante."))
     # #17 — no hay lotes que estuvieran ahí ese día.
     if not candidatos:
         salida = _salida_importada_cerca(conn, uid, c)
@@ -1436,20 +1537,25 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
         raise PaseInvalido(400, (
             f"En {A} tenés {_cant(disponible)} {asset} en {en_moneda} que estaban ahí el "
             f"{_ddmmaaaa(fecha)}. No podés pasar {_cant(cantidad)}."))
+    # Una cantidad por debajo de lo que Rendi distingue (`CANTIDAD_MINIMA`).
+    if cantidad < CANTIDAD_MINIMA:
+        raise PaseInvalido(400, MSG_CANTIDAD_CHICA)
 
     # El prefijo FIFO hasta juntar la cantidad, partiendo el último (C.3).
     from fx import costo_del_lote
     lotes: List[LoteDelPlan] = []
     restante = cantidad
     for l in candidatos:
-        if restante <= 1e-12:
+        # Lo que falta juntar, o lo que quedaría del último lote, por debajo de lo que
+        # Rendi distingue: no se parte un lote para dejar (o llevar) polvo.
+        if restante < CANTIDAD_MINIMA:
             break
         # #19 — un lote sin fecha no se puede ubicar en la historia de A.
         if not str(l.get("entry_date") or "")[:10]:
             raise PaseInvalido(400, "Uno de los lotes que se moverían no tiene fecha de compra. "
                                     "Editalo, poné la fecha y volvé a intentar.")
         qty = float(l["quantity"] or 0)
-        take = qty if restante >= qty - 1e-9 else restante
+        take = qty if restante >= qty - CANTIDAD_MINIMA else restante
         com = float(l.get("commissions") or 0)
         base_inv = costo_del_lote(l.get("invested"), l.get("buy_price"), qty) or 0.0
         parcial = take < qty - 1e-9
@@ -1470,6 +1576,8 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
             take=take, parcial=parcial, mov_inv=mov_inv, mov_com=mov_com,
             moneda=_native_ccy(dict(l)), pata_a=l["broker"]))
         restante -= take
+    # Lo que se mueve de verdad (sin el polvo que no se partió).
+    cantidad = sum(l.take for l in lotes)
 
     # C.1.3 — la pata de B de cada lote (sin crear nada).
     por_nombre = {b["name"]: b for b in c.brokers}
@@ -1570,7 +1678,7 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
         motivo = pipeline.por_que_no_hay_pata_usd(conn, uid, c.fila_b)
         if motivo:
             raise PaseInvalido(409, motivo)
-        avisos.append(f"Vamos a crear «{nombre}» para los lotes en dólares.")
+        avisos.append(_aviso_de_la_pata_a_crear(conn, uid, nombre, B, "los lotes en dólares"))
     # #25 — pesos a una caja que no los acepta.
     no_aceptan = pipeline.brokers_que_no_aceptan_pesos(
         {b["name"]: b for b in c.brokers}, None)
@@ -1633,7 +1741,8 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
                 raise PaseInvalido(409, motivo)
             if pata_gasto not in a_crear:
                 a_crear.append(pata_gasto)
-                avisos.append(f"Vamos a crear «{pata_gasto}» para el gasto en dólares.")
+                avisos.append(_aviso_de_la_pata_a_crear(conn, uid, pata_gasto, A,
+                                                        "el gasto en dólares"))
         monto = float(g_in.monto)
         caja = conn.execute(
             "SELECT COALESCE(SUM(invested), 0) AS c FROM positions "
@@ -1645,17 +1754,29 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
         if gasto["caja_queda_negativa"]:
             avisos.append(f"Con el gasto, la caja de {pata_gasto} queda en {_monto(queda, g_moneda)}.")
 
-    # El precio cargado a mano en A viaja a B si B no tiene uno (C.7.8).
-    override_a = next((l.lote["price_override"] for l in lotes
-                       if l.lote.get("price_override") is not None), None)
+    # El precio cargado a mano en A viaja a B si B no tiene uno (C.7.8), y SÓLO a las
+    # patas de B que reciben los lotes que lo tenían: cada pata lee el precio cargado
+    # en su moneda (`_moneda_del_precio_cargado`), y el de una pata en pesos copiado a
+    # la «· USD» valía 62.000 dólares por título. Una pata que lo leería en otra moneda
+    # que la de origen tampoco lo recibe.
+    con_precio = [l for l in lotes if l.lote.get("price_override") is not None]
     precio_en_destino = None
-    if override_a is not None:
-        hay_en_b = conn.execute(
-            f"SELECT 1 FROM positions WHERE user_id=? AND broker IN ({_ph(c.patas_b)}) "
+    if con_precio:
+        override_a = float(con_precio[0].lote["price_override"])
+        destinos: List[str] = []
+        for l in con_precio:
+            if (float(l.lote["price_override"]) == override_a
+                    and l.pata_b not in destinos
+                    and _moneda_del_precio_cargado(l.lote, l.pata_a, c.brokers)
+                    == _moneda_del_precio_cargado(l.lote, l.pata_b, c.brokers)):
+                destinos.append(l.pata_b)
+        hay_en_b = destinos and conn.execute(
+            f"SELECT 1 FROM positions WHERE user_id=? AND broker IN ({_ph(destinos)}) "
             f"AND asset=? AND is_cash=0 AND price_override IS NOT NULL LIMIT 1",
-            (uid, *c.patas_b, asset)).fetchone()
-        if not hay_en_b:
-            precio_en_destino = {"brokers_destino": [B], "antes": None, "puesto": override_a}
+            (uid, *destinos, asset)).fetchone()
+        if destinos and not hay_en_b:
+            precio_en_destino = {"brokers_destino": destinos, "antes": None,
+                                 "puesto": override_a}
 
     plan = Plan(cuentas=c, cantidad=cantidad, disponible=disponible, lotes=lotes,
                 fx_version=hist_version, tc_blue=tc_blue, tc_venta=tc_venta, tc_pase=tc_pase,
@@ -1714,7 +1835,7 @@ def aplicar_plan(conn, uid: int, plan: Plan, *, helpers) -> Dict[str, Any]:
     import secrets
     from fx import costo_del_lote
     from importing import pipeline
-    from importing.persister import PersistError, broker_pair, persist_batch
+    from importing.persister import PersistError, persist_batch
 
     c = plan.cuentas
     tid = secrets.token_hex(16)
@@ -1793,15 +1914,16 @@ def aplicar_plan(conn, uid: int, plan: Plan, *, helpers) -> Dict[str, Any]:
                       uid, tid, primera)
             raise PaseInvalido(500, MSG_NO_SE_GUARDO.format(motivo=_motivo(primera.get("message"))))
 
-    # C.7.8 — el precio cargado a mano en A viaja a B si B no tenía uno (lo anotó el
-    # plan en la receta, para deshacerlo). Con las patas de B de ahora: la «· USD»
-    # pudo nacer recién.
+    # C.7.8 — el precio cargado a mano en A viaja a las patas de B que recibieron los
+    # lotes que lo tenían, si no tenían uno (lo anotó el plan en la receta, con esas
+    # mismas patas, para deshacerlo). La «· USD» que nació recién ya existe con su nombre
+    # (lo comprobó C.7.2).
     if plan.precio_cargado_en_destino:
-        patas_b = broker_pair(conn, uid, c.raiz_b)
+        destinos = list(plan.precio_cargado_en_destino["brokers_destino"])
         conn.execute(
-            f"UPDATE positions SET price_override=? WHERE user_id=? AND broker IN ({_ph(patas_b)}) "
+            f"UPDATE positions SET price_override=? WHERE user_id=? AND broker IN ({_ph(destinos)}) "
             f"AND asset=? AND is_cash=0",
-            (plan.precio_cargado_en_destino["puesto"], uid, *patas_b, plan.asset))
+            (plan.precio_cargado_en_destino["puesto"], uid, *destinos, plan.asset))
 
     return {"traspaso_id": tid, "lote_salida": sid_a, "lote_entrada": sid_b,
             "mensaje": MSG_LISTO.format(q=_cant(plan.cantidad), asset=plan.asset,

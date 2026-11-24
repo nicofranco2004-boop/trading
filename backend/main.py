@@ -17337,6 +17337,9 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
     # El mismo dólar que usa el borrado para medir cuánto de lo aportado entró a las
     # fotos cada día (`_flujos_importados_vigentes`): una sola regla.
     tc_blue = _config_tc_blue(conn, uid)
+    # El mes ARGENTINO de hoy, el mismo que `_repair_monthly_chain` trata como abierto.
+    from fechas import hoy_art_date
+    _mes_en_curso = hoy_art_date()
 
     for r in rows:
         broker, y, m = r["broker"], r["year"], r["month"]
@@ -17427,12 +17430,37 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
         # Reseteamos pnl_unrealized: live snapshot que se recalcula desde
         # positions via /sync-unrealized. Si quedó stale de cycles previos
         # rompe deltaUsd en /reportes.
+        #
+        #
+        # 🔴 EN EL MES EN CURSO, `capital_final` LLEVA LO QUE ESTE RECÁLCULO CAMBIA de
+        # aportes, retiros y realizado (lo de la derecha del SET son las columnas de
+        # ANTES, en los dos motores). `_repair_monthly_chain` no lo vuelve a armar
+        # (es «vivo»: lleva la ganancia no realizada que pone sync-unrealized) y se
+        # quedaba con el de antes. Lo que escribe el persister fila por fila ya lo
+        # había sumado y acá no cambia nada; pero lo que sólo arma este recálculo
+        # —las patas de un pase entre brokers del usuario y las de una conversión,
+        # que el persister no escribe— dejaba el capital del mes en curso corrido
+        # hasta la próxima visita a /mensual: un pase de hoy dejaba a A con C de más
+        # y a B con C de menos, y una conversión de hoy, a cada pata con su monto.
+        # SÓLO el mes en curso, a propósito: los cerrados los arma la reparación con
+        # la fórmula, y la limpieza de abajo (`_borrar_filas_de_la_cadena`) reconoce
+        # una primera fila heredada comparando su arranque con el `capital_final` de
+        # la que se borra; si acá se lo cambiaba, un arranque heredado pasaba por
+        # declarado (medido: borrar el primer depósito dejaba los 100.000 como
+        # capital inicial, tests/test_borrar_primer_deposito.py).
+        lleva_el_cambio = (y, m) == (_mes_en_curso.year, _mes_en_curso.month)
         conn.execute(
             """UPDATE monthly_entries
                SET pnl_realized=?, pnl_unrealized=0,
-                   deposits=?, withdrawals=?
+                   deposits=?, withdrawals=?,
+                   capital_final = COALESCE(capital_final, 0)
+                                   + ? * ((? - COALESCE(deposits, 0))
+                                          - (? - COALESCE(withdrawals, 0))
+                                          + (? - COALESCE(pnl_realized, 0)))
                WHERE user_id=? AND broker=? AND year=? AND month=?""",
-            (new_pnl, new_deposits, new_withdrawals, uid, broker, y, m),
+            (new_pnl, new_deposits, new_withdrawals,
+             1 if lleva_el_cambio else 0, new_deposits, new_withdrawals, new_pnl,
+             uid, broker, y, m),
         )
         # Para 'global', sincronizar sus columnas manual_* con la suma per-broker
         # recién calculada, así no vuelve a driftear en futuros _update_monthly_flow
@@ -20429,7 +20457,12 @@ def confirmar_pase(body: PaseIn, uid: int = Depends(get_effective_user)):
     EL ORDEN IMPORTA:
       0. Lo que va a internet (los cambios de ratio de Yahoo, el dólar cripto), ANTES
          de cualquier candado: con la cuenta tomada, cada pase esperaría a Yahoo.
-      1. El turno de la cuenta (Postgres) y 2. las dos cuentas del pedido.
+      1. El turno de la cuenta, EN LOS DOS MOTORES (`_tomar_turno`, no el de la
+         puerta, que en SQLite no hace nada), y 2. las dos cuentas del pedido. En
+         SQLite la base recién se tomaba en el paso 3: un renombre de B que entraba
+         entre la lectura de `brokers` y los lotes dejaba el pase escrito con el
+         nombre viejo (un broker que ya no existe). Acá se puede tomar la base
+         entera desde el principio: lo que va a internet ya se trajo en el paso 0.
       3. Los lotes de A y de B, tomados PARA ESCRIBIR antes de leerlos: en SQLite la
          base recién se tomaba al escribir, y dos pedidos a la vez leían los mismos
          lotes (los dos movían los mismos títulos).
@@ -20450,7 +20483,7 @@ def confirmar_pase(body: PaseIn, uid: int = Depends(get_effective_user)):
         _traspaso_a_mano.precargar(conn, uid, body, helpers=_import_helpers)
         try:
             with conn:
-                _tomar_turno_de_la_puerta(conn, uid)
+                _tomar_turno(conn, uid)
                 hoy = _iso_today()
                 cuentas = _traspaso_a_mano.cuentas_del_pedido(conn, uid, body, hoy=hoy)
                 _tomar_lotes(conn, uid, cuentas.patas_a, cuentas.asset)
