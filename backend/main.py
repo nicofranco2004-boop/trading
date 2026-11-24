@@ -20420,6 +20420,62 @@ def vista_previa_del_pase(body: PaseIn, uid: int = Depends(get_effective_user)):
         return plan.para_la_pantalla()
 
 
+@app.post("/api/positions/traspaso")
+@reintentar_si_trabada
+def confirmar_pase(body: PaseIn, uid: int = Depends(get_effective_user)):
+    """Confirma el pase, TODO O NADA (B.3). Recibe lo mismo que la vista previa más
+    la `firma` y la `valuacion` que ésta devolvió.
+
+    EL ORDEN IMPORTA:
+      0. Lo que va a internet (los cambios de ratio de Yahoo, el dólar cripto), ANTES
+         de cualquier candado: con la cuenta tomada, cada pase esperaría a Yahoo.
+      1. El turno de la cuenta (Postgres) y 2. las dos cuentas del pedido.
+      3. Los lotes de A y de B, tomados PARA ESCRIBIR antes de leerlos: en SQLite la
+         base recién se tomaba al escribir, y dos pedidos a la vez leían los mismos
+         lotes (los dos movían los mismos títulos).
+      4. El plan, armado de nuevo con lo tomado, y su firma contra la de la vista
+         previa: si la cartera cambió en el medio (o es el segundo click), 409.
+      5. La valuación que vio la persona (`fijar_valuacion`): su precio, con el
+         dólar del servidor.
+      6. La foto de lo aportado, ya validado y antes de la primera escritura.
+      7. Las filas (`aplicar_plan`, sin rebuild) y 8. la cola de cualquier puerta
+         (`_cascade_after_movement_delete`: la cadena de cada pata tocada, el
+         RECÁLCULO —que es el que lee las patas— y las fotos; no borra las medidas).
+    Todo en un solo `with conn:`: cualquier falla deshace todo, incluida la
+    «B · USD» recién creada. Un error que no es de la persona responde 500 con
+    «No pudimos guardar el pase (…). No se cambió nada en tu cartera.», que es lo
+    que pasó. `database is locked` sigue saliendo crudo: lo reintenta el decorador."""
+    with db_abierta() as conn:
+        _exigir_interruptor(conn, _traspaso_a_mano.INTERRUPTOR)
+        _traspaso_a_mano.precargar(conn, uid, body, helpers=_import_helpers)
+        try:
+            with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
+                hoy = _iso_today()
+                cuentas = _traspaso_a_mano.cuentas_del_pedido(conn, uid, body, hoy=hoy)
+                _tomar_lotes(conn, uid, cuentas.patas_a, cuentas.asset)
+                _tomar_lotes(conn, uid, cuentas.patas_b, cuentas.asset)
+                plan = _traspaso_a_mano.armar_plan(conn, uid, body, hoy=hoy, cuentas=cuentas,
+                                                   helpers=_import_helpers, para_confirmar=True)
+                if not body.firma or body.firma != plan.firma:
+                    raise _traspaso_a_mano.PaseInvalido(409, _traspaso_a_mano.MSG_CARTERA_CAMBIO)
+                plan.fijar_valuacion(body.valuacion)
+                antes = _foto_contable(conn, uid)
+                out = _traspaso_a_mano.aplicar_plan(conn, uid, plan, helpers=_import_helpers)
+                _cascade_after_movement_delete(conn, uid, plan.fecha, set(out["patas_tocadas"]),
+                                               antes=antes)
+        except _traspaso_a_mano.PaseInvalido as ex:
+            raise HTTPException(ex.status, ex.detalle)
+        except (HTTPException, *ERR_OPERACIONAL):
+            raise
+        except Exception:
+            log.exception("confirmar_pase: uid=%s", uid)
+            raise HTTPException(500, _traspaso_a_mano.MSG_NO_SE_GUARDO.format(
+                motivo="un error inesperado"))
+    _ai_cache_invalidate(uid)
+    return {"ok": True, "traspaso_id": out["traspaso_id"], "mensaje": out["mensaje"]}
+
+
 # ─── Monthly ─────────────────────────────────────────────────────────────────
 
 
@@ -30706,8 +30762,11 @@ def _repair_caja_1415(conn, apply: bool) -> dict:
     d_dep = d_wd = 0.0
     for r in filas:
         lote = conn.execute(
-            """SELECT substr(COALESCE(confirmed_at, created_at),1,10) AS f FROM import_batches
+            # Sin los lotes de un pase entre brokers: no son el importador, y la
+            # reconciliación es el paso siguiente del importador (no de un pase).
+            f"""SELECT substr(COALESCE(confirmed_at, created_at),1,10) AS f FROM import_batches
                 WHERE user_id=? AND broker=? AND status='confirmed'
+                  AND {_traspaso_a_mano.no_es_un_pase()}
                   AND substr(COALESCE(confirmed_at, created_at),1,10) >= ?
                 ORDER BY COALESCE(confirmed_at, created_at) DESC LIMIT 1""",
             (r["user_id"], r["broker"], RECONCILE_CASH_NACIO)).fetchone()
@@ -31404,9 +31463,12 @@ def admin_uso(desde: Optional[str] = None, hasta: Optional[str] = None,
 
         # Importaron = confirmaron una importación en el período, aunque después
         # la hayan deshecho (empezar de cero, borrar el broker): esa semana importó.
+        # Un pase entre brokers no es una importación (mueve lo que ya estaba; su
+        # uso lo cuenta el evento `position_moved` de la pantalla).
         importaron = {r["user_id"] for r in conn.execute(
             f"""SELECT DISTINCT user_id FROM import_batches
                  WHERE status IN ('confirmed', 'reverted')
+                   AND {_traspaso_a_mano.no_es_un_pase()}
                    AND COALESCE(confirmed_at, CASE WHEN status = 'confirmed' THEN created_at END) >= ?
                    AND COALESCE(confirmed_at, CASE WHEN status = 'confirmed' THEN created_at END) < ?
                    AND user_id IN ({quienes})""", (lo, hi))}

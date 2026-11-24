@@ -6,14 +6,17 @@ fecha de compra. Cada pase escribe dos lotes de import confirmados
 (`parser_format = FORMATO`, uno por broker) y una fila en `traspasos_a_mano` que
 los une y guarda la receta para deshacerlo (especificación, secciones A.1–A.7).
 
-QUÉ HAY ACÁ HOY (etapas E3, E4 y E5).
+QUÉ HAY ACÁ HOY (etapas E3 a E6).
 
-  · E5, al final («Armar el pase»): cómo se arma un pase ANTES de escribirlo —
+  · E5 («Armar el pase»): cómo se arma un pase ANTES de escribirlo —
     las validaciones de la sección B.6, qué lotes se mueven, a qué pata de B va
     cada uno, cuánto valían ese día (V) y cuánto costaron (C), la comprobación
-    contra el registro de lo importado y la firma—. `armar_plan` sólo LEE: lo usa
-    la vista previa (`POST /api/positions/traspaso/vista-previa`) y lo va a usar
-    el confirmar, que aplica las filas que el plan ya trae armadas.
+    contra el registro de lo importado y la firma—. `armar_plan` sólo LEE: lo usan
+    la vista previa (`POST /api/positions/traspaso/vista-previa`) y el confirmar.
+  · E6, al final («Aplicar el pase»): el confirmar (`POST /api/positions/traspaso`)
+    vuelve a armar el plan con los lotes tomados, compara la firma, fija la
+    valuación que vio la persona (`Plan.fijar_valuacion`) y lo escribe todo o nada
+    (`aplicar_plan`).
 
 Las LECTURAS que necesitan los que leen el
 registro: el capital, el resultado del mes y los reportes (E4, abajo, «Las patas
@@ -55,6 +58,18 @@ log = logging.getLogger(__name__)
 # «tenencia» a propósito (A.7): los lectores que reconocen una foto de tenencia por
 # esa palabra no tienen que tomar un pase por una foto.
 FORMATO = "traspaso_a_mano"
+
+
+def no_es_un_pase(alias: str = "") -> str:
+    """Fragmento SQL: el lote de `import_batches` NO es uno de los dos de un pase.
+
+    Un pase escribe dos lotes confirmados (A.7), pero no es un archivo que la persona
+    importó: no trae datos nuevos, mueve los que ya estaban. Lo que pregunta «¿importó
+    algo?» —si la cuenta tiene historia que reconstruir, la actividad de la prueba
+    gratis, la de la semana en el panel— lo pregunta con esto. Uno solo para todos:
+    escrito a mano en cada consulta, el día que cambie el formato se olvida uno.
+    `alias`: el de la tabla en la consulta, con su punto ('b.'), o vacío."""
+    return f"COALESCE({alias}parser_format, '') <> '{FORMATO}'"
 
 
 def raices_de_brokers(conn, uid: int) -> Dict[str, str]:
@@ -405,6 +420,14 @@ MSG_APAGADO = "Esta opción no está disponible por ahora."
 MSG_CARTERA_CAMBIO = ("Tu cartera cambió desde que armaste la vista previa. "
                       "Revisala de nuevo antes de confirmar.")
 MSG_NO_SE_GUARDO = "No pudimos guardar el pase ({motivo}). No se cambió nada en tu cartera."
+# El confirmar (B.3 paso 5, B.6 #29): la valuación que vio la persona en la vista previa.
+MSG_FALTA_LA_VISTA = "Falta la vista previa del pase."
+MSG_PRECIO_INVALIDO = "Precio inválido."
+MSG_DOLAR_CAMBIO = ("El dólar de ese día cambió (de {antes} a {ahora}). Revisá la vista previa "
+                    "antes de confirmar.")
+TOLERANCIA_DEL_DOLAR = 0.03
+MSG_LISTO = "Listo: pasaste {q} {asset} de {A} a {B}."
+SUFIJO_USD = " · USD"
 
 # Las notas de las filas (A.6). Sin nombres de broker (H16): el renombre no las
 # toca y un pase no puede dejar escrito un nombre viejo.
@@ -478,6 +501,13 @@ def _monto(valor, moneda) -> str:
     pantalla lo tapa (`taparMontos` sólo tapa lo que lleva moneda adelante)."""
     from money_fmt import fmt_money
     return fmt_money(valor, "ARS" if (moneda or "").upper() == "ARS" else "USD")
+
+
+def _cotizacion(valor) -> str:
+    """Un dólar en pesos con sus centavos y la moneda adelante ('$1.400,50'): la
+    cotización de un día se lee con dos decimales (`_monto` la redondearía)."""
+    from money_fmt import fmt_num
+    return "$" + fmt_num(float(valor or 0), 2)
 
 
 def _veces(k: float) -> str:
@@ -720,6 +750,56 @@ class Plan:
         return {"precio_unitario": self.precio, "moneda_precio": self.moneda_precio,
                 "fuente": self.fuente, "fecha_precio": self.fecha_precio, "dolar": dolar}
 
+    def aviso_de_banda(self) -> Optional[str]:
+        """El aviso «el precio está muy lejos de lo que pagaste» (B.6), comparando los
+        dos en dólares (precio ÷ dólar del pase contra C ÷ cantidad). No frena. Lo
+        usan la vista previa y el confirmar, que valúa con el precio que vio la
+        persona (`fijar_valuacion`)."""
+        if self.costo_usd <= 0 or self.cantidad <= 0:
+            return None
+        precio_usd = (self.precio / self.tc_pase if self.moneda_precio == "ARS" and self.tc_pase
+                      else self.precio)
+        k = precio_usd / (self.costo_usd / self.cantidad)
+        if BANDA_DEL_PRECIO[0] <= k <= BANDA_DEL_PRECIO[1]:
+            return None
+        cola = (f"Revisá que esté en {_en_moneda(self.moneda_precio)}."
+                if self.fuente == "precio_a_mano"
+                else "Si no es correcto, escribí el precio a mano.")
+        return (f"El precio de ese día está muy lejos de lo que pagaste (×{_veces(k)}). "
+                f"{cola}")
+
+    def fijar_valuacion(self, valuacion) -> None:
+        """B.3 paso 5: el confirmar valúa con el precio que la persona vio en la vista
+        previa (`valuacion`, la de `para_la_pantalla`), no con el de este instante: el
+        último precio se reescribe cada minuto, y con el de ahora V no sería el que
+        confirmó. Aceptar el precio del pedido no abre nada nuevo: con `precio_manual`
+        ya puede escribir el que quiera.
+
+        Valida tres cosas (B.6 #29): que venga (400), que el precio esté en la moneda
+        de la clave de precio de este activo (400 «Precio inválido.»), y que el dólar
+        que vio esté a ±3 % del que el servidor calcula para esa fecha (409: si no, la
+        vista previa se armó con otra historia del dólar). El dólar con que se escribe
+        es SIEMPRE el del servidor: el del pedido sólo se compara. V se recalcula solo
+        (sale de `pares()`); C no depende del precio."""
+        if valuacion is None:
+            raise PaseInvalido(400, MSG_FALTA_LA_VISTA)
+        v = valuacion if isinstance(valuacion, dict) else valuacion.model_dump()
+        if str(v.get("moneda_precio") or "") != self.moneda_precio:
+            raise PaseInvalido(400, MSG_PRECIO_INVALIDO)
+        servidor = float(self.valuacion()["dolar"] or 0)
+        visto = float(v.get("dolar") or 0)
+        if servidor <= 0 or abs(visto - servidor) > TOLERANCIA_DEL_DOLAR * servidor:
+            raise PaseInvalido(409, MSG_DOLAR_CAMBIO.format(antes=_cotizacion(visto),
+                                                            ahora=_cotizacion(servidor)))
+        banda_antes = self.aviso_de_banda()
+        self.precio = float(v["precio_unitario"])
+        self.fuente = str(v["fuente"])
+        self.fecha_precio = str(v.get("fecha_precio") or self.fecha)[:10]
+        self.avisos = [a for a in self.avisos if a != banda_antes]
+        banda = self.aviso_de_banda()
+        if banda:
+            self.avisos.append(banda)
+
     # ── las filas que el confirmar va a aplicar (A.6, C.6) ──
     def filas(self, traspaso_id: str):
         """(filas del lote de A, filas del lote de B), como `NormalizedTx`, con el id
@@ -867,9 +947,15 @@ def firma_del_plan(lotes: List[LoteDelPlan], fecha: str, moneda: str, raiz_b: st
     """C.9. Sin precio ni dólar: el último precio se reescribe cada minuto y con él
     adentro el confirmar daba «tu cartera cambió» sin que nada cambiara. El precio
     viaja aparte (`valuacion`). Frena el doble envío: después del primer pase, los
-    lotes de A ya no son los mismos."""
-    datos = [[[l.lote_id, round(l.take, 9), l.entry_date, round(l.mov_inv, 9),
-               round(l.mov_com, 9), l.pata_b] for l in lotes],
+    lotes de A ya no son los mismos.
+
+    Lleva también la cantidad que el lote tenía ANTES del pase (no está en la lista
+    de C.9): en un pase PARCIAL el segundo envío arma un plan con el mismo lote, la
+    misma cantidad y el mismo costo en proporción —4 de 10 y después 4 de 6 cuestan
+    lo mismo—, y sin esto el segundo click hacía un segundo pase."""
+    datos = [[[l.lote_id, round(float(l.lote.get("quantity") or 0), 9), round(l.take, 9),
+               l.entry_date, round(l.mov_inv, 9), round(l.mov_com, 9), l.pata_b]
+              for l in lotes],
              fecha, moneda, raiz_b,
              ({"monto": round(float(gasto["monto"]), 9), "moneda": gasto["moneda"]}
               if gasto else None)]
@@ -1578,15 +1664,146 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
                 precio_cargado_en_destino=precio_en_destino, avisos=avisos)
 
     # Aviso: el precio lejísimos de lo que se pagó, comparando los dos en dólares.
-    if plan.costo_usd > 0 and cantidad > 0:
-        precio_usd = precio / tc_pase if moneda_precio == "ARS" and tc_pase else precio
-        k = precio_usd / (plan.costo_usd / cantidad)
-        if k < BANDA_DEL_PRECIO[0] or k > BANDA_DEL_PRECIO[1]:
-            cola = (f"Revisá que esté en {_en_moneda(moneda_precio)}."
-                    if fuente == "precio_a_mano"
-                    else "Si no es correcto, escribí el precio a mano.")
-            avisos.append(f"El precio de ese día está muy lejos de lo que pagaste (×{_veces(k)}). "
-                          f"{cola}")
+    banda = plan.aviso_de_banda()
+    if banda:
+        avisos.append(banda)
 
     plan.firma = firma_del_plan(lotes, fecha, moneda, B, gasto)
     return plan
+
+
+# ── C.7: aplicar el pase, todo dentro de la transacción del confirmar ──────────
+#
+# QUÉ HACE. Escribe lo que `armar_plan` ya decidió, en este orden: crea la «· USD»
+# que haga falta, saca de `positions` los lotes CARGADOS A MANO de A (no tienen
+# fila en ningún archivo), guarda los dos lotes del pase (el de A y el de B) con
+# `store_preview_txs`, anota la receta en `traspasos_a_mano` y los confirma con el
+# persister de siempre (`persist_batch`): la SELL de A consume los lotes importados,
+# las BUY de B los abren con su costo y su fecha de compra, las patas no mueven nada
+# (las lee el recálculo) y la FEE baja la caja de A.
+#
+# TODO O NADA. No hace `commit()` ni deja que nada lo haga: corre adentro del
+# `with conn:` del endpoint. Cualquier cosa que no se pueda guardar sale como
+# `PaseInvalido` y el `with` deshace TODO, incluida la «B · USD» recién creada:
+#   · una fila que el persister salteó (`skipped_rows`: el persister atrapa los
+#     errores de cada fila y sigue con la siguiente; en un pase eso dejaría A sin
+#     los títulos y B sin recibirlos) → 500 «No pudimos guardar el pase…»;
+#   · el freno de pesos del persister, que sale antes de las filas → 409 con su texto;
+#   · la «· USD» que no se puede crear (`_ensure_usd_sibling`) → 409 con su motivo;
+#   · un lote cargado a mano que cambió entre la lectura y la escritura → 409 «Tu
+#     cartera cambió…».
+#
+# LO QUE NO HACE. No rearma A ni B (C.7.7): el persister consumió exactamente los
+# lotes del plan (lo comprobó `armar_plan` contra el registro, C.2.6), y lo que
+# escribió es lo mismo que daría un rebuild; sin rebuild, los ids de lo que queda en
+# A no cambian. Tampoco recalcula el mes: eso lo hace el endpoint después
+# (`_cascade_after_movement_delete`, la cola de cualquier puerta: cadena, RECÁLCULO
+# —que es el que lee las patas— y fotos).
+
+def _motivo(mensaje) -> str:
+    """El texto de una fila salteada, para ir entre paréntesis en MSG_NO_SE_GUARDO:
+    sin el punto final y con minúscula ('No alcanzan…' → 'no alcanzan…')."""
+    s = str(mensaje or "").strip().rstrip(".")
+    return (s[:1].lower() + s[1:]) if s else "un error inesperado"
+
+
+def aplicar_plan(conn, uid: int, plan: Plan, *, helpers) -> Dict[str, Any]:
+    """C.7. Devuelve {traspaso_id, lote_salida, lote_entrada, mensaje, patas_tocadas}.
+    Levanta `PaseInvalido` (ver arriba): quien llama tiene la transacción abierta y la
+    deshace entera."""
+    import secrets
+    from fx import costo_del_lote
+    from importing import pipeline
+    from importing.persister import PersistError, broker_pair, persist_batch
+
+    c = plan.cuentas
+    tid = secrets.token_hex(16)
+
+    # C.7.2 — las «· USD» que hagan falta, antes de cualquier otra escritura.
+    for nombre in plan.brokers_a_crear:
+        raiz = nombre[:-len(SUFIJO_USD)] if nombre.endswith(SUFIJO_USD) else nombre
+        try:
+            creada = helpers._pata_de_la_moneda(conn, uid, raiz, "USD", crear=True)
+        except PaseInvalido:
+            raise
+        except Exception as ex:
+            # `_ensure_usd_sibling` contesta con un HTTPException (409 si no se puede
+            # adoptar un «· USD» que ya existe con datos): acá se traduce, para que el
+            # endpoint lo responda con su motivo y no como un 500 crudo.
+            status = getattr(ex, "status_code", None)
+            if status is None:
+                raise
+            raise PaseInvalido(int(status), getattr(ex, "detail", None) or str(ex))
+        if creada != nombre:
+            raise PaseInvalido(409, MSG_CARTERA_CAMBIO)
+
+    # C.7.3 — los lotes cargados a mano de A salen de `positions`, primero. Con la
+    # cantidad que se leyó en la condición: si otro pedido lo cambió, no se toca nada.
+    # El prefijo FIFO garantiza que, después de esto, los importados elegidos son los
+    # primeros de la cola que queda (los consume la SELL de abajo).
+    for l in plan.lotes:
+        if l.origen != "a_mano":
+            continue
+        q = float(l.lote.get("quantity") or 0)
+        if l.parcial:
+            base_inv = costo_del_lote(l.lote.get("invested"), l.lote.get("buy_price"), q) or 0.0
+            n = conn.execute(
+                "UPDATE positions SET quantity=?, invested=?, commissions=? "
+                "WHERE id=? AND user_id=? AND quantity=?",
+                (q - l.take, base_inv - l.mov_inv,
+                 float(l.lote.get("commissions") or 0) - l.mov_com,
+                 l.lote_id, uid, l.lote.get("quantity"))).rowcount
+        else:
+            n = conn.execute("DELETE FROM positions WHERE id=? AND user_id=? AND quantity=?",
+                             (l.lote_id, uid, l.lote.get("quantity"))).rowcount
+        if n != 1:
+            raise PaseInvalido(409, MSG_CARTERA_CAMBIO)
+
+    # C.7.4 — los dos lotes del pase, en 'preview' (los confirma el persister abajo).
+    filas_a, filas_b = plan.filas(tid)
+    sid_a = pipeline.store_preview_txs(conn, uid, broker=c.raiz_a, parser_format=FORMATO,
+                                       file_name=ARCHIVO_DEL_PASE, txs=filas_a)
+    sid_b = pipeline.store_preview_txs(conn, uid, broker=c.raiz_b, parser_format=FORMATO,
+                                       file_name=ARCHIVO_DEL_PASE, txs=filas_b)
+
+    # C.7.5 — la receta, con la fila de B de cada lote (la BUY k es la fila k del lote
+    # de B: `filas()` las pone primero, en el orden de los lotes).
+    receta = plan.receta()
+    _, raw_b = pipeline.load_session_for_confirm(conn, uid=uid, session_id=sid_b)
+    for k, lote in enumerate(receta["lotes"]):
+        lote["fila_destino_raw_row_id"] = raw_b.get(BASE_ROW_INDEX + k)
+    conn.execute(
+        "INSERT INTO traspasos_a_mano (id, user_id, lote_salida, lote_entrada, fecha, asset, "
+        "cantidad, moneda, receta_json) VALUES (?,?,?,?,?,?,?,?,?)",
+        (tid, uid, sid_a, sid_b, plan.fecha, plan.asset, plan.cantidad, plan.moneda,
+         json.dumps(receta)))
+
+    # C.7.6 — el persister de siempre, lote por lote. Una fila salteada es un pase a
+    # medias: se deshace todo.
+    for sid in (sid_a, sid_b):
+        txs, raw = pipeline.load_session_for_confirm(conn, uid=uid, session_id=sid)
+        try:
+            r = persist_batch(conn, uid=uid, batch_id=sid, txs=txs, raw_row_ids_by_index=raw,
+                              helpers=helpers)
+        except PersistError as ex:
+            raise PaseInvalido(409, ex.message)
+        if r.get("skipped_rows"):
+            primera = r["skipped_rows"][0]
+            log.error("traspaso_a_mano.aplicar_plan: uid=%s pase=%s fila salteada %s",
+                      uid, tid, primera)
+            raise PaseInvalido(500, MSG_NO_SE_GUARDO.format(motivo=_motivo(primera.get("message"))))
+
+    # C.7.8 — el precio cargado a mano en A viaja a B si B no tenía uno (lo anotó el
+    # plan en la receta, para deshacerlo). Con las patas de B de ahora: la «· USD»
+    # pudo nacer recién.
+    if plan.precio_cargado_en_destino:
+        patas_b = broker_pair(conn, uid, c.raiz_b)
+        conn.execute(
+            f"UPDATE positions SET price_override=? WHERE user_id=? AND broker IN ({_ph(patas_b)}) "
+            f"AND asset=? AND is_cash=0",
+            (plan.precio_cargado_en_destino["puesto"], uid, *patas_b, plan.asset))
+
+    return {"traspaso_id": tid, "lote_salida": sid_a, "lote_entrada": sid_b,
+            "mensaje": MSG_LISTO.format(q=_cant(plan.cantidad), asset=plan.asset,
+                                        A=c.raiz_a, B=c.raiz_b),
+            "patas_tocadas": plan.patas_tocadas}

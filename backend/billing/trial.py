@@ -41,6 +41,10 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 
+# Lo que pregunta «¿importó algo?» no cuenta los dos lotes de un pase entre brokers
+# (la regla vive en un solo lugar: `traspaso_a_mano.no_es_un_pase`).
+from importing.traspaso_a_mano import no_es_un_pase
+
 log = logging.getLogger("billing.trial")
 
 # ─── Parámetros (cambiarlos NO requiere tocar nada más) ─────────────────────
@@ -926,9 +930,12 @@ def _trial_stats(conn, user_id: int) -> dict:
         # import_batches.created_at; se suma valid_rows de los batches confirmados
         # en la ventana. Lo cargado a mano no entra (no tiene fecha de carga),
         # pero el que carga a mano carga de a una y no es el caso que importa.
+        # Sin los dos lotes de un pase entre brokers: mover títulos que ya estaban
+        # no es cargar operaciones (decía "5 operaciones importadas" por un pase).
         ("operations",
          "SELECT COALESCE(SUM(valid_rows),0) c FROM import_batches "
          "WHERE user_id=? AND status='confirmed' "
+         f"AND {no_es_un_pase()} "
          "AND substr(replace(created_at,'T',' '),1,10) >= ?", (user_id, dia)),
         ("analyses",
          "SELECT COALESCE(SUM(analyses_count),0) c FROM ai_usage_daily "
@@ -1437,10 +1444,12 @@ def funnel(conn, days: int = 90) -> dict:
     # excluido por definición justo el caso más común. La pregunta que el panel
     # quiere contestar es "¿la prueba corrió sobre una app con datos?", no
     # "¿importó después del click?".
+    # Un pase entre brokers no es un import (mueve lo que ya estaba): no cuenta.
     importaron = _one(
-        """SELECT COUNT(DISTINCT u.id) c FROM users u
+        f"""SELECT COUNT(DISTINCT u.id) c FROM users u
             JOIN import_batches b ON b.user_id = u.id
            WHERE u.trial_started_at >= ? AND b.status='confirmed'
+             AND {no_es_un_pase('b.')}
              AND substr(b.created_at,1,10)
                  >= substr(replace(u.trial_started_at,'T',' '),1,10)""", (since,))
 
@@ -1844,6 +1853,7 @@ def progreso(conn, days: int = 30, limit: int = 200, detalle: bool = False) -> d
                   LEFT JOIN import_op_links l ON l.batch_id = b.id
                  WHERE b.user_id IN ({ph})
                    AND b.status = 'confirmed'
+                   AND {no_es_un_pase('b.')}
                    AND {_DIA_LOTE} >= ?
                  GROUP BY b.user_id, {_DIA_LOTE}""", (*ids, primer_dia)):
             c = _celda(r["uid"], r["d"])
@@ -1924,7 +1934,7 @@ def progreso(conn, days: int = 30, limit: int = 200, detalle: bool = False) -> d
     ultimo_import = _ultimo("importación",
         f"""SELECT user_id uid, MAX(COALESCE(confirmed_at, created_at)) t
               FROM import_batches
-             WHERE user_id IN ({ph}) AND status='confirmed'
+             WHERE user_id IN ({ph}) AND status='confirmed' AND {no_es_un_pase()}
              GROUP BY user_id""", tuple(ids))
 
     # Quiénes pusieron plata DESPUÉS de arrancar la prueba. Es la misma

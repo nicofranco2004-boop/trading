@@ -70,7 +70,7 @@ if BACKEND not in sys.path:
 import main                                              # noqa: E402
 import snapshots_job as sj                               # noqa: E402
 from importing.recompute_backfill import _clone_db                 # noqa: E402
-from importing.traspaso_a_mano import FORMATO as _FORMATO_PASE    # noqa: E402
+from importing.traspaso_a_mano import no_es_un_pase as _no_es_un_pase  # noqa: E402
 
 
 # ─── Fetch de cierre mensual histórico por símbolo de precio ──────────────────
@@ -1091,7 +1091,7 @@ def _meses_a_reconstruir(huella: list, today: _date) -> list:
 # decide si se reconstruye y si las fotos reconstruidas que quedaron ya no valen.
 _HAY_IMPORT_RECONSTRUIBLE = (
     "SELECT 1 FROM import_batches WHERE user_id=? AND status='confirmed' "
-    f"AND COALESCE(parser_format,'') <> '{_FORMATO_PASE}'")
+    f"AND {_no_es_un_pase()}")
 
 
 def _borrar_reconstruidas_con_el_turno(conn, uid: int, motivo_ya_no_vale: str) -> int:
