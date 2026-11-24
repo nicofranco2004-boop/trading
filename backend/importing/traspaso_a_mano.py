@@ -6,7 +6,7 @@ fecha de compra. Cada pase escribe dos lotes de import confirmados
 (`parser_format = FORMATO`, uno por broker) y una fila en `traspasos_a_mano` que
 los une y guarda la receta para deshacerlo (especificación, secciones A.1–A.7).
 
-QUÉ HAY ACÁ HOY (etapas E3 a E7).
+QUÉ HAY ACÁ HOY (etapas E3 a E8).
 
   · E5 («Armar el pase»): cómo se arma un pase ANTES de escribirlo —
     las validaciones de la sección B.6, qué lotes se mueven, a qué pata de B va
@@ -23,6 +23,13 @@ QUÉ HAY ACÁ HOY (etapas E3 a E7).
     usan las puertas que podrían desarmar un pase vivo para frenar
     (`pase_que_cambia`, `filas_origen_vivas`, `lotes_en_pases_vivos`,
     `pase_vivo_del_activo`, `pases_de_brokers`, `lotes_que_no_estaban`).
+  · E8, al final («Los imports que llegan después de un pase»): el antiduplicado
+    (`filas_ya_traspasadas`: la llegada o la salida que el pase ya anotó no entra
+    otra vez, aunque se fuercen los repetidos), lo que se anota de lo omitido
+    (`anotar_omitidas`) y el freno del importador (`freno_del_import`: la regla
+    única `pase_que_cambia` sobre lo que queda del archivo). Lo usan la vista previa
+    y el confirm del importador (`importing/pipeline.py`, `main.import_confirm`) y la
+    lista de Importaciones (`lotes_de_pases`).
 
 Las LECTURAS que necesitan los que leen el
 registro: el capital, el resultado del mes y los reportes (E4, abajo, «Las patas
@@ -38,9 +45,8 @@ que cambió de broker:
     venta posterior en B guarda la fecha de compra original; sin el día de
     llegada, la historia lo contaba en B también en los meses en que estaba en A.
 
-El resto del módulo (el antiduplicado de los imports posteriores, el detector de
-pases desfasados y la revaluación de las patas en la migración del dólar) lo
-agregan las etapas siguientes.
+El resto del módulo (el detector de pases desfasados y la revaluación de las patas
+en la migración del dólar) lo agregan las etapas siguientes.
 
 Todas las lecturas del registro usan `TX_VIVAS` (import confirmado y sin lápida):
 un pase deshecho deja sus dos lotes en `reverted`, así que deja de contar solo.
@@ -2503,12 +2509,15 @@ def pases_de_brokers(conn, uid: int, nombres) -> List[str]:
         "ORDER BY fecha, id", (uid,)).fetchall() if r["id"] in tocados]
 
 
-def pase_que_cambia(conn, uid: int, filas, *, excluir=None) -> Optional[Dict[str, Any]]:
+def pase_que_cambia(conn, uid: int, filas, *, excluir=None,
+                    plantilla: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """C.11, la regla única. `filas`: dicts {broker, asset, op, date, fecha_compra,
     traspaso_id} que una puerta está por agregar, sacar o reescribir en el registro.
     Devuelve el primer pase vivo cuya historia anterior cambiaría —{traspaso_id, lado
     ('origen'|'destino'), fecha, contraparte, asset, broker, op, fecha_fila,
-    mensaje}— o None.
+    mensaje}— o None. `mensaje` sale de `plantilla` (por defecto `MSG_CAMBIA_UN_PASE`;
+    el importador pasa `MSG_IMPORT_CAMBIA_UN_PASE`, que además nombra si el archivo
+    trae compras o ventas y de qué día).
       · Lado A (su lote sigue confirmado, la fila en una pata de A, el mismo activo, no
         es del pase): una COMPRA del día del pase o antes y comprada no después que lo
         más nuevo que se movió (cambia los lotes que el pase consumió), o una VENTA del
@@ -2545,9 +2554,11 @@ def pase_que_cambia(conn, uid: int, filas, *, excluir=None) -> Optional[Dict[str
                 return {"traspaso_id": reg.id, "lado": lado, "fecha": reg.fecha,
                         "contraparte": contraparte, "asset": reg.asset, "broker": broker,
                         "op": op, "fecha_fila": d,
-                        "mensaje": MSG_CAMBIA_UN_PASE.format(
+                        "mensaje": (plantilla or MSG_CAMBIA_UN_PASE).format(
                             asset=reg.asset, broker=broker, fecha=_ddmmaaaa(reg.fecha),
-                            hacia=hacia, contraparte=contraparte)}
+                            hacia=hacia, contraparte=contraparte,
+                            que="ventas" if op == "SELL" else "compras",
+                            fecha_fila=_ddmmaaaa(d))}
     return None
 
 
@@ -2566,3 +2577,278 @@ def lotes_que_no_estaban(lotes, fecha: str):
     estaban. Los lotes sin `en_broker_desde` siguen como siempre."""
     f = _dia(fecha) or ""
     return [l for l in lotes if l["en_broker_desde"] and _dia(l["en_broker_desde"]) > f]
+
+
+# ═══ E8: los imports que llegan DESPUÉS de un pase ════════════════════════════
+#
+# EL ANTIDUPLICADO (D.7, decisión 7). El pase ya anotó la salida de A y la llegada a
+# B. Si después la persona importa el archivo de B, trae esa misma llegada
+# («Transferencia Externa (Crédito)» de Balanz, el DETR de IEB) con su depósito
+# compensatorio; el de A trae la salida («Débito», RETR). Entraría dos veces: B con
+# los títulos al doble y el aportado contado dos veces. `filas_ya_traspasadas` las
+# reconoce y el confirm las omite (siempre: también cuando la persona fuerza los
+# repetidos por huella, que es otra cosa). Lo omitido queda anotado en el pase
+# (`omitidas_json`): deshacer el pase dejaría esos títulos sin registrar, y el
+# deshacer frena con el camino (C.8 #2).
+#
+# Las tres ventanas, por fila, contra la fecha del pase:
+#   · hasta `flujos.DIAS_CRUCE` (4) días → es el mismo movimiento (un traspaso no
+#     liquida el mismo día en los dos brokers): se omite;
+#   · hasta `DIAS_TRASPASO_TARDIO` (60) → puede ser el mismo con la fecha del pase mal
+#     anotada: el import frena y dice qué fecha poner;
+#   · más lejos → es otro movimiento: entra, con un aviso.
+# Sólo cuenta lo que entra en lo que el pase movió en esa cuenta (su «presupuesto»):
+# ante la duda se omite de menos (PLAN §12.1). La salida de A cuenta sólo la parte
+# importada (las SELL del pase): un Débito que incluye lotes que eran cargados a
+# mano no se omite —el mismo archivo trae sus compras, y la regla única frena el
+# import entero (C.11)—.
+#
+# EL FRENO (D.10.16). Un import que cambiaría la historia anterior a un pase vivo
+# (compras o ventas en A hasta el día del pase, ventas en B antes del pase) frena con
+# `MSG_IMPORT_CAMBIA_UN_PASE`: es la misma regla que las demás puertas
+# (`pase_que_cambia`), sobre lo que queda después de deduplicar. La vista previa lo
+# anticipa (`cambian_un_pase`) y el confirm lo vuelve a mirar dentro de su transacción.
+
+MSG_FRENO_ENTRADA = ("El archivo de {B} dice que los {asset} llegaron el {fila} y el pase "
+                     "lo anotaste el {pase}. Para no contarlos dos veces, deshacé el pase y "
+                     "hacelo de nuevo con fecha {fila}; después importá el archivo.")
+MSG_FRENO_SALIDA = ("El archivo de {A} dice que los {asset} salieron el {fila} y el pase "
+                    "lo anotaste el {pase}. Para no contarlos dos veces, deshacé el pase y "
+                    "hacelo de nuevo con fecha {fila}; después importá el archivo.")
+# Lo que entra igual, con un aviso: muy lejos de la fecha del pase, o más títulos de
+# los que el pase movió en esa cuenta.
+AVISO_ENTRADA_LEJOS = ("Ojo: este archivo trae una llegada de {q} {asset} a {B} el {fila}, "
+                       "lejos de tu pase desde {A} del {pase}: la cargamos como otra llegada. "
+                       "Si es la misma, deshacé el pase antes de importar el archivo.")
+AVISO_SALIDA_LEJOS = ("Ojo: este archivo trae una salida de {q} {asset} de {A} el {fila}, "
+                      "lejos de tu pase a {B} del {pase}: la cargamos como otra salida. "
+                      "Si es la misma, deshacé el pase antes de importar el archivo.")
+AVISO_ENTRADA_DE_MAS = ("Ojo: este archivo trae una llegada de {q} {asset} a {B} el {fila}, "
+                        "cerca de tu pase desde {A} del {pase}, pero son más de los {n} que "
+                        "pasaste: la cargamos. Si incluye los del pase, deshacé el pase antes "
+                        "de importar el archivo.")
+AVISO_SALIDA_DE_MAS = ("Ojo: este archivo trae una salida de {q} {asset} de {A} el {fila}, "
+                       "cerca de tu pase a {B} del {pase}, pero son más de los {n} que salieron "
+                       "de tus archivos: la cargamos. Si incluye los del pase, deshacé el pase "
+                       "antes de importar el archivo.")
+
+
+@dataclass
+class YaTraspasadas:
+    """Lo que `filas_ya_traspasadas` encontró en un import.
+
+    `indices`: los `row_index` que el confirm omite (las llegadas o salidas del pase
+    y el depósito compensatorio de cada llegada). `detalle`: una línea por título
+    omitido, para la vista previa (`ya_traspasados`: fecha, activo, cantidad, broker,
+    lado, más row_index y traspaso_id). `omitidas`: lo que se anota en cada pase
+    ({traspaso_id, row_index, lado}, el depósito incluido). `frenos`: las filas a más
+    de 4 y hasta 60 días (el import no entra; cada una con su `mensaje`). `avisos`:
+    textos de lo que entra igual."""
+    indices: set = field(default_factory=set)
+    detalle: List[Dict[str, Any]] = field(default_factory=list)
+    avisos: List[str] = field(default_factory=list)
+    frenos: List[Dict[str, Any]] = field(default_factory=list)
+    omitidas: List[Dict[str, Any]] = field(default_factory=list)
+
+
+def _lado_de_la_fila(t) -> Optional[str]:
+    """'entrada' si la fila del archivo es la llegada de títulos desde otro broker
+    (una COMPRA con `transfer_in`, o el DETR de IEB, que no la marca); 'salida' si es
+    su salida hacia otro (una VENTA con `transfer_out` que no es de una foto de
+    tenencia); None si no es ninguna de las dos."""
+    if getattr(t, "traspaso_id", None):
+        return None                     # una fila de un pase nunca viene en un archivo
+    op = str(getattr(t, "operation_type", "") or "").upper()
+    notas = str(getattr(t, "notes", "") or "")
+    if op == "BUY" and (getattr(t, "transfer_in", False) or "IEB:DETR" in notas):
+        return "entrada"
+    if op == "SELL" and getattr(t, "transfer_out", False) and not notas.startswith("Tenencia"):
+        return "salida"
+    return None
+
+
+def _presupuesto(conn, reg: Registro, lado: str) -> float:
+    """Cuántos títulos del pase puede explicar un archivo de ese lado: lo que llegó a
+    las patas de B (las COMPRAS del lote de B) o lo que salió de las patas de A por
+    sus archivos (las VENTAS del pase: sólo la parte importada)."""
+    if lado == "entrada":
+        lote, op, patas = reg.lote_entrada, "BUY", reg.patas_b
+    else:
+        lote, op, patas = reg.lote_salida, "SELL", reg.patas_a
+    if not patas:
+        return 0.0
+    r = conn.execute(
+        f"""SELECT COALESCE(SUM(n.quantity), 0) AS q FROM {TX_VIVAS}
+             WHERE n.batch_id = ? AND n.traspaso_id = ? AND n.operation_type = ?
+               AND n.broker IN ({_ph(patas)})""",
+        (lote, reg.id, op, *patas)).fetchone()
+    return _num(r["q"]) if r else 0.0
+
+
+def _deposito_hermano(t, txs, usados: set):
+    """El DEPÓSITO compensatorio que el lector emite junto con una llegada de títulos
+    (Balanz: «Transferencia Externa (entrada de título)»; IEB: «IEB:DETR … (cash
+    compensatorio)»): la misma pata, el mismo día, la misma moneda y el mismo monto
+    (±1 %, o ±1 unidad). Uno por llegada, el primero libre."""
+    monto = abs(_num(getattr(t, "gross_amount", None)))
+    if monto <= 0:
+        return None                     # una llegada sin valor no trae depósito
+    tol = max(0.01 * monto, 1.0)
+    for d in sorted(txs, key=lambda x: x.row_index):
+        if d.row_index in usados or str(d.operation_type or "").upper() != "DEPOSIT":
+            continue
+        notas = str(d.notes or "")
+        if not ("entrada de título" in notas.lower() or "entrada de titulo" in notas.lower()
+                or "IEB:DETR" in notas):
+            continue
+        if (_clave_nombre(d.broker) != _clave_nombre(t.broker) or _dia(d.date) != _dia(t.date)
+                or str(d.currency or "").upper() != str(t.currency or "").upper()):
+            continue
+        if abs(abs(_num(d.gross_amount)) - monto) <= tol:
+            return d
+    return None
+
+
+def filas_ya_traspasadas(conn, uid: int, txs, *, already_skipped=()) -> YaTraspasadas:
+    """El antiduplicado semántico de un import posterior a un pase (D.7). `txs`: las
+    filas del archivo (`NormalizedTx`); `already_skipped`: las que ya no van a entrar
+    por otro motivo (la persona las destildó o esperan aprobación) y no cuentan. Va
+    antes que los repetidos por huella (`pipeline.repeticiones`): el «Débito» del día
+    del pase tiene la huella de la salida del pase, y lo omitido por el pase tiene
+    que quedar anotado. Mira los pases vivos: del lado de la llegada con el lote de
+    B confirmado, del de la salida con el de A confirmado. Cada fila se compara con el
+    pase más cercano en fecha que la pueda explicar (el mismo activo, una pata de esa
+    cuenta y no más títulos de los que le quedan al pase por explicar). Sólo lee."""
+    out = YaTraspasadas()
+    skip = set(already_skipped or ())
+    candidatas = sorted((t for t in (txs or []) if t.row_index not in skip and _lado_de_la_fila(t)),
+                        key=lambda t: t.row_index)
+    if not candidatas:
+        return out
+    regs = _registros(conn, uid, vivos=True)
+    if not regs:
+        return out
+    from flujos import DIAS_CRUCE
+    presupuesto: Dict[Tuple[str, str], float] = {}
+    for reg in regs:
+        if reg.b_vivo:
+            presupuesto[(reg.id, "entrada")] = _presupuesto(conn, reg, "entrada")
+        if reg.a_vivo:
+            presupuesto[(reg.id, "salida")] = _presupuesto(conn, reg, "salida")
+    usados = set(skip)
+    for t in candidatas:
+        lado = _lado_de_la_fila(t)
+        fila = _dia(t.date) or ""
+        q = _num(t.quantity)
+        suyos = [reg for reg in regs if (reg.id, lado) in presupuesto
+                 and _canon(reg.asset) == _canon(t.asset_symbol)
+                 and _clave_nombre(t.broker) in {_clave_nombre(p) for p in
+                                                 (reg.patas_b if lado == "entrada" else reg.patas_a)}]
+        if not suyos or not fila or q <= 0:
+            continue
+        suyos.sort(key=lambda r: (_dias_entre(fila, r.fecha), r.fecha, r.id))
+        reg = next((r for r in suyos if q <= presupuesto[(r.id, lado)] + _TOL_CANT), None)
+        datos = dict(asset=t.asset_symbol, q=_cant(q), fila=_ddmm(fila), A=None, B=None)
+        if reg is None:
+            # Más títulos de los que el pase movió en esa cuenta: no es seguro que sean
+            # los mismos (ante la duda se omite de menos). Entra, con un aviso.
+            cerca = suyos[0]
+            if _dias_entre(fila, cerca.fecha) <= DIAS_TRASPASO_TARDIO:
+                datos.update(A=cerca.raiz_a, B=cerca.raiz_b, pase=_ddmm(cerca.fecha),
+                             n=_cant(presupuesto[(cerca.id, lado)]))
+                out.avisos.append((AVISO_ENTRADA_DE_MAS if lado == "entrada"
+                                   else AVISO_SALIDA_DE_MAS).format(**datos))
+            continue
+        dias = _dias_entre(fila, reg.fecha)
+        datos.update(A=reg.raiz_a, B=reg.raiz_b, pase=_ddmm(reg.fecha))
+        if dias <= DIAS_CRUCE:
+            presupuesto[(reg.id, lado)] -= q
+            usados.add(t.row_index)
+            out.indices.add(t.row_index)
+            out.detalle.append({"fecha": fila, "activo": t.asset_symbol, "cantidad": q,
+                                "broker": t.broker, "lado": lado, "row_index": t.row_index,
+                                "traspaso_id": reg.id})
+            out.omitidas.append({"traspaso_id": reg.id, "row_index": t.row_index, "lado": lado})
+            if lado == "entrada":
+                d = _deposito_hermano(t, txs, usados)
+                if d is not None:
+                    usados.add(d.row_index)
+                    out.indices.add(d.row_index)
+                    out.omitidas.append({"traspaso_id": reg.id, "row_index": d.row_index,
+                                         "lado": lado})
+        elif dias <= DIAS_TRASPASO_TARDIO:
+            out.frenos.append({
+                "traspaso_id": reg.id, "lado": "destino" if lado == "entrada" else "origen",
+                "fecha": reg.fecha, "fecha_fila": fila, "asset": reg.asset,
+                "broker": reg.raiz_b if lado == "entrada" else reg.raiz_a,
+                "contraparte": reg.raiz_a if lado == "entrada" else reg.raiz_b,
+                "op": "BUY" if lado == "entrada" else "SELL", "row_index": t.row_index,
+                "mensaje": (MSG_FRENO_ENTRADA if lado == "entrada"
+                            else MSG_FRENO_SALIDA).format(**datos)})
+        else:
+            out.avisos.append((AVISO_ENTRADA_LEJOS if lado == "entrada"
+                               else AVISO_SALIDA_LEJOS).format(**datos))
+    return out
+
+
+def fila_de_tx(t) -> Dict[str, Any]:
+    """Una fila de un archivo (`NormalizedTx`) en la forma que pide `pase_que_cambia`."""
+    return {"broker": getattr(t, "broker", None), "asset": getattr(t, "asset_symbol", None),
+            "op": getattr(t, "operation_type", None), "date": getattr(t, "date", None),
+            "fecha_compra": getattr(t, "fecha_compra", None),
+            "traspaso_id": getattr(t, "traspaso_id", None)}
+
+
+def freno_del_import(conn, uid: int, txs, *, ya: YaTraspasadas, sin=()) -> Optional[Dict[str, Any]]:
+    """D.10.16: por qué un import no puede entrar a causa de un pase, o None. Lo usan
+    la vista previa (`cambian_un_pase`) y el confirm (409), con la MISMA cuenta.
+      1. Lo que el antiduplicado no pudo decidir solo (`ya.frenos`: una llegada o una
+         salida del archivo a más de 4 días y hasta 60 de la fecha del pase): su texto
+         dice qué fecha ponerle al pase. Va primero porque es más preciso que la regla
+         general para la misma fila.
+      2. La regla única (C.11) sobre lo que queda: sin `sin` (lo que no va a entrar) ni
+         lo que el antiduplicado omite."""
+    if ya.frenos:
+        return ya.frenos[0]
+    fuera = set(sin or ()) | set(ya.indices)
+    filas = [fila_de_tx(t) for t in (txs or []) if t.row_index not in fuera]
+    return pase_que_cambia(conn, uid, filas, plantilla=MSG_IMPORT_CAMBIA_UN_PASE)
+
+
+def anotar_omitidas(conn, uid: int, batch_id: str, ya: YaTraspasadas) -> None:
+    """Anota en cada pase las filas del lote `batch_id` que el confirm omitió por él
+    (`omitidas_json`: [{batch_id, row_index, lado}]). Va dentro de la transacción del
+    confirm: si el import no entra, no queda anotado. Mientras ese lote siga
+    confirmado, deshacer el pase frena (C.8 #2)."""
+    por_pase: Dict[str, List[Dict[str, Any]]] = {}
+    for o in ya.omitidas:
+        por_pase.setdefault(o["traspaso_id"], []).append(
+            {"batch_id": batch_id, "row_index": o["row_index"], "lado": o["lado"]})
+    for tid, nuevas in por_pase.items():
+        r = conn.execute("SELECT omitidas_json FROM traspasos_a_mano WHERE id=? AND user_id=?",
+                         (tid, uid)).fetchone()
+        if not r:
+            continue
+        try:
+            todas = [o for o in (json.loads(r["omitidas_json"] or "[]") or [])
+                     if isinstance(o, dict)]
+        except (TypeError, ValueError):
+            todas = []
+        ya_estan = {(o.get("batch_id"), o.get("row_index")) for o in todas}
+        todas += [o for o in nuevas if (o["batch_id"], o["row_index"]) not in ya_estan]
+        conn.execute("UPDATE traspasos_a_mano SET omitidas_json=? WHERE id=? AND user_id=?",
+                     (json.dumps(todas), tid, uid))
+
+
+def lotes_de_pases(conn, uid: int) -> Dict[str, Dict[str, Any]]:
+    """{import_batches.id de un lote de pase: {id, asset, cantidad, lado, contraparte,
+    estado}} para la lista de Importaciones (D.2.6). `lado`: 'salida' (el lote de A) o
+    'entrada' (el de B); `contraparte`: el nombre de hoy de la otra cuenta; `estado`:
+    vivo, incompleto, desfasado o deshecho."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for reg in _registros(conn, uid, vivos=False):
+        estado = "deshecho" if reg.deshecho_at else reg.estado
+        base = {"id": reg.id, "asset": reg.asset, "cantidad": reg.cantidad, "estado": estado}
+        out[reg.lote_salida] = {**base, "lado": "salida", "contraparte": reg.raiz_b}
+        out[reg.lote_entrada] = {**base, "lado": "entrada", "contraparte": reg.raiz_a}
+    return out

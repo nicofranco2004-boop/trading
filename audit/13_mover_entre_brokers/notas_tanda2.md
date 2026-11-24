@@ -97,3 +97,26 @@ Pendientes que deja para las etapas siguientes:
   (no los usa); sí usa `receta.lotes[].invested/commissions` (no dependen del dólar).
 - **Antes de volver atrás un deploy (G.3)**: apagar el interruptor y deshacer los pases vivos
   (`SELECT id, user_id FROM traspasos_a_mano WHERE deshecho_at IS NULL`); el deshacer no mira el interruptor.
+
+## De E8 (antiduplicado, freno de imports y omitidas)
+Hecho: `pipeline.repeticiones` / `filas_repetidas` (la deduplicación única: huella ∪
+`traspaso_a_mano.filas_ya_traspasadas`; el pase va PRIMERO, porque el «Débito» del día
+del pase tiene la huella de la SELL del pase y lo omitido por el pase tiene que quedar
+anotado), usada por la vista previa (lista + cruce automático, D.6 `ya_traspasadas`),
+`already_imported_row_indices` y el confirm (siempre, también con `include_duplicates`).
+`preview_payload`: `ya_traspasados`, `cambian_un_pase` (UN objeto con `mensaje`, o
+null: la pantalla lo trata como objeto y bloquea con cualquier valor verdadero) y
+`avisos_de_pases` (nuevo; la pantalla todavía no lo muestra). `list_batches[].traspaso`
+= {id, asset, cantidad, lado, contraparte, estado (vivo|incompleto|desfasado|deshecho)}.
+Confirm: `_antiduplicado_del_confirm` + `traspaso_a_mano.freno_del_import` (frenos de
+la ventana 4–60 días primero, después `pase_que_cambia` con `MSG_IMPORT_CAMBIA_UN_PASE`)
++ `anotar_omitidas`, todo dentro de la transacción; la respuesta suma
+`omitidas_por_pases`.
+Pendientes que deja:
+- **Integración / pantalla**: `duplicate_row_indices` incluye las filas del pase (lo
+  pide D.2.3): el asistente las muestra también en «filas ya estaban importadas».
+  `avisos_de_pases` no se dibuja. La vista previa de la FOTO de tenencia (otro camino
+  en main) no trae `cambian_un_pase`: el confirm frena igual (409).
+- **En duda (no es de la spec)**: editar en grupo el precio promedio o el tipo de
+  cambio reescribe las COMPRAS vinculadas del registro (también la del lote partido
+  por un pase) y no pasa por `pase_que_cambia`; lo vería el detector de E10.

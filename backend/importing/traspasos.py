@@ -232,6 +232,7 @@ def cerrar_origen_de_traspasos(
     conn, uid: int, txs: List[NormalizedTx],
     existing_positions: Dict[Tuple[str, str], float],
     repetidas=(),
+    ya_traspasadas=(),
 ) -> List[NormalizedTx]:
     """Movimientos que cierran el broker de ORIGEN de cada traspaso detectado.
 
@@ -239,7 +240,12 @@ def cerrar_origen_de_traspasos(
     `existing_positions` es {(broker, activo): cantidad} de lo que el usuario ya
     tiene; `repetidas`, los row_index de `txs` que el confirm va a omitir por
     ya importados. Devuelve filas nuevas para AGREGAR al lote; lista vacía si
-    no hay nada que cruzar (el caso normal)."""
+    no hay nada que cruzar (el caso normal).
+
+    `ya_traspasadas`: los row_index de las llegadas que la persona ya anotó con
+    «Mover a otro broker» (`traspaso_a_mano.filas_ya_traspasadas`, D.6). El pase ya
+    sacó esos títulos del broker de origen: si la llegada contara como entrada, acá
+    se propondría cerrarlos OTRA VEZ con lo que quedó allá."""
     # ── Las dos direcciones ──────────────────────────────────────────────
     # El usuario puede importar los brokers en cualquier orden, y el traspaso
     # hay que reconocerlo igual:
@@ -256,6 +262,7 @@ def cerrar_origen_de_traspasos(
          "currency": t.currency}
         for t in txs
         if getattr(t, "transfer_in", False) and t.asset_symbol and (t.quantity or 0) > 0
+        and t.row_index not in ya_traspasadas
     ]
     entradas += entradas_ya_confirmadas(conn, uid, brokers_lote)
     if not entradas:

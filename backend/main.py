@@ -49403,6 +49403,34 @@ def _revisar_foto_al_confirmar(conn, uid: int, b_meta, data, txs, skip_set: set)
     return motivo
 
 
+def _antiduplicado_del_confirm(conn, uid: int, data, txs, skip_set: set):
+    """La deduplicación del confirm, dentro de su transacción (especificación D.2.3 y
+    D.10.16). Suma a `skip_set` lo que no entra porque ya está en Rendi:
+
+      · las filas repetidas por huella (fecha + broker + tipo + activo + cantidad +
+        precio) de OTRO lote confirmado —así re-subir el historial, o el mes nuevo
+        que se superpone, agrega SOLO lo nuevo—, salvo que la persona fuerce los
+        repetidos (`include_duplicates`). Dos filas idénticas del MISMO archivo se
+        respetan;
+      · SIEMPRE, la llegada o la salida que ya anotó con «Mover a otro broker»
+        (`traspaso_a_mano.filas_ya_traspasadas`): forzar los repetidos no fuerza un
+        doble conteo de los títulos del pase.
+
+    Después, con lo que queda, si el archivo choca con un pase vivo (una llegada o
+    una salida a más de 4 y hasta 60 días de su fecha, o compras o ventas anteriores
+    al pase, C.11) → 409 con el texto y no entra nada. Devuelve (cuántos repetidos
+    por huella, cuántos por un pase, el resultado del pase para `anotar_omitidas`)."""
+    counts = _import_pipeline.confirmed_fingerprint_counts(conn, uid, exclude_session=data.session_id)
+    omitir, ya = _import_pipeline.repeticiones(
+        conn, uid, txs, counts=counts, anteriores=_renombre_broker.nombres_anteriores(conn, uid),
+        already_skipped=skip_set, incluir_huella=not data.include_duplicates)
+    skip_set |= omitir
+    freno = _traspaso_a_mano.freno_del_import(conn, uid, txs, ya=ya, sin=skip_set)
+    if freno:
+        raise HTTPException(409, freno["mensaje"])
+    return len(omitir - ya.indices), len(ya.indices), ya
+
+
 @app.post("/api/imports/confirm")
 @_medir_import("import_confirm")
 # `request` va ÚLTIMO y opcional: tests y callers internos llaman
@@ -49473,21 +49501,11 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                         _pendientes_aprobacion += 1
                     skip_set.add(_t.row_index)
 
-            # ── Anti-duplicación de re-importación ────────────────────────────
-            # Omitimos automáticamente las filas cuyo fingerprint (fecha+broker+
-            # tipo+activo+cantidad+precio) YA existe en OTRO batch confirmado. Así
-            # re-subir el historial — o subir el mes nuevo que se solapa con lo ya
-            # cargado — agrega SOLO las filas nuevas, sin duplicar las viejas y SIN
-            # borrar el historial previo (a diferencia de un "reemplazar todo"). El
-            # dedup es cross-batch, no intra-batch: dos ops idénticas en el MISMO
-            # archivo se respetan. include_duplicates fuerza la inclusión.
-            auto_skipped = 0
-            if not data.include_duplicates:
-                dup_idx = _import_pipeline.already_imported_row_indices(
-                    conn, uid, data.session_id, txs, already_skipped=skip_set)
-                if dup_idx:
-                    skip_set |= dup_idx
-                    auto_skipped = len(dup_idx)
+            # ── Anti-duplicación (repetidos y lo que ya entró por un pase) y el
+            # freno de un archivo que choca con un pase vivo (409, no entra nada).
+            auto_skipped, por_pases, ya_por_pases = _antiduplicado_del_confirm(
+                conn, uid, data, txs, skip_set)
+            _traspaso_a_mano.anotar_omitidas(conn, uid, data.session_id, ya_por_pases)
 
             if skip_set:
                 txs = [t for t in txs if t.row_index not in skip_set]
@@ -49741,6 +49759,8 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                 "skipped_by_user": _por_usuario,
                 "skipped_pending_approval": _pendientes_aprobacion,
                 "auto_skipped_duplicates": auto_skipped,
+                # Lo que no entró porque ya estaba anotado con «Mover a otro broker».
+                "omitidas_por_pases": por_pases,
                 "fx_migracion": fx_migracion,
                 "mtm_reconstruccion": mtm_reconstruccion,
                 "post_proceso": post_proceso,

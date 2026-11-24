@@ -40,6 +40,14 @@ EL DESHACER Y LAS GUARDAS (E7). `POST /api/positions/traspaso/{id}/deshacer` y
 medidas) antes del pase == después del deshacer, con sus variantes. Las guardas de las
 otras puertas (#20, #22–#26) frenan con su texto y no tocan nada.
 
+LOS IMPORTS DESPUÉS DE UN PASE (E8). Con los archivos de verdad de Bull Market y
+Balanz (`test_traspaso_entre_brokers.py`), por `POST /api/imports/preview` +
+`/confirm` (y por `main.import_confirm(...)` directo, forzando los repetidos): la
+llegada o la salida que el pase ya anotó no entra otra vez y queda anotada en el pase
+(#15, #17, #44); una con otra fecha frena o entra con aviso (#16); lo que cambiaría la
+historia anterior al pase frena el archivo entero (#17, #21); y en el orden inverso el
+pase frena con instrucciones (#18, #19).
+
 Los números de las pruebas son los de la tabla F.2 de la especificación (#n).
 
 Corre con: cd backend && python3 -m pytest tests/test_mover_entre_brokers.py
@@ -3852,6 +3860,579 @@ class PaseQueCambia(_Deshacer):
                 "un pase deshecho no frena nada")
         finally:
             conn.close()
+
+
+# ── E8: los imports que llegan DESPUÉS de un pase ───────────────────────────────
+#
+# Con los archivos de verdad de `test_traspaso_entre_brokers.py` (F.1): el libro de
+# caja de Bull Market (compra de VIST y el gasto «GTOS. TRANS. TITULOS» del día en
+# que salieron los títulos) y los movimientos de Balanz («Transferencia Externa
+# (Crédito)» con su depósito compensatorio, «Boleto … COMPRA», «Transferencia
+# Externa (Débito)»). Los mismos renglones, con fechas de 2025 (las del dólar
+# sembrado) y 7 VIST en los dos lados (el archivo original trae 21 en Balanz por un
+# cambio de ratio del CEDEAR que acá no se siembra).
+
+BM_HDR = "F.Liquid;Cpbt;N.Cpbt;Importe;Dolares;Mda;Ref./Cantidad\n"
+BZ_HDR = ("Descripcion,Ticker,Tipo de Instrumento,Concertacion,Cantidad,Precio,"
+          "Liquidacion,Moneda,Importe\n")
+RECIBO = "Recibo de Cobro / 1,,,2025-06-02,0,-1,2025-06-02,Pesos,1000000"
+FECHA_PASE_VIST = "2025-06-16"
+PRECIO_VIST = 15000.0
+
+
+def _bull_market(*gastos):
+    """El libro de caja de Bull Market: $500.000 el 03/01, 7 VIST el 10/02 y el gasto
+    del traspaso de títulos en cada fecha de `gastos` ('dd/mm/aa')."""
+    filas = ["03/01/25;COBA;6668;-500000;;;CREDITO CTA. CTE.",
+             "10/02/25;CPRA;1753959;67957,11;;;7.0000  VIST"]
+    filas += [f"{g};DTRT;257047;1210;;;GTOS. TRANS. TITULOS" for g in gastos]
+    return (BM_HDR + "".join(f + "\n" for f in filas)).encode("utf-8")
+
+
+def _balanz(*filas):
+    return (BZ_HDR + "".join(f + "\n" for f in filas)).encode("utf-8")
+
+
+def _credito(fecha, q, precio=13492, asset="VIST"):
+    return (f"Transferencia Externa (Crédito) / CEDEAR {asset},{asset},Cedears,{fecha},{q},"
+            f"{precio},{fecha},,0")
+
+
+def _debito(fecha, q, precio, asset="GLOB"):
+    d = date.fromisoformat(fecha)
+    return (f"Transferencia Externa (Débito) / {d.day}/{d.month}/{d.year},{asset},Cedears,"
+            f"{fecha},-{q},{precio},{fecha},,0")
+
+
+def _boleto(fecha, q, precio, asset="GLOB"):
+    return (f"Boleto / 100 / COMPRA ,{asset},Cedears,{fecha},{q},{precio},{fecha},Pesos,"
+            f"-{q * precio}")
+
+
+class _Archivos(_Deshacer):
+    """Lo que necesitan las pruebas de E8: subir un archivo de verdad por las puertas
+    de producción (`POST /api/imports/preview` + `/confirm`) y mirar qué quedó."""
+
+    def _subir(self, broker, data, fmt):
+        r = self.http.post("/api/imports/preview",
+                           files=[("files", ("movimientos.csv", io.BytesIO(data), "text/csv"))],
+                           data={"format": fmt, "broker": broker}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def _confirmar_archivo(self, prev, aprobar=(), include_duplicates=False):
+        r = self.http.post("/api/imports/confirm", json={
+            "session_id": prev["session_id"], "skip_row_indices": [],
+            "aprobar_tickers": list(aprobar), "include_duplicates": include_duplicates},
+            headers=self.h)
+        self._esperar_reconstruccion()
+        return r
+
+    def _importar_archivo(self, broker, data, fmt, aprobar=()):
+        prev = self._subir(broker, data, fmt)
+        r = self._confirmar_archivo(prev, aprobar)
+        self.assertEqual(r.status_code, 200, r.text)
+        return prev, r.json()
+
+    def _no_entra(self, prev, texto, aprobar=()):
+        """El confirm frena con `texto` (409) y no escribe NADA: cada fila de la cuenta
+        queda como estaba con la vista previa hecha."""
+        antes = self._tablas()
+        r = self._confirmar_archivo(prev, aprobar)
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertEqual(r.json()["detail"], texto)
+        self.assertEqual(self._tablas(), antes, "el confirm que frena escribió algo")
+
+    def _cantidad(self, broker, asset):
+        return round(sum(l["quantity"] for l in self._lotes(broker, asset)), 6)
+
+    def _aportado(self, broker="global"):
+        conn = main.get_db()
+        try:
+            return snapshots_job.compute_net_deposited_db(
+                conn, self.uid, broker_filter=broker, include_baseline=(broker == "global"))
+        finally:
+            conn.close()
+
+    def _omitidas(self, tid):
+        conn = main.get_db()
+        try:
+            r = conn.execute("SELECT omitidas_json FROM traspasos_a_mano WHERE id=? AND user_id=?",
+                             (tid, self.uid)).fetchone()
+            return json.loads(r["omitidas_json"] or "[]")
+        finally:
+            conn.close()
+
+    def _filas_del_lote(self, sid):
+        conn = main.get_db()
+        try:
+            return [dict(r) for r in conn.execute(
+                "SELECT n.operation_type, n.asset_symbol, n.quantity, n.notes, r.row_index "
+                "FROM import_normalized_tx n JOIN import_raw_rows r ON r.id = n.raw_row_id "
+                "WHERE n.batch_id=? ORDER BY r.row_index", (sid,)).fetchall()]
+        finally:
+            conn.close()
+
+    def _indice(self, prev, op, asset=None):
+        """El row_index de la fila de la vista previa (la primera de ese tipo)."""
+        for f in prev["rows_preview"]:
+            if f["operation_type"] == op and (asset is None or f["asset_symbol"] == asset):
+                return f["row_index"]
+        self.fail(f"no hay {op} en la vista previa")
+
+    def _ventas(self):
+        conn = main.get_db()
+        try:
+            return conn.execute("SELECT COUNT(*) c FROM operations WHERE user_id=? "
+                                "AND op_type='Venta'", (self.uid,)).fetchone()["c"]
+        finally:
+            conn.close()
+
+    # El escenario de Agustín, con el pase hecho a mano: VIST de Bull Market a Balanz.
+    def _bull_market_y_pase(self, cantidad=4, gastos=("18/06/25",)):
+        self._broker("Bull Market")
+        self._importar_archivo("Bull Market", _bull_market(*gastos), "bullmarket")
+        return self._fabricar_pase("VIST", "Bull Market", "Balanz", FECHA_PASE_VIST, PRECIO_VIST,
+                                   cantidad=cantidad)
+
+    # A = Balanz con 10 GLOB importados (y, si se pide, 5 más cargados a mano).
+    def _balanz_y_pase_de_glob(self, a_mano=False):
+        historia = [RECIBO.replace("2025-06-02", "2025-01-02").replace("1000000", "2000000"),
+                    _boleto("2025-01-10", 10, 10000)]
+        self._importar_archivo("Balanz", _balanz(*historia), "balanz_movimientos")
+        if a_mano:
+            self._lote_a_mano("Balanz", "GLOB", 5, 11000, "2025-02-01", asset_type="CEDEAR")
+        p = self._fabricar_pase("GLOB", "Balanz", "Cocos", FECHA_PASE_VIST, 40000.0)
+        return historia, p
+
+
+class ImportDeBDespuesDelPase(_Archivos):
+
+    def test_import_de_b_despues_del_pase_no_duplica(self):
+        """#15. Pase de 4 VIST de Bull Market a Balanz el 16/06; después se importa el
+        archivo de Balanz, que trae esa misma llegada («Transferencia Externa
+        (Crédito)», el 18/06, con su depósito compensatorio) y un cobro de verdad. La
+        llegada y su depósito no entran (la vista previa los lista en
+        `ya_traspasados` y entre los que se omiten): Balanz sigue con los 4 VIST del
+        pase y el aportado global sube sólo el cobro. Lo omitido queda anotado en el
+        pase. Y el cruce automático (D.6) no propone cerrar en Bull Market los 3 VIST
+        que quedaron allá: la llegada ya es del pase."""
+        p = self._bull_market_y_pase(cantidad=4)
+        tid = p["traspaso_id"]
+        self.assertEqual((self._cantidad("Bull Market", "VIST"), self._cantidad("Balanz", "VIST")),
+                         (3.0, 4.0))
+        aportado = self._aportado()
+        archivo = _balanz(RECIBO, _credito("2025-06-18", 4))
+        prev = self._subir("Balanz", archivo, "balanz_movimientos")
+        compra, deposito = self._indice(prev, "BUY", "VIST"), None
+        for f in prev["rows_preview"]:
+            if f["operation_type"] == "DEPOSIT" and "entrada de título" in (f["notes"] or ""):
+                deposito = f["row_index"]
+        self.assertIsNotNone(deposito, "el lector de Balanz emite el depósito compensatorio")
+        self.assertEqual(prev["ya_traspasados"], [
+            {"fecha": "2025-06-18", "activo": "VIST", "cantidad": 4.0, "broker": "Balanz",
+             "lado": "entrada"}])
+        self.assertEqual(sorted(prev["duplicate_row_indices"]), sorted([compra, deposito]))
+        self.assertIsNone(prev["cambian_un_pase"])
+        self.assertEqual(prev["avisos_de_pases"], [])
+        self.assertEqual(prev["traspasos"], [], "D.6: el cruce automático no cierra lo del pase")
+        r = self._confirmar_archivo(prev)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["omitidas_por_pases"], r.json()["auto_skipped_duplicates"]),
+                         (2, 0))
+        self.assertEqual((self._cantidad("Bull Market", "VIST"), self._cantidad("Balanz", "VIST")),
+                         (3.0, 4.0))
+        self.assertAlmostEqual(self._aportado(), aportado + 1000000 / dolar("2025-06-02"),
+                               delta=0.01)
+        quedaron = self._filas_del_lote(prev["session_id"])
+        self.assertEqual([f["operation_type"] for f in quedaron], ["DEPOSIT"],
+                         "en el registro queda sólo el cobro")
+        self.assertEqual(sorted((o["row_index"], o["lado"], o["batch_id"]) for o in self._omitidas(tid)),
+                         sorted([(compra, "entrada", prev["session_id"]),
+                                 (deposito, "entrada", prev["session_id"])]))
+        # Después del rebuild real (F.1): todo igual.
+        self._rebuild()
+        self.assertEqual((self._cantidad("Bull Market", "VIST"), self._cantidad("Balanz", "VIST")),
+                         (3.0, 4.0))
+
+    def test_tambien_por_el_confirm_directo_y_forzando_los_repetidos(self):
+        """#15, las otras dos puertas: el confirm llamado desde adentro
+        (`main.import_confirm(...)`, como la tanda del asesor) y con los repetidos
+        FORZADOS (`include_duplicates=True`). Se sube dos veces el mismo archivo de
+        Balanz: la segunda vez, forzando, el cobro entra de nuevo (es lo que pide
+        quien fuerza) pero la llegada del pase no: forzar los repetidos no fuerza que
+        los títulos del pase se cuenten dos veces. Cada lote queda anotado."""
+        p = self._bull_market_y_pase(cantidad=7, gastos=())
+        tid = p["traspaso_id"]
+        archivo = _balanz(RECIBO, _credito("2025-06-17", 7))
+        prev1 = self._subir("Balanz", archivo, "balanz_movimientos")
+        out = main.import_confirm(main.ImportConfirmIn(
+            session_id=prev1["session_id"], skip_row_indices=[], aprobar_tickers=[]), self.uid)
+        self._esperar_reconstruccion()
+        self.assertEqual(out["omitidas_por_pases"], 2)
+        aportado = self._aportado()
+        prev2 = self._subir("Balanz", archivo, "balanz_movimientos")
+        out = main.import_confirm(main.ImportConfirmIn(
+            session_id=prev2["session_id"], skip_row_indices=[], aprobar_tickers=[],
+            include_duplicates=True), self.uid)
+        self._esperar_reconstruccion()
+        self.assertEqual((out["omitidas_por_pases"], out["auto_skipped_duplicates"]), (2, 0))
+        self.assertEqual(self._cantidad("Balanz", "VIST"), 7.0)
+        self.assertEqual(self._cantidad("Bull Market", "VIST"), 0.0)
+        self.assertAlmostEqual(self._aportado(), aportado + 1000000 / dolar("2025-06-02"),
+                               delta=0.01, msg="forzando, el cobro repetido sí entra")
+        self.assertEqual({o["batch_id"] for o in self._omitidas(tid)},
+                         {prev1["session_id"], prev2["session_id"]})
+
+    def test_omitidas_frenan_el_deshacer(self):
+        """#44. Después de #15, deshacer el pase frena: el archivo de Balanz no cargó la
+        llegada porque ya estaba el pase, y sin él esos títulos quedarían sin
+        registrar. Revertido ese archivo, el deshacer anda; vuelto a subir, la llegada
+        entra (ya no hay pase). La lista de Importaciones muestra los dos lotes del
+        pase como el pase (D.2.6), con su lado y cómo está."""
+        p = self._bull_market_y_pase(cantidad=4)
+        tid = p["traspaso_id"]
+        archivo = _balanz(RECIBO, _credito("2025-06-18", 4))
+        prev, _ = self._importar_archivo("Balanz", archivo, "balanz_movimientos")
+        lista = self._get("/api/imports").json()
+        pases = {(b["broker"], b["traspaso"]["lado"], b["traspaso"]["contraparte"],
+                  b["traspaso"]["estado"], b["traspaso"]["id"], b["traspaso"]["asset"],
+                  b["traspaso"]["cantidad"]) for b in lista if b.get("traspaso")}
+        self.assertEqual(pases, {("Bull Market", "salida", "Balanz", "vivo", tid, "VIST", 4.0),
+                                 ("Balanz", "entrada", "Bull Market", "vivo", tid, "VIST", 4.0)})
+        self.assertTrue(all("traspaso" not in b for b in lista
+                            if b["parser_format"] != traspaso_a_mano.FORMATO))
+        conn = main.get_db()
+        try:
+            cuando = conn.execute("SELECT COALESCE(confirmed_at, created_at) AS c FROM import_batches "
+                                  "WHERE id=?", (prev["session_id"],)).fetchone()["c"]
+        finally:
+            conn.close()
+        fecha = _ddmmaaaa(str(cuando)[:10])
+        texto = (f"Cuando importaste el archivo de Balanz del {fecha}, Rendi no cargó la llegada "
+                 "de VIST porque ya estaba este pase. Si lo deshacés, esos títulos quedarían sin "
+                 f"registrar. Primero revertí ese archivo (Importaciones → el archivo del {fecha} → "
+                 "Revertir), después deshacé el pase y volvé a subir el archivo.")
+        self._no_deshace(tid, 409, texto)
+        self.assertEqual(self._uno(tid)["motivo"], texto)
+        r = self.http.post(f"/api/imports/{prev['session_id']}/revert", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self._deshacer_ok(tid)
+        lista = self._get("/api/imports").json()
+        self.assertEqual({b["traspaso"]["estado"] for b in lista if b.get("traspaso")},
+                         {"deshecho"})
+        self.assertEqual((self._cantidad("Bull Market", "VIST"), self._cantidad("Balanz", "VIST")),
+                         (7.0, 0.0))
+        prev, _ = self._importar_archivo("Balanz", archivo, "balanz_movimientos")
+        self.assertEqual(prev["ya_traspasados"], [])
+        self.assertEqual(self._cantidad("Balanz", "VIST"), 4.0, "sin pase, la llegada entra")
+
+    def test_import_de_b_con_otra_fecha_frena(self):
+        """#16. El mismo archivo con la llegada a 20 días del pase: puede ser la misma
+        con la fecha del pase mal anotada, así que el import frena (409) con la fecha
+        que hay que ponerle al pase; la vista previa lo anticipa (`cambian_un_pase`).
+        A 90 días es otro movimiento: entra, con un aviso."""
+        p = self._bull_market_y_pase(cantidad=4, gastos=())
+        prev = self._subir("Balanz", _balanz(_credito("2025-07-06", 4)), "balanz_movimientos")
+        texto = ("El archivo de Balanz dice que los VIST llegaron el 06/07 y el pase lo anotaste "
+                 "el 16/06. Para no contarlos dos veces, deshacé el pase y hacelo de nuevo con "
+                 "fecha 06/07; después importá el archivo.")
+        self.assertEqual(prev["cambian_un_pase"]["mensaje"], texto)
+        self.assertEqual(prev["ya_traspasados"], [])
+        self._no_entra(prev, texto)
+        prev = self._subir("Balanz", _balanz(_credito("2025-09-14", 4)), "balanz_movimientos")
+        self.assertIsNone(prev["cambian_un_pase"])
+        self.assertEqual(prev["avisos_de_pases"], [
+            "Ojo: este archivo trae una llegada de 4 VIST a Balanz el 14/09, lejos de tu pase "
+            "desde Bull Market del 16/06: la cargamos como otra llegada. Si es la misma, deshacé "
+            "el pase antes de importar el archivo."])
+        r = self._confirmar_archivo(prev)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._cantidad("Balanz", "VIST"), 8.0)
+        self.assertEqual(self._omitidas(p["traspaso_id"]), [])
+
+    def test_dos_pases_cada_llegada_con_el_suyo(self):
+        """Dos pases del mismo activo (2 VIST el 16/06 y 2 el 01/08) y un archivo de
+        Balanz con las dos llegadas, la de agosto primero. Cada llegada se compara con
+        el pase más cercano en fecha que la pueda explicar: las dos se omiten, cada una
+        anotada en su pase (con el primero de la lista, la de agosto quedaría a 47
+        días del pase de junio y frenaría el archivo)."""
+        p1 = self._bull_market_y_pase(cantidad=2, gastos=())
+        p2 = self._fabricar_pase("VIST", "Bull Market", "Balanz", "2025-08-01", PRECIO_VIST,
+                                 cantidad=2)
+        prev = self._subir("Balanz", _balanz(_credito("2025-08-02", 2), _credito("2025-06-17", 2)),
+                           "balanz_movimientos")
+        self.assertIsNone(prev["cambian_un_pase"])
+        self.assertEqual(sorted(d["fecha"] for d in prev["ya_traspasados"]),
+                         ["2025-06-17", "2025-08-02"])
+        r = self._confirmar_archivo(prev)
+        self.assertEqual(r.status_code, 200, r.text)
+        agosto, junio = (f["row_index"] for f in prev["rows_preview"]
+                         if f["operation_type"] == "BUY")
+        self.assertEqual([o["row_index"] for o in self._omitidas(p1["traspaso_id"])
+                          if o["row_index"] in (agosto, junio)], [junio])
+        self.assertEqual([o["row_index"] for o in self._omitidas(p2["traspaso_id"])
+                          if o["row_index"] in (agosto, junio)], [agosto])
+        self.assertEqual(self._cantidad("Balanz", "VIST"), 4.0)
+
+    def test_mas_titulos_de_los_que_paso_entran_con_un_aviso(self):
+        """Ante la duda se omite de menos (D.7): una llegada cerca del pase pero con
+        más títulos de los que el pase llevó a esa cuenta no se omite (no es seguro
+        que sea la misma: puede venir de un tercero, o de un cambio de ratio). Entra,
+        con un aviso que dice qué hacer si incluye los del pase."""
+        self._bull_market_y_pase(cantidad=4, gastos=())
+        prev = self._subir("Balanz", _balanz(_credito("2025-06-17", 6)), "balanz_movimientos")
+        self.assertEqual(prev["ya_traspasados"], [])
+        self.assertIsNone(prev["cambian_un_pase"])
+        self.assertEqual(prev["avisos_de_pases"], [
+            "Ojo: este archivo trae una llegada de 6 VIST a Balanz el 17/06, cerca de tu pase "
+            "desde Bull Market del 16/06, pero son más de los 4 que pasaste: la cargamos. Si "
+            "incluye los del pase, deshacé el pase antes de importar el archivo."])
+        r = self._confirmar_archivo(prev)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._cantidad("Balanz", "VIST"), 10.0)
+
+
+class ImportDeADespuesDelPase(_Archivos):
+
+    def test_import_de_a_despues_del_pase_no_duplica_la_salida(self):
+        """#17. A = Balanz (10 GLOB importados); pase de todo a Cocos el 16/06. Después
+        se importa el export completo de Balanz: los renglones de antes (repetidos por
+        huella) y la salida («Transferencia Externa (Débito)», el 18/06). El Débito ya
+        es del pase: se omite (sin lote semilla ni una 'Venta' de más), y como la
+        compra del 10/01 se repite por huella, la regla única no frena nada."""
+        historia, p = self._balanz_y_pase_de_glob()
+        ventas = self._ventas()
+        prev = self._subir("Balanz", _balanz(*historia, _debito("2025-06-18", 10, 40000)),
+                           "balanz_movimientos")
+        debito = self._indice(prev, "SELL", "GLOB")
+        self.assertEqual(prev["ya_traspasados"], [
+            {"fecha": "2025-06-18", "activo": "GLOB", "cantidad": 10.0, "broker": "Balanz",
+             "lado": "salida"}])
+        self.assertIn(debito, prev["duplicate_row_indices"])
+        self.assertEqual(len(prev["duplicate_row_indices"]), 3)
+        self.assertIsNone(prev["cambian_un_pase"])
+        r = self._confirmar_archivo(prev)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["omitidas_por_pases"], r.json()["auto_skipped_duplicates"]),
+                         (1, 2))
+        self.assertEqual(self._lotes("Balanz", "GLOB"), [], "sin lote semilla en A")
+        self.assertEqual(self._cantidad("Cocos", "GLOB"), 10.0)
+        self.assertEqual(self._ventas(), ventas, "sin una 'Venta' de más")
+        self.assertEqual(self._omitidas(p["traspaso_id"]),
+                         [{"batch_id": prev["session_id"], "row_index": debito, "lado": "salida"}])
+        self._rebuild()
+        self.assertEqual(self._lotes("Balanz", "GLOB"), [])
+        self.assertEqual(self._cantidad("Cocos", "GLOB"), 10.0)
+        self.assertEqual(self._ventas(), ventas)
+
+    def test_el_debito_de_antes_o_del_mismo_dia_tambien_se_omite(self):
+        """El orden de las reglas. (1) Un Débito DOS DÍAS ANTES del pase es una venta
+        de A anterior al pase, que la regla única frenaría (D.10.16); pero es la salida
+        del pase y el antiduplicado la omite antes: la regla mira lo que queda. (2) Un
+        Débito del MISMO DÍA tiene la huella de la salida del pase (venta a precio 0 en
+        A ese día): igual cuenta como omitido POR EL PASE —en la lista de la vista
+        previa y anotado en el pase—, así deshacerlo no lo deja sin registrar."""
+        historia, p = self._balanz_y_pase_de_glob()
+        prev = self._subir("Balanz", _balanz(_debito("2025-06-14", 10, 40000)),
+                           "balanz_movimientos")
+        self.assertEqual([d["fecha"] for d in prev["ya_traspasados"]], ["2025-06-14"])
+        self.assertIsNone(prev["cambian_un_pase"])
+        r = self._confirmar_archivo(prev)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._lotes("Balanz", "GLOB"), [])
+        prev2 = self._subir("Balanz", _balanz(_debito(FECHA_PASE_VIST, 10, 40000)),
+                            "balanz_movimientos")
+        self.assertEqual([d["fecha"] for d in prev2["ya_traspasados"]], [FECHA_PASE_VIST])
+        r = self._confirmar_archivo(prev2)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["omitidas_por_pases"], r.json()["auto_skipped_duplicates"]),
+                         (1, 0))
+        self.assertEqual({o["batch_id"] for o in self._omitidas(p["traspaso_id"])},
+                         {prev["session_id"], prev2["session_id"]})
+        self.assertEqual(self._lotes("Balanz", "GLOB"), [])
+        self.assertEqual(self._cantidad("Cocos", "GLOB"), 10.0)
+
+    def test_debito_con_otra_fecha_frena_con_la_fecha(self):
+        """#16, el espejo del lado de A: un Débito 20 días ANTES del pase. También es una
+        venta de A anterior al pase (la regla única la frenaría con su texto general),
+        pero lo más probable es que sea la salida del pase con la fecha mal anotada:
+        manda el texto que dice qué fecha ponerle al pase."""
+        historia, p = self._balanz_y_pase_de_glob()
+        prev = self._subir("Balanz", _balanz(_debito("2025-05-27", 10, 40000)),
+                           "balanz_movimientos")
+        texto = ("El archivo de Balanz dice que los GLOB salieron el 27/05 y el pase lo anotaste "
+                 "el 16/06. Para no contarlos dos veces, deshacé el pase y hacelo de nuevo con "
+                 "fecha 27/05; después importá el archivo.")
+        self.assertEqual(prev["cambian_un_pase"]["mensaje"], texto)
+        self._no_entra(prev, texto)
+
+    def test_salida_con_lotes_cargados_a_mano_frena_por_su_compra(self):
+        """#17, la segunda mitad. El pase se llevó 10 GLOB importados y 5 cargados a
+        mano; después el archivo de Balanz trae la compra de esos 5 (01/02) y un Débito
+        de 15. El Débito no se omite (es más de lo que salió de los archivos: entra con
+        un aviso) y la compra cambiaría la historia de A antes del pase: el import
+        entero frena con `MSG_IMPORT_CAMBIA_UN_PASE` (la vista previa lo anticipa)."""
+        historia, p = self._balanz_y_pase_de_glob(a_mano=True)
+        self.assertEqual(self._cantidad("Cocos", "GLOB"), 15.0)
+        prev = self._subir("Balanz", _balanz(*historia, _boleto("2025-02-01", 5, 11000),
+                                             _debito("2025-06-18", 15, 40000)),
+                           "balanz_movimientos")
+        texto = ("Este archivo trae compras de GLOB en Balanz del 01/02/2025, anteriores a tu pase "
+                 "del 16/06/2025 a Cocos. Si lo confirmamos, el pase quedaría con otros lotes. "
+                 "Deshacé el pase (Movimientos → la fila «Pase» → Deshacer), importá el archivo "
+                 "y volvé a moverlos.")
+        self.assertEqual(prev["ya_traspasados"], [])
+        self.assertEqual(prev["cambian_un_pase"]["mensaje"], texto)
+        self.assertEqual(prev["avisos_de_pases"], [
+            "Ojo: este archivo trae una salida de 15 GLOB de Balanz el 18/06, cerca de tu pase a "
+            "Cocos del 16/06, pero son más de los 10 que salieron de tus archivos: la cargamos. "
+            "Si incluye los del pase, deshacé el pase antes de importar el archivo."])
+        self._no_entra(prev, texto)
+
+
+class ImportDeBAntesDelPase(_Archivos):
+
+    def test_import_de_b_antes_del_pase_frena_con_instrucciones(self):
+        """#18. El orden inverso: primero se importó el archivo de Balanz con la llegada
+        (y su depósito) y después se quiere mover a mano desde Bull Market → el pase
+        frena (#13) con las instrucciones. Hechas (borrar la «Compra» y el «Depósito»
+        por Movimientos), el pase anda y no se cuenta nada dos veces: Balanz queda con
+        los títulos del pase, al costo de Bull Market, y el aportado global con el
+        cobro y nada más."""
+        self._broker("Bull Market")
+        self._importar_archivo("Bull Market", _bull_market(), "bullmarket")
+        aportado = self._aportado()
+        prev, _ = self._importar_archivo("Balanz", _balanz(RECIBO, _credito("2025-06-14", 4)),
+                                         "balanz_movimientos")
+        self.assertEqual(self._cantidad("Balanz", "VIST"), 4.0)
+        body = self._pedido("VIST", "Bull Market", "Balanz", FECHA_PASE_VIST,
+                            precio_manual=PRECIO_VIST, cantidad=4)
+        r = self._vista(body)
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertTrue(r.json()["detail"].startswith(
+            "Balanz ya tiene registrada la llegada de 4 VIST el 14/06"), r.text)
+        conn = main.get_db()
+        try:
+            filas = {r["operation_type"]: r["id"] for r in conn.execute(
+                "SELECT id, operation_type FROM import_normalized_tx WHERE batch_id=? "
+                "AND operation_type IN ('BUY', 'DEPOSIT') AND (asset_symbol='VIST' OR "
+                "notes LIKE '%entrada de título%')", (prev["session_id"],)).fetchall()}
+        finally:
+            conn.close()
+        for op in ("BUY", "DEPOSIT"):
+            r = self.http.delete(f"/api/movements/tx-{filas[op]}", headers=self.h)
+            self.assertEqual(r.status_code, 200, r.text)
+            self._esperar_reconstruccion()
+        p = self._aplicar(body)
+        self.assertEqual(self._cantidad("Balanz", "VIST"), 4.0, "sin doble conteo")
+        self.assertEqual(self._cantidad("Bull Market", "VIST"), 3.0)
+        lote = self._lotes("Balanz", "VIST")[0]
+        self.assertEqual((lote["ed"], lote["desde"]), ("2025-02-10", FECHA_PASE_VIST))
+        self.assertAlmostEqual(lote["invested"], 67957.11 * 4 / 7, places=4)
+        self.assertAlmostEqual(self._aportado(), aportado + 1000000 / dolar("2025-06-02"),
+                               delta=0.01)
+        self.assertTrue(p["traspaso_id"])
+
+
+class TraspasoAutomaticoYaCerrado(_Archivos):
+
+    def test_traspaso_automatico_ya_cerrado_frena(self):
+        """#19. El cruce automático de verdad: Bull Market (con el gasto del traspaso el
+        18/06) y después Balanz con la llegada de los 7 VIST ese día, aprobando el
+        cierre. Rendi ya los pasó: mover los mismos VIST a mano frena (#12)."""
+        self._broker("Bull Market")
+        self._importar_archivo("Bull Market", _bull_market("18/06/25"), "bullmarket")
+        prev, _ = self._importar_archivo("Balanz", _balanz(RECIBO, _credito("2025-06-18", 7)),
+                                         "balanz_movimientos", aprobar=["VIST"])
+        self.assertEqual([t["activo"] for t in prev["traspasos"]], ["VIST"])
+        self.assertEqual((self._cantidad("Bull Market", "VIST"), self._cantidad("Balanz", "VIST")),
+                         (0.0, 7.0))
+        body = self._pedido("VIST", "Bull Market", "Balanz", FECHA_PASE_VIST,
+                            precio_manual=PRECIO_VIST)
+        self._no_puede(body, 409, "Rendi ya pasó estos VIST de Bull Market a Balanz el 18/06, "
+                                  "cuando importaste el archivo de Balanz. No hace falta moverlos "
+                                  "otra vez.")
+
+
+class CambiosAnterioresAlPaseEnElImportador(_Archivos):
+
+    def test_cambios_anteriores_al_pase_frenan(self):
+        """#21, las puertas del importador (las de borrar y deshacer un borrado son de
+        E7: `test_cambios_anteriores_al_pase_frenan_en_las_puertas_de_borrado`). Pase
+        de los 10 NVDA de Cocos (comprados el 10/01) a Balanz el 16/06. Un archivo de
+        Cocos con una compra más vieja (05/01) frena; uno de Balanz con una venta
+        anterior al pase (10/06) frena; uno de Cocos con una compra posterior entra."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+
+        def subir(broker, fila):
+            csv_txt = (HDR + fila + "\n").encode()
+            return self._subir(broker, csv_txt, "rendi_generic")
+
+        prev = subir("Cocos", "2025-01-05,COMPRA,Cocos,NVDA,1,29000,29000,,,0,ARS,compra vieja")
+        texto = ("Este archivo trae compras de NVDA en Cocos del 05/01/2025, anteriores a tu pase "
+                 "del 16/06/2025 a Balanz. Si lo confirmamos, el pase quedaría con otros lotes. "
+                 "Deshacé el pase (Movimientos → la fila «Pase» → Deshacer), importá el archivo y "
+                 "volvé a moverlos.")
+        self.assertEqual(prev["cambian_un_pase"]["mensaje"], texto)
+        self._no_entra(prev, texto)
+        prev = subir("Balanz", "2025-06-10,VENTA,Balanz,NVDA,1,44000,44000,,,0,ARS,venta vieja")
+        texto = ("Este archivo trae ventas de NVDA en Balanz del 10/06/2025, anteriores a tu pase "
+                 "del 16/06/2025 desde Cocos. Si lo confirmamos, el pase quedaría con otros lotes. "
+                 "Deshacé el pase (Movimientos → la fila «Pase» → Deshacer), importá el archivo y "
+                 "volvé a moverlos.")
+        self.assertEqual(prev["cambian_un_pase"]["mensaje"], texto)
+        self._no_entra(prev, texto)
+        prev = subir("Cocos", "2025-07-01,COMPRA,Cocos,NVDA,2,46000,92000,,,0,ARS,compra nueva")
+        self.assertIsNone(prev["cambian_un_pase"])
+        r = self._confirmar_archivo(prev)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._cantidad("Cocos", "NVDA"), 2.0)
+        self.assertEqual(self._cantidad("Balanz", "NVDA"), 10.0)
+        # Deshecho el pase, la compra vieja entra.
+        self._deshacer_ok(p["traspaso_id"])
+        prev = subir("Cocos", "2025-01-05,COMPRA,Cocos,NVDA,1,29000,29000,,,0,ARS,compra vieja")
+        self.assertIsNone(prev["cambian_un_pase"])
+        r = self._confirmar_archivo(prev)
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_un_cierre_propuesto_sin_aprobar_no_frena_la_vista_previa(self):
+        """La vista previa mira lo que entraría POR DEFECTO: el cierre que propone el
+        cruce automático (requiere aprobación) no entra si nadie lo aprueba, así que no
+        bloquea el archivo. Si la persona lo aprueba, el confirm mira lo que de verdad
+        entra y frena: ese cierre es una venta en Bull Market anterior al pase.
+        (Bull Market se quedó con 3 VIST; el archivo de Balanz trae otra llegada, del
+        01/03, con el gasto del traspaso de Bull Market ese mismo día.)"""
+        self._bull_market_y_pase(cantidad=4, gastos=("01/03/25",))
+        prev = self._subir("Balanz", _balanz(_credito("2025-03-01", 3)), "balanz_movimientos")
+        self.assertEqual([(t["activo"], t["cantidad"]) for t in prev["traspasos"]], [("VIST", 3.0)])
+        self.assertIsNone(prev["cambian_un_pase"])
+        self._no_entra(prev, (
+            "Este archivo trae ventas de VIST en Bull Market del 01/03/2025, anteriores a tu pase "
+            "del 16/06/2025 a Balanz. Si lo confirmamos, el pase quedaría con otros lotes. "
+            "Deshacé el pase (Movimientos → la fila «Pase» → Deshacer), importá el archivo y "
+            "volvé a moverlos."), aprobar=["VIST"])
+        r = self._confirmar_archivo(prev)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((self._cantidad("Bull Market", "VIST"), self._cantidad("Balanz", "VIST")),
+                         (3.0, 7.0))
+
+
+class SinPasesNadaCambia(_Archivos):
+
+    def test_sin_pases_la_vista_previa_no_trae_nada_del_pase(self):
+        """Quien no hizo ningún pase importa como siempre: `ya_traspasados` vacío,
+        `cambian_un_pase` nulo (la pantalla bloquea el confirmar con cualquier valor
+        verdadero: una lista vacía también lo es) y la lista de Importaciones sin
+        `traspaso`."""
+        self._broker("Bull Market")
+        prev, out = self._importar_archivo("Bull Market", _bull_market(), "bullmarket")
+        self.assertEqual((prev["ya_traspasados"], prev["cambian_un_pase"], prev["avisos_de_pases"]),
+                         ([], None, []))
+        self.assertEqual(out["omitidas_por_pases"], 0)
+        self.assertTrue(all("traspaso" not in b for b in self._get("/api/imports").json()))
 
 
 class ElDetectorDeAportesNoCuentaLosPases(unittest.TestCase):

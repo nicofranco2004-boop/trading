@@ -23,6 +23,8 @@ from .schema import (NormalizedTx, ParseResult, RawRow, RowError,
                      OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, TX_VIVAS)
 from .parsers.registry import get_parser, autodetect, list_parsers
 from . import traspasos as _traspasos
+from . import traspaso_a_mano as _pases      # «Mover a otro broker»: antiduplicado y freno (E8)
+from .tenencia import requiere_aprobacion as _requiere_aprobacion_notas
 from . import movimientos_internos as _movimientos_internos
 from . import saldo_anterior as _saldo_anterior
 from .normalizer import normalize_rows
@@ -442,10 +444,51 @@ def _dup_de(t, nombres, viejos, budget) -> bool:
     return False
 
 
+def repeticiones(conn, uid: int, txs, *, counts, anteriores, already_skipped=(),
+                 incluir_huella: bool = True, ya=None):
+    """La deduplicación ÚNICA del importador (especificación D.2.3): qué filas de
+    `txs` no entran porque ya están en Rendi. Dos motivos distintos:
+
+      · por HUELLA (`duplicate_row_indices_by_count`): la misma fila ya entró con
+        otro archivo. Es lo que la persona puede forzar (`include_duplicates`), y
+        sólo cuenta si `incluir_huella`;
+      · porque ya la anotó con «Mover a otro broker» (`traspaso_a_mano.
+        filas_ya_traspasadas`): la llegada a B o la salida de A que el pase ya
+        escribió. Esto se aplica SIEMPRE: forzar los repetidos por huella no puede
+        forzar que los títulos del pase se cuenten dos veces.
+
+    Devuelve (índices que se omiten, el resultado del pase —`YaTraspasadas`, con lo
+    que la vista previa muestra, lo que se anota en el pase y lo que frena—). `ya`:
+    el resultado del pase ya calculado sobre estas mismas filas (la vista previa lo
+    reusa).
+
+    El pase va PRIMERO: la salida del pase (una VENTA a precio 0 en A ese día) tiene
+    la misma huella que el «Débito» de Balanz del mismo día. Si la huella la omitiera
+    antes, no quedaría anotada en el pase y deshacerlo después dejaría esa salida sin
+    registrar (C.8 #2)."""
+    if ya is None:
+        ya = _pases.filas_ya_traspasadas(conn, uid, txs, already_skipped=already_skipped)
+    huella = (duplicate_row_indices_by_count(counts, txs, set(already_skipped or ()) | ya.indices,
+                                             anteriores=anteriores)
+              if incluir_huella else set())
+    return huella | ya.indices, ya
+
+
+def filas_repetidas(conn, uid: int, txs, *, counts, anteriores, already_skipped=(),
+                    incluir_huella: bool = True, ya=None) -> set:
+    """Los índices de `repeticiones` (los repetidos por huella y lo que ya entró por un
+    pase). La usan la vista previa (la lista para la pantalla y el cruce del traspaso
+    automático) y el confirm (`already_imported_row_indices`)."""
+    return repeticiones(conn, uid, txs, counts=counts, anteriores=anteriores,
+                        already_skipped=already_skipped, incluir_huella=incluir_huella,
+                        ya=ya)[0]
+
+
 def already_imported_row_indices(conn, uid: int, session_id: str, txs,
                                  already_skipped=()) -> set:
     """row_index de las filas cuyo fingerprint YA existe en OTRO batch confirmado
-    del usuario → se omiten en el confirm para no duplicar al re-importar.
+    del usuario → se omiten en el confirm para no duplicar al re-importar. Más las
+    que la persona ya anotó con «Mover a otro broker» (`filas_repetidas`).
 
     Es cross-batch (no intra-batch): dos ops idénticas en el MISMO archivo se
     respetan; solo se saltea lo que ya entró en una importación anterior. Así una
@@ -453,8 +496,8 @@ def already_imported_row_indices(conn, uid: int, session_id: str, txs,
     Por CONTEO (ver `confirmed_fingerprint_counts`): si ya entró 1 de 4 iguales,
     entran las otras 3."""
     counts = confirmed_fingerprint_counts(conn, uid, exclude_session=session_id)
-    return duplicate_row_indices_by_count(
-        counts, txs, already_skipped, anteriores=_renombre_broker.nombres_anteriores(conn, uid))
+    return filas_repetidas(conn, uid, txs, counts=counts, already_skipped=already_skipped,
+                           anteriores=_renombre_broker.nombres_anteriores(conn, uid))
 
 
 def inspect(file_bytes: bytes) -> Dict[str, Any]:
@@ -1322,12 +1365,15 @@ def _run_preview_una_vez(
     # Las filas que el confirm va a omitir por repetidas no cuentan como
     # tenencia nueva: al volver a subir el archivo del broker que ENTREGA, sus
     # compras ya están en la base y contarlas otra vez propondría cerrar de más.
+    # Tampoco la llegada que la persona ya anotó con «Mover a otro broker»: el
+    # pase ya sacó esos títulos del broker de origen (D.6).
     _huellas_confirmadas = confirmed_fingerprint_counts(conn, uid)
     _anteriores = _renombre_broker.nombres_anteriores(conn, uid)
+    _repetidas, _ya_traspasadas = repeticiones(
+        conn, uid, valid_txs, counts=_huellas_confirmadas, anteriores=_anteriores)
     _cierres_traspaso = _traspasos.cerrar_origen_de_traspasos(
-        conn, uid, valid_txs, existing_pos,
-        repetidas=duplicate_row_indices_by_count(
-            _huellas_confirmadas, valid_txs, anteriores=_anteriores))
+        conn, uid, valid_txs, existing_pos, repetidas=_repetidas,
+        ya_traspasadas=_ya_traspasadas.indices)
     valid_txs += _cierres_traspaso
 
     # Combinar errores por row_index (parse + norm + validation)
@@ -1418,9 +1464,11 @@ def _run_preview_una_vez(
         raw_id_by_index[tx.row_index] = cur.lastrowid
 
     # Huellas ya confirmadas — para anticipar en la previsualización EXACTAMENTE
-    # lo que el confirm va a omitir (mismo helper, mismo conteo).
-    duplicate_row_indices: List[int] = sorted(duplicate_row_indices_by_count(
-        _huellas_confirmadas, valid_txs, anteriores=_anteriores))
+    # lo que el confirm va a omitir (mismo helper, mismo conteo), con lo que ya
+    # entró por un pase («Mover a otro broker»).
+    duplicate_row_indices: List[int] = sorted(filas_repetidas(
+        conn, uid, valid_txs, counts=_huellas_confirmadas, anteriores=_anteriores,
+        ya=_ya_traspasadas))
 
     # Fase 4: tc_blue stamp at write time
     tc_blue_at_import = _read_user_tc_blue(conn, uid)
@@ -1483,6 +1531,21 @@ def _run_preview_una_vez(
          "broker_destino": _traspasos.destino_de(t.notes)}
         for t in _cierres_traspaso if t.operation_type == "SELL"
     ]
+    # «Mover a otro broker» (E8). Lo que ya entró por un pase y no se cuenta de
+    # nuevo; si el archivo cambiaría la historia anterior a un pase (o trae una
+    # llegada o una salida que no cuadra con su fecha), por qué no puede entrar —el
+    # confirm lo vuelve a mirar y responde 409 con el mismo texto—. La cuenta es la
+    # del confirm sobre lo que entraría por defecto: sin los repetidos y sin lo que
+    # espera aprobación (lo propuesto que nadie aprobó no entra).
+    preview_payload["ya_traspasados"] = [
+        {k: d[k] for k in ("fecha", "activo", "cantidad", "broker", "lado")}
+        for d in _ya_traspasadas.detalle]
+    preview_payload["avisos_de_pases"] = list(_ya_traspasadas.avisos)
+    _sin_aprobar = {t.row_index for t in valid_txs
+                    if _requiere_aprobacion_notas(getattr(t, "notes", None))}
+    preview_payload["cambian_un_pase"] = _pases.freno_del_import(
+        conn, uid, valid_txs, ya=_ya_traspasadas,
+        sin=set(duplicate_row_indices) | _sin_aprobar)
     preview_payload["session_id"] = batch_id
     preview_payload["route_by_currency"] = route_by_currency
     preview_payload["is_multi_broker"] = is_multi_broker
@@ -2010,7 +2073,16 @@ def list_batches(conn, *, uid: int) -> List[Dict[str, Any]]:
             ORDER BY created_at DESC""",
         (uid,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    # Los dos lotes de un pase («Mover a otro broker») no son un archivo: la lista
+    # los muestra como el pase (D.2.6), con su lado ('salida' el de A, 'entrada' el
+    # de B), la otra cuenta y cómo está. No se revierten ni se rehacen desde acá.
+    if any(r["parser_format"] == _pases.FORMATO for r in out):
+        pases = _pases.lotes_de_pases(conn, uid)
+        for r in out:
+            if r["parser_format"] == _pases.FORMATO:
+                r["traspaso"] = pases.get(r["id"])
+    return out
 
 
 def reconstruct_csv_from_batch(conn, *, uid: int, batch_id: str) -> Optional[bytes]:
