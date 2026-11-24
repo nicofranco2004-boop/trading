@@ -26,6 +26,14 @@ QUÉ NO HACE (a propósito)
     saltea el rebuild (`_is_safe_to_rebuild`) y quedan reportados en
     `pares_salteados` — esas ventas conservan su TC viejo y se miran a mano.
 
+LOS PASES ENTRE BROKERS («Mover a otro broker»)
+───────────────────────────────────────────────
+Las patas de un pase guardan V y C en dólares con la regla que tenía la cuenta ese
+día. Después del rebuild y antes del recálculo, `traspaso_a_mano.revaluar_patas`
+los vuelve a calcular con la regla v2 (especificación C.10): si no, el capital de
+cada broker del pase quedaba corrido en C_v1 − C_v2. La migración toma además el
+turno de la cuenta antes de leer nada, para que un pase no se confirme en el medio.
+
 DAÑO COLATERAL DEL REBUILD, MITIGADO ACÁ
 ────────────────────────────────────────
 El rebuild reinserta las positions con `tc_compra`, `price_override` y `notes` en
@@ -47,6 +55,12 @@ except ImportError:  # pragma: no cover
 from . import rebuild as _rebuild
 from .schema import estado_inicial
 from . import persister as _persister
+from . import traspaso_a_mano as _traspaso_a_mano
+
+try:
+    import pgsesion as _pgsesion
+except ImportError:  # pragma: no cover
+    from .. import pgsesion as _pgsesion
 
 log = logging.getLogger(__name__)
 
@@ -270,6 +284,17 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
     de aportado implausible, cash tocado, ventas con el TC mal). Es para el caso
     entendido y revisado a mano; el default es NO migrarla.
     """
+    # ── El turno de la cuenta, ANTES de leer nada ────────────────────────────
+    # La migración reescribe la plata de toda la cuenta (flujos, lotes, ventas, la
+    # cadena y las patas de los pases). Sin el turno, en Postgres un pase que se
+    # confirmaba a la vez leía la regla v1, la migración (que no lo veía todavía)
+    # revaluaba los demás y el pase se guardaba después con números v1 en una cuenta
+    # ya v2 (C.10). Con el turno, uno espera al otro: o el pase ve la cuenta en v2, o
+    # la migración ve el pase y lo revalúa. Lo piden las tres puertas que la llaman
+    # (el panel, el lote del panel y la migración automática después de importar),
+    # por eso va acá y no en cada una. En SQLite toma la base entera, como la primera
+    # escritura de la migración ya hacía.
+    _pgsesion.tomar_turno(conn, uid)
     version = fx_version(conn, uid)
     if version == FX_V2:
         return {"ok": False, "motivo": "la cuenta ya está en v2", "user_id": uid}
@@ -469,6 +494,25 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
                          (round(tc, 4), lote["id"]))
             tc_completados += 1
     resultado["tc_compra_completados"] = tc_completados
+
+    # ── Las patas de los pases entre brokers, con la regla nueva (C.10) ───────
+    # Guardan V y C en dólares calculados con la regla v1; todo lo demás ya se
+    # rearmó con la v2. Sin esto, el capital de cada broker de un pase quedaba
+    # corrido en C_v1 − C_v2 para siempre. Va ANTES del recálculo, que es el que lee
+    # las patas. Un pase que no se puede revaluar frena la migración entera, como un
+    # activo que el rebuild no pudo replayar: después de marcar v2 no hay segunda
+    # corrida que lo arregle.
+    pases = _traspaso_a_mano.revaluar_patas(conn, uid, tc_blue=tc_fallback)
+    resultado["pases_entre_brokers"] = {"revaluados": len(pases["revaluados"]),
+                                        "sin_cambios": len(pases["sin_cambios"]),
+                                        "salteados": pases["salteados"]}
+    if pases["salteados"]:
+        resultado["ok"] = False
+        resultado["motivo"] = (f"no se pudieron revaluar {len(pases['salteados'])} pase(s) "
+                               "entre brokers — la migración se revierte entera para no "
+                               "dejar sus patas con el dólar viejo. Detalle en "
+                               "pases_entre_brokers.salteados.")
+        return resultado
 
     # ── Sincronizar la cadena y los snapshots (sin el borrador de outliers) ───
     recalc(conn, uid)

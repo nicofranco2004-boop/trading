@@ -63,6 +63,16 @@ el deshacer deja la cuenta como antes del pase (#34). Y no marca en falso: cada
 `_rebuild()` de este archivo afirma qué pases quedaron marcados (ninguno, salvo los que
 la prueba desfasó a propósito).
 
+LA MIGRACIÓN DEL DÓLAR (E11). Una cuenta con la regla vieja del dólar (v1) que hace
+un pase y después pasa a la del dólar de cada fecha (v2), por las dos puertas de
+producción (un import cualquiera y el panel de admin): las patas quedan con V y C de
+la regla nueva y la identidad de cada broker se cumple mes por mes, escrita a mano
+(#40); el pase se deshace después igual que si nunca hubiera existido (contra una
+cuenta gemela sin el pase); una migración que entra en el medio de un pase lo espera
+(el turno). Y cada pase de este archivo comprueba, al confirmarse, que revaluarlo con
+la misma versión del dólar no cambia nada (`_revaluar_no_cambia_nada`): la
+revaluación y el confirmar son la misma cuenta.
+
 Los números de las pruebas son los de la tabla F.2 de la especificación (#n).
 
 Corre con: cd backend && python3 -m pytest tests/test_mover_entre_brokers.py
@@ -149,19 +159,11 @@ class _Cuenta(unittest.TestCase):
                 "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
                 "VALUES (?,?,?, 'test')",
                 [(d.isoformat(), dolar(d.isoformat()), dolar(d.isoformat())) for d in _DIAS])
-            self.uid = conn.execute(
-                "INSERT INTO users (email, password_hash, approved, email_verified, is_admin, tier) "
-                "VALUES (?, 'x', 1, 1, 1, 'plus')",
-                (f"mover-{uuid.uuid4().hex[:10]}@rendi.test",)).lastrowid
-            for nombre in ("Cocos", "Balanz"):
-                conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,'ARS')",
-                             (self.uid, nombre))
-            fx.set_fx_version(conn, self.uid, "v2")
             conn.commit()
         finally:
             conn.close()
+        self.uid, self.h = self._usuario_nuevo()
         self._interruptor(True)
-        self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
         self.http = TestClient(main.app)
         for nombre, valor in (("_fetch_data912_bonds", {}), ("_bench_para_reportes", {})):
             p = mock.patch.object(main, nombre, return_value=valor)
@@ -189,6 +191,24 @@ class _Cuenta(unittest.TestCase):
         self._fetch_orig = bf._fetch_monthly_close
         bf._HIST_CACHE.clear()
         bf._fetch_monthly_close = lambda price_key, start_iso: dict(PRECIOS)
+
+    def _usuario_nuevo(self):
+        """(uid, encabezado con su token real) de una cuenta nueva con Cocos y Balanz en
+        pesos y la regla del dólar de cada fecha (v2)."""
+        conn = main.get_db()
+        try:
+            uid = conn.execute(
+                "INSERT INTO users (email, password_hash, approved, email_verified, is_admin, tier) "
+                "VALUES (?, 'x', 1, 1, 1, 'plus')",
+                (f"mover-{uuid.uuid4().hex[:10]}@rendi.test",)).lastrowid
+            for nombre in ("Cocos", "Balanz"):
+                conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,'ARS')",
+                             (uid, nombre))
+            fx.set_fx_version(conn, uid, "v2")
+            conn.commit()
+        finally:
+            conn.close()
+        return uid, {"Authorization": f"Bearer {main.create_token(uid)}"}
 
     def tearDown(self):
         bf._fetch_monthly_close = self._fetch_orig
@@ -304,8 +324,28 @@ class _Cuenta(unittest.TestCase):
         self._esperar_reconstruccion()
         hecho = c.json()
         self.assertEqual(set(hecho), {"ok", "traspaso_id", "mensaje"})
+        self._revaluar_no_cambia_nada()
         return {**self._pase_escrito(hecho["traspaso_id"]), "vista": vista,
                 "mensaje": hecho["mensaje"]}
+
+    def _revaluar_no_cambia_nada(self):
+        """La revaluación de la migración del dólar (E11, C.10) recalcula V y C con la
+        MISMA cuenta que el confirmar (`traspaso_a_mano.dolares_del_pase`,
+        `valor_del_par`, `costo_usd_de_lo_movido`, `gasto_en_usd`). Con la misma versión
+        del dólar tiene que dar exactamente lo que el pase escribió: si no, una
+        migración movería números que no tenía que mover. Se mira después de cada pase
+        de este archivo —totales, parciales, cargados a mano, el par padre/«· USD», en
+        dólares, cripto, con gasto en pesos o en dólares, en cuentas v1 y v2— y se
+        deshace (no queda escrito nada)."""
+        conn = main.get_db()
+        try:
+            r = traspaso_a_mano.revaluar_patas(conn, self.uid,
+                                               tc_blue=main._config_tc_blue(conn, self.uid))
+            conn.rollback()
+        finally:
+            conn.close()
+        self.assertEqual((r["revaluados"], r["salteados"]), ([], []),
+                         "revaluar con la misma versión del dólar cambió un pase recién hecho")
 
     def _pase_escrito(self, tid):
         """Lo que el pase `tid` dejó en la base: el registro y las cuentas de sus patas
@@ -1672,6 +1712,23 @@ class _Confirmar(_Vista):
         self.assertEqual(r.json()["detail"], texto)
         return r
 
+    def _pasar_a_v1(self, tc_blue=1200):
+        """La cuenta con la regla vieja del dólar (v1): los pesos van al dólar de la
+        config (`tc_blue`), no al de cada día. Se pone DESPUÉS de importar la historia:
+        un import posterior la pasa sola a v2 (`main._auto_migrar_fx_post_import`)."""
+        conn = main.get_db()
+        try:
+            fx.set_fx_version(conn, self.uid, "v1")
+            conn.execute("INSERT INTO config (user_id, key, value) VALUES (?, 'tc_blue', ?) "
+                         "ON CONFLICT (key, user_id) DO UPDATE SET value=excluded.value",
+                         (self.uid, str(tc_blue)))
+            conn.commit()
+        finally:
+            conn.close()
+        r = self.http.post("/api/imports/recalc-pnl", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+
 
 class PaseTotal(_Confirmar):
 
@@ -2736,17 +2793,7 @@ class CuentaV1(_Confirmar):
         la pasa sola a v2 y las patas quedan con los números de v1: eso es de E11,
         `revaluar_patas`. Por eso la regla v1 se pone DESPUÉS de importar la historia.)"""
         self._historia()
-        conn = main.get_db()
-        try:
-            fx.set_fx_version(conn, self.uid, "v1")
-            conn.execute("INSERT INTO config (user_id, key, value) VALUES (?, 'tc_blue', '1200') "
-                         "ON CONFLICT (key, user_id) DO UPDATE SET value='1200'", (self.uid,))
-            conn.commit()
-        finally:
-            conn.close()
-        r = self.http.post("/api/imports/recalc-pnl", headers=self.h)
-        self.assertEqual(r.status_code, 200, r.text)
-        self._esperar_reconstruccion()
+        self._pasar_a_v1()
         antes = self._mensual()
         p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
         self.assertAlmostEqual(p["V"], 450000 / 1200, places=6)
@@ -5347,3 +5394,388 @@ class DeshacerUnDesfasadoSinPoderRearmar(_Desfase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E11 — La migración del dólar revalúa las patas (C.10, D.17)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# El import que migra la cuenta v1 (cualquier import lo hace, como en producción:
+# `main._auto_migrar_fx_post_import`): un depósito chico de Balanz, que no toca NVDA.
+DEPOSITO_QUE_MIGRA = ("Balanz", "2025-12-20", 1000.0)
+
+
+def _depositos(broker):
+    """Los depósitos de `_historia` de cada broker: [(fecha, pesos)]."""
+    if broker == "Cocos":
+        return [("2025-01-05", 400000.0)] + [(f"2025-{m:02d}-05", 100000.0) for m in range(2, 13)]
+    return [(f"2025-{m:02d}-05", 50000.0) for m in range(1, 13)]
+
+
+class _MigracionDelDolar(_Deshacer):
+    """Una cuenta con la regla vieja del dólar (v1, los pesos al de la config: $1.200)
+    que hace un pase y después pasa a la del dólar de cada fecha (v2), por las puertas
+    de producción: un import cualquiera (`main._auto_migrar_fx_post_import`) o el panel
+    (`POST /api/admin/fx-migrate-user`). Las dos corren `fx_migrate.migrate_user_fx`."""
+
+    GASTO = 5000.0
+
+    def _cuenta_v1_con_pase(self, gasto=GASTO):
+        self._historia()
+        self._pasar_a_v1()
+        return self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE,
+                                   gasto=gasto)
+
+    def _migrar_con_un_import(self):
+        broker, fecha, monto = DEPOSITO_QUE_MIGRA
+        r = self._importar(broker, [f"{fecha},DEPOSITO,{broker},,,,{monto:.0f},,,,ARS,dep"])
+        self.assertEqual((r.get("fx_migracion") or {}).get("migrada"), True,
+                         f"el import no migró la cuenta: {r.get('fx_migracion')}")
+        self.assertEqual(self._version(), "v2")
+        return r
+
+    def _migrar_por_el_panel(self):
+        r = self.http.post("/api/admin/fx-migrate-user",
+                           params={"user_id": self.uid, "apply": "true"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        return r.json()
+
+    def _version(self):
+        conn = main.get_db()
+        try:
+            r = conn.execute("SELECT value FROM config WHERE user_id=? AND key='fx_version'",
+                             (self.uid,)).fetchone()
+            return r["value"] if r else None
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _aportado_v2(broker, hasta_mes, *, con_el_import=True):
+        """Lo que el broker aportó hasta fin de `hasta_mes` de 2025, en dólares y con la
+        regla v2 (cada depósito al dólar de su fecha), escrito a mano."""
+        deps = list(_depositos(broker))
+        if con_el_import and broker == DEPOSITO_QUE_MIGRA[0]:
+            deps.append(DEPOSITO_QUE_MIGRA[1:])
+        return sum(m / dolar(f) for f, m in deps if int(f[5:7]) <= hasta_mes)
+
+    def _identidad_por_broker(self, V, C, G, *, con_el_import=True):
+        """C.10, la identidad de cada broker con la regla v2, escrita a mano. Ninguno
+        vendió nada, así que el capital de cada uno es lo que aportó (cada depósito al
+        dólar de su fecha) más el costo de lo que le llegó, menos el de lo que salió y
+        el gasto, que es pérdida de A: Balanz tiene los 10 NVDA, que costaron C =
+        $301.500 al dólar de la compra (10/01); Cocos los pagó con su caja y pagó el
+        gasto. Sin la revaluación, los dos quedaban corridos en C_v1 − C_v2 desde junio."""
+        m = self._mensual()
+        for mes in range(1, 13):
+            for broker, delta in (("Cocos", -C - G), ("Balanz", C)):
+                esperado = (self._aportado_v2(broker, mes, con_el_import=con_el_import)
+                            + (delta if mes >= 6 else 0.0))
+                self.assertAlmostEqual(m[(broker, 2025, mes)]["capital_final"], esperado,
+                                       delta=0.001, msg=f"capital de {broker} en {mes}/2025")
+        a, b, g = ("Cocos", 2025, 6), ("Balanz", 2025, 6), ("global", 2025, 6)
+        self.assertAlmostEqual(m[a]["pnl_realized"], V - C - G, delta=0.001)
+        self.assertAlmostEqual(m[b]["pnl_realized"], -(V - C), delta=0.001)
+        self.assertAlmostEqual(m[g]["pnl_realized"], -G, delta=0.001)
+        self.assertAlmostEqual(m[a]["withdrawals"], V, delta=0.001)
+        self.assertAlmostEqual(m[b]["deposits"], 50000 / dolar("2025-06-05") + V, delta=0.001)
+        # Lo que la pantalla lee para explicarlo, con los números nuevos.
+        self.assertAlmostEqual(m[a]["puente_salida_usd"], V - C, places=4)
+        self.assertAlmostEqual(m[b]["puente_entrada_usd"], V - C, places=4)
+        if G:
+            self.assertAlmostEqual(m[a]["gasto_pase_usd"], G, places=4)
+        self._cierra_la_cadena(m)
+        return m
+
+
+class MigracionV1AV2(_MigracionDelDolar):
+
+    def test_migracion_v1_a_v2_revalua_patas(self):
+        """#40. Cuenta v1 → pase con gasto de $5.000 → un import la migra a v2. Las dos
+        patas quedan con V = $450.000 al dólar del 16/06 y C = $301.500 al de la compra
+        (10/01), los números que da un pase hecho en una cuenta v2 (#4), y el gasto al
+        dólar del 16/06; V en pesos y C en pesos no cambian. La receta, GET /traspasos y
+        Movimientos dicen lo mismo. La identidad de Cocos y de Balanz se cumple mes por
+        mes, escrita a mano (la cuenta entera sólo pierde el gasto), y sigue igual
+        después del rebuild real."""
+        p1 = self._cuenta_v1_con_pase()
+        tid = p1["traspaso_id"]
+        # Antes de migrar, la regla v1: los pesos al dólar de la config.
+        self.assertAlmostEqual(p1["V"], 450000 / 1200, places=6)
+        self.assertAlmostEqual(p1["C"], 301500 / 1200, places=6)
+        self.assertAlmostEqual(p1["gasto_usd"], 5000 / 1200, places=6)
+        self.assertEqual(p1["receta"]["fx_version"], "v1")
+
+        self._migrar_con_un_import()
+
+        V, C = 450000 / dolar(FECHA_PASE), 301500 / dolar("2025-01-10")
+        G = 5000 / dolar(FECHA_PASE)
+        p = self._pase_escrito(tid)
+        self.assertAlmostEqual(p["V"], V, places=6)
+        self.assertAlmostEqual(p["C"], C, places=6)
+        self.assertAlmostEqual(p["gasto_usd"], G, places=6)
+        self.assertGreater(abs(C - p1["C"]), 40, "el escenario necesita que C cambie")
+        # Las dos patas guardan los mismos cuatro números (C.4.4); los de pesos, como antes.
+        numeros = lambda op: [(f["valor_usd"], f["valor_ars"], f["costo_usd"], f["costo_nativo"])
+                              for f in p["filas"] if f["operation_type"] == op]
+        self.assertEqual(numeros(OP_TRASPASO_SALIDA), numeros(OP_TRASPASO_ENTRADA))
+        self.assertEqual((p["V_ars"], p["C_nativo"]), (p1["V_ars"], p1["C_nativo"]))
+        # Las otras filas del pase no se tocan, salvo `gross_amount_usd`: la migración lo
+        # reestampa en TODA fila en pesos con monto (su PATA 1, de antes del pase), y
+        # en la venta a 0 y las compras de llegada del pase no lo lee nadie (no mueven
+        # plata, `_plata_de_fila_importada`; Movimientos y el CSV no las muestran).
+        otras = lambda q: sorted(tuple(sorted((k, v) for k, v in f.items()
+                                              if k != "gross_amount_usd"))
+                                 for f in q["filas"]
+                                 if f["operation_type"] not in (OP_TRASPASO_SALIDA,
+                                                                OP_TRASPASO_ENTRADA, OP_FEE))
+        self.assertEqual(otras(p), otras(p1))
+        # La receta: la versión, los dos dólares y los totales.
+        rec = p["receta"]
+        self.assertEqual(rec["fx_version"], "v2")
+        self.assertEqual((rec["tc_pase"], rec["tc_venta"]), (dolar(FECHA_PASE), dolar(FECHA_PASE)))
+        for clave, valor in (("valor_usd", V), ("costo_usd", C), ("valor_ars", p1["V_ars"]),
+                             ("valor_nativo", p1["receta"]["valor_nativo"])):
+            self.assertAlmostEqual(rec[clave], valor, places=6, msg=clave)
+        self.assertEqual({k: v for k, v in rec.items() if k not in (
+            "fx_version", "tc_pase", "tc_venta", "valor_usd", "costo_usd", "valor_ars",
+            "valor_nativo")}, {k: v for k, v in p1["receta"].items() if k not in (
+            "fx_version", "tc_pase", "tc_venta", "valor_usd", "costo_usd", "valor_ars",
+            "valor_nativo")})
+        # GET /traspasos y Movimientos muestran los números nuevos.
+        t = self._uno(tid)
+        self.assertEqual((t["valor_usd"], t["costo_usd"]), (round(V, 2), round(C, 2)))
+        movs = self._get("/api/movements").json()
+        movs = movs.get("movements", movs) if isinstance(movs, dict) else movs
+        patas = [m for m in movs if m.get("traspaso_id") == tid
+                 and m.get("type") in (OP_TRASPASO_SALIDA, OP_TRASPASO_ENTRADA)]
+        self.assertEqual(len(patas), 2)
+        for m in patas:
+            self.assertAlmostEqual(m["amount_usd"], V, places=2)
+
+        self._identidad_por_broker(V, C, G)
+        despues = self.estado()
+        aportado = {b: self._aportado_v2(b, 12) for b in ("Cocos", "Balanz")}
+        self.assertAlmostEqual(despues["aportado"]["Cocos"], aportado["Cocos"] - V, places=3)
+        self.assertAlmostEqual(despues["aportado"]["Balanz"], aportado["Balanz"] + V, places=3)
+        self.assertAlmostEqual(despues["aportado"]["global"],
+                               aportado["Cocos"] + aportado["Balanz"], places=3)
+
+        # Después del rebuild real (y de su recálculo), todo igual: nadie vuelve a
+        # escribir las patas con la regla vieja.
+        self._rebuild()
+        self.assertEqual(self.estado(), despues)
+        self.assertEqual(self._pase_escrito(tid)["filas"], p["filas"])
+        self._revaluar_no_cambia_nada()
+
+    def test_tambien_por_el_panel_de_admin(self):
+        """La otra puerta de la migración (el panel, `?apply=true`): lo mismo, y la
+        respuesta dice cuántos pases revaluó."""
+        p1 = self._cuenta_v1_con_pase()
+        out = self._migrar_por_el_panel()
+        self.assertTrue(out.get("ok") and out.get("applied"), out)
+        self.assertEqual(out["pases_entre_brokers"],
+                         {"revaluados": 1, "sin_cambios": 0, "salteados": []})
+        self.assertEqual(self._version(), "v2")
+        V, C = 450000 / dolar(FECHA_PASE), 301500 / dolar("2025-01-10")
+        G = 5000 / dolar(FECHA_PASE)
+        p = self._pase_escrito(p1["traspaso_id"])
+        self.assertAlmostEqual(p["V"], V, places=6)
+        self.assertAlmostEqual(p["C"], C, places=6)
+        self.assertAlmostEqual(p["gasto_usd"], G, places=6)
+        self._identidad_por_broker(V, C, G, con_el_import=False)
+
+    def test_el_pase_se_deshace_bien_despues_de_migrar(self):
+        """Deshacer un pase revaluado deja la cuenta EXACTAMENTE como la de alguien que
+        nunca lo hizo: la misma historia, la misma regla v1 y el mismo import que la
+        migra, en otra cuenta (`estado()` entero de F.1: contabilidad, comisiones,
+        Movimientos, el CSV y las fotos). El deshacer no usa V ni C (C.8)."""
+        p = self._cuenta_v1_con_pase()
+        self._migrar_con_un_import()
+        self._deshacer_ok(p["traspaso_id"])
+        despues = self.estado_completo()
+        # A mano: cada broker con lo que aportó, sin realizado, y los NVDA en Cocos.
+        m = self._mensual()
+        for mes in range(1, 13):
+            for broker in ("Cocos", "Balanz"):
+                self.assertAlmostEqual(m[(broker, 2025, mes)]["capital_final"],
+                                       self._aportado_v2(broker, mes), delta=0.001,
+                                       msg=f"{broker} {mes}")
+                self.assertAlmostEqual(m[(broker, 2025, mes)]["pnl_realized"], 0.0, delta=0.001)
+        self.assertEqual([(l["broker"], l["quantity"]) for l in self._lotes("Cocos")],
+                         [("Cocos", 10.0)])
+        self.assertEqual(self._lotes("Balanz"), [])
+        self._igual(despues, self._gemela_sin_pase())
+
+    def _gemela_sin_pase(self):
+        """`estado_completo()` de otra cuenta con la misma historia, la misma regla v1 y el
+        mismo import que la migra, pero SIN el pase."""
+        self._esperar_reconstruccion()
+        propia = (self.uid, self.h)
+        self.uid, self.h = self._usuario_nuevo()
+        try:
+            self._historia()
+            self._pasar_a_v1()
+            self._migrar_con_un_import()
+            return self.estado_completo()
+        finally:
+            self._esperar_reconstruccion()
+            self.uid, self.h = propia
+
+    def test_pase_incompleto_se_revalua_del_lado_que_queda(self):
+        """Si se borró A (con `force`), de la cuenta entera queda B como si hubiera
+        arrancado con esos títulos al valor del día (D.19): 'global' suma V a lo
+        aportado y −(V − C) al realizado. La migración revalúa la pata que queda, la de
+        Balanz, y 'global' queda con los números de v2. La pata de Cocos está en un lote
+        revertido que nadie lee: queda como estaba."""
+        p1 = self._cuenta_v1_con_pase(gasto=None)
+        r = self.http.delete(f"/api/brokers/{self._id_broker('Cocos')}",
+                             params={"force": "true"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self._migrar_con_un_import()
+        V, C = 450000 / dolar(FECHA_PASE), 301500 / dolar("2025-01-10")
+        p = self._pase_escrito(p1["traspaso_id"])
+        entrada = [f for f in p["filas"] if f["operation_type"] == OP_TRASPASO_ENTRADA]
+        salida = [f for f in p["filas"] if f["operation_type"] == OP_TRASPASO_SALIDA]
+        self.assertEqual([(round(f["valor_usd"], 6), round(f["costo_usd"], 6)) for f in entrada],
+                         [(round(V, 6), round(C, 6))])
+        self.assertEqual([(f["valor_usd"], f["costo_usd"]) for f in salida],
+                         [(450000 / 1200, 301500 / 1200)])
+        m = self._mensual()
+        g = m[("global", 2025, 6)]
+        self.assertAlmostEqual(g["deposits"], 50000 / dolar("2025-06-05") + V, delta=0.001)
+        self.assertAlmostEqual(g["pnl_realized"], -(V - C), delta=0.001)
+        self.assertAlmostEqual(g["traspaso_neto_usd"], V, places=4)
+        self.assertAlmostEqual(g["puente_entrada_usd"], V - C, places=4)
+        for mes in range(1, 13):
+            esperado = self._aportado_v2("Balanz", mes) + (C if mes >= 6 else 0.0)
+            for broker in ("Balanz", "global"):
+                self.assertAlmostEqual(m[(broker, 2025, mes)]["capital_final"], esperado,
+                                       delta=0.001, msg=f"{broker} {mes}")
+        self._cierra_la_cadena(m)
+        self.assertEqual(self._uno(p1["traspaso_id"])["estado"], "incompleto")
+
+    def test_un_pase_en_dolares_no_cambia(self):
+        """Un pase de lotes en dólares, con precio en dólares y gasto en dólares, no
+        depende de la regla del dólar: la migración no le cambia ningún número (tampoco
+        V en pesos, que va al dólar del día en las dos versiones), sólo anota la versión.
+        IBKR y Schwab siguen con la identidad de #8."""
+        self._broker("IBKR", "USD")
+        self._broker("Schwab", "USD")
+        self._importar("IBKR", ["2025-01-05,DEPOSITO,IBKR,,,,1000,,,,USD,dep",
+                                "2025-01-10,COMPRA,IBKR,MSFT,2,300,600,,,1,USD,compra"])
+        self._pasar_a_v1()
+        p1 = self._aplicar(self._pedido("MSFT", "IBKR", "Schwab", FECHA_PASE, moneda="USD",
+                                        precio_manual=420, gasto={"monto": 5, "moneda": "USD"}))
+        self._migrar_con_un_import()
+        p = self._pase_escrito(p1["traspaso_id"])
+        self.assertEqual([{k: v for k, v in f.items()} for f in p["filas"]], p1["filas"])
+        self.assertEqual(p["receta"]["fx_version"], "v2")
+        self.assertEqual({k: v for k, v in p["receta"].items() if k != "fx_version"},
+                         {k: v for k, v in p1["receta"].items() if k != "fx_version"})
+        m = self._mensual()
+        for broker, capital in (("IBKR", 394.0), ("Schwab", 601.0)):
+            for mes in range(6, 13):
+                self.assertAlmostEqual(m[(broker, 2025, mes)]["capital_final"], capital,
+                                       places=4, msg=f"{broker} {mes}")
+
+    def test_un_pase_deshecho_no_se_toca(self):
+        """Sólo se revalúan los pases que siguen en pie (C.10): uno deshecho antes de
+        migrar queda con su receta y sus filas tal cual (sus lotes están revertidos)."""
+        p1 = self._cuenta_v1_con_pase()
+        self._deshacer_ok(p1["traspaso_id"])
+        self._migrar_con_un_import()
+        p = self._pase_escrito(p1["traspaso_id"])
+        self.assertEqual((p["receta"], p["filas"]), (p1["receta"], p1["filas"]))
+
+    def test_un_pase_que_no_se_puede_revaluar_frena_la_migracion(self):
+        """Si la receta de un pase no trae su precio (no debería pasar), la migración no
+        deja sus patas con el dólar viejo en una cuenta v2: se revierte entera, como
+        cuando el rebuild no puede rearmar un activo, y la cuenta sigue en v1 sin
+        ningún cambio. No se puede forzar: después de marcar v2 no habría segunda
+        corrida que lo arreglara."""
+        p1 = self._cuenta_v1_con_pase()
+        receta = dict(p1["receta"])
+        receta.pop("precio")
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE traspasos_a_mano SET receta_json=? WHERE id=?",
+                         (json.dumps(receta), p1["traspaso_id"]))
+            conn.commit()
+        finally:
+            conn.close()
+        antes = self.estado()
+        for force in ("false", "true"):
+            r = self.http.post("/api/admin/fx-migrate-user",
+                               params={"user_id": self.uid, "apply": "true", "force": force},
+                               headers=self.h)
+            self.assertEqual(r.status_code, 200, r.text)
+            out = r.json()
+            self.assertFalse(out.get("ok"), out)
+            self.assertNotIn("applied", out)
+            self.assertEqual(out["pases_entre_brokers"]["salteados"],
+                             [{"id": p1["traspaso_id"],
+                               "motivo": traspaso_a_mano.MOTIVO_RECETA_ILEGIBLE}])
+            self.assertEqual(self._version(), "v1")
+            self.assertEqual(self.estado(), antes)
+            self.assertEqual(self._pase_escrito(p1["traspaso_id"])["filas"], p1["filas"])
+
+
+class MigracionYPaseNoSeCruzan(_MigracionDelDolar):
+
+    def test_una_migracion_no_se_mete_en_el_medio_de_un_pase(self):
+        """La migración toma el turno de la cuenta ANTES de leer nada (C.10, notas de la
+        tanda 2). Sin el turno, en Postgres una migración que entraba mientras se
+        confirmaba un pase —ya armado con la regla v1, todavía sin guardar— no lo veía,
+        revaluaba los demás y terminaba; el pase se guardaba después con los números v1
+        en una cuenta ya v2, y nadie los volvía a revaluar. Ahora la migración espera a
+        que el pase termine y lo revalúa. (En SQLite la primera escritura de la migración
+        ya esperaba a la base entera: ahí esta prueba no distingue.)
+
+        Lo que se pasa es un lote de GGAL cargado a mano de los de antes, sin dólar de
+        compra guardado (`_lote_viejo`): la migración no rearma lotes cargados a mano ni
+        le restaura nada a uno sin `tc_compra`, así que no necesita ninguna fila que el
+        pase tenga tomada. Con un lote importado, o uno cargado a mano hoy (que guarda
+        su `tc_compra`), la migración esperaba igual al restaurarlo: medido con
+        pg_stat_activity. Acá sólo el turno la hace esperar."""
+        import threading
+        self._historia()
+        self._pasar_a_v1()
+        self._lote_viejo("Cocos", "GGAL", 100, 300000, "2025-02-10", "ARS")
+        body = self._pedido("GGAL", "Cocos", "Balanz", FECHA_PASE, precio_manual=4500)
+        vista = self._ok(body)
+        real = traspaso_a_mano.aplicar_plan
+        migracion = {}
+
+        def migrar():
+            r = TestClient(main.app).post(
+                "/api/admin/fx-migrate-user", params={"user_id": self.uid, "apply": "true"},
+                headers=self.h)
+            migracion["status"], migracion["out"] = r.status_code, r.json()
+
+        def con_una_migracion_en_el_medio(conn, uid, plan, **k):
+            # El plan ya está armado (con la regla v1) y no se escribió nada.
+            if "hilo" not in migracion:
+                migracion["hilo"] = threading.Thread(target=migrar)
+                migracion["hilo"].start()
+                migracion["hilo"].join(3)
+                migracion["entro_en_el_medio"] = not migracion["hilo"].is_alive()
+            return real(conn, uid, plan, **k)
+
+        with mock.patch.object(traspaso_a_mano, "aplicar_plan", con_una_migracion_en_el_medio):
+            r = self._confirmar(body, vista=vista)
+        migracion["hilo"].join(120)
+        self._esperar_reconstruccion()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(migracion.get("status"), 200, migracion.get("out"))
+        self.assertTrue(migracion["out"].get("ok"), migracion["out"])
+        # Lo que ve la persona: el pase con los números de la regla de su cuenta (v2).
+        p = self._pase_escrito(r.json()["traspaso_id"])
+        self.assertEqual(p["receta"]["fx_version"], "v2")
+        self.assertAlmostEqual(p["V"], 450000 / dolar(FECHA_PASE), places=6)
+        self.assertAlmostEqual(p["C"], 300000 / dolar("2025-02-10"), places=6)
+        self._revaluar_no_cambia_nada()
+        # Y por qué: la migración esperó al pase y lo revaluó.
+        self.assertFalse(migracion["entro_en_el_medio"], "la migración no esperó al pase")
+        self.assertEqual(migracion["out"]["pases_entre_brokers"]["revaluados"], 1)

@@ -188,3 +188,27 @@ Pendientes que deja:
 - El lado B sólo se mira cuando el par de B tiene alguna venta (`rebuild_fifo_after_import`
   saltea los pares sin ventas; `rebuild_pair_asset` corre siempre). Sin ventas en B no
   hay semillas, así que no se pierde nada.
+
+## De E11 (la migración del dólar revalúa las patas)
+Hecho: `traspaso_a_mano.revaluar_patas(conn, uid, *, tc_blue)` (C.10) recalcula, desde
+la receta de cada pase no deshecho, los dos dólares, V y C de cada par y el gasto en
+dólares con la versión del dólar que tiene la cuenta AHORA, y reescribe las dos patas
+(los mismos números), la FEE y la receta (`fx_version`, `tc_venta`, `tc_pase`,
+`valor_*`, `costo_usd`: los que muestra GET /traspasos). La cuenta de V/C quedó UNA
+sola, compartida con `armar_plan`: `dolares_del_pase`, `valor_del_par`,
+`costo_usd_de_lo_movido`, `gasto_en_usd`. `fx_migrate.migrate_user_fx` la llama después
+del rebuild y antes del recálculo (D.17); un pase que no se puede revaluar frena la
+migración entera (no forzable, como un error del rebuild). La migración toma el turno
+de la cuenta antes de leer nada (`pgsesion.tomar_turno`): cubre el panel, el lote del
+panel y la migración automática después de importar.
+- Se lee y escribe por `TX_VIVAS`: la pata del lado borrado de un pase incompleto
+  (lote revertido) queda con los números viejos; nadie la lee.
+- El arnés de las pruebas (`_aplicar`) comprueba después de CADA pase que revaluar con
+  la misma versión no cambia nada: la revaluación y el confirmar son la misma cuenta.
+Pendientes que deja:
+- **Integración**: nada nuevo para la pantalla (GET /traspasos ya leía `valor_usd`/
+  `costo_usd` de la receta; Movimientos y /mensual, de las patas).
+- `revaluar_patas` usa el `tc_compra` de la FOTO (el que el lote llevó a B): es el que
+  usa B para costear esos lotes, así que la identidad de B se cumple. Una edición
+  posterior del dólar de compra de los lotes de B (o de A) es una edición como
+  cualquier otra (tampoco la identidad de una compra común la resiste).

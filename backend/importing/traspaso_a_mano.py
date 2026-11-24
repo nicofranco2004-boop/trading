@@ -6,7 +6,7 @@ fecha de compra. Cada pase escribe dos lotes de import confirmados
 (`parser_format = FORMATO`, uno por broker) y una fila en `traspasos_a_mano` que
 los une y guarda la receta para deshacerlo (especificación, secciones A.1–A.7).
 
-QUÉ HAY ACÁ HOY (etapas E3 a E10).
+QUÉ HAY ACÁ HOY (etapas E3 a E11).
 
   · E5 («Armar el pase»): cómo se arma un pase ANTES de escribirlo —
     las validaciones de la sección B.6, qué lotes se mueven, a qué pata de B va
@@ -41,6 +41,11 @@ QUÉ HAY ACÁ HOY (etapas E3 a E10).
     lo marca desfasado (`marcar_desfasados`, lo llaman las dos reconstrucciones de
     `importing/rebuild.py`); GET /traspasos, Movimientos e Importaciones lo dicen, y
     el deshacer lo arregla.
+  · E11, al final («La migración del dólar revalúa las patas»): cuando la cuenta
+    pasa del dólar vivo al histórico (`importing/fx_migrate.migrate_user_fx`, v1 →
+    v2), `revaluar_patas` vuelve a calcular V y C de cada pase con la regla nueva, con
+    la misma cuenta que usa `armar_plan` (`dolares_del_pase`, `valor_del_par`,
+    `costo_usd_de_lo_movido`, `gasto_en_usd`).
 
 Las LECTURAS que necesitan los que leen el
 registro: el capital, el resultado del mes y los reportes (E4, abajo, «Las patas
@@ -55,8 +60,6 @@ que cambió de broker:
   · `llegadas_por_lote`: qué día llegó a B cada lote que vino por un pase. Una
     venta posterior en B guarda la fecha de compra original; sin el día de
     llegada, la historia lo contaba en B también en los meses en que estaba en A.
-
-Falta la revaluación de las patas en la migración del dólar (C.10, etapa E11).
 
 Todas las lecturas del registro usan `TX_VIVAS` (import confirmado y sin lápida):
 un pase deshecho deja sus dos lotes en `reverted`, así que deja de contar solo.
@@ -754,13 +757,9 @@ class Plan:
             p["c_usd"] += l.c_usd
             p["c_nativo"] += l.mov_inv + l.mov_com
         for p in out:
-            p["v_nativo"] = p["cantidad"] * self.precio
-            if self.moneda_precio == "ARS":
-                p["v_usd"] = p["v_nativo"] / self.tc_pase if self.tc_pase else 0.0
-                p["v_ars"] = p["v_nativo"]
-            else:
-                p["v_usd"] = p["v_nativo"]
-                p["v_ars"] = p["v_usd"] * self.dolar_del_dia
+            p["v_nativo"], p["v_usd"], p["v_ars"] = valor_del_par(
+                p["cantidad"], self.precio, self.moneda_precio, tc_pase=self.tc_pase,
+                dolar_del_dia=self.dolar_del_dia)
         return out
 
     def tramos(self) -> List[Dict[str, Any]]:
@@ -1417,6 +1416,83 @@ def _aviso_de_la_pata_a_crear(conn, uid: int, nombre: str, cuenta: str, para: st
     return f"Vamos a sumar tu broker «{nombre}» como la cuenta en dólares de {cuenta}."
 
 
+# ── C.4.3–C.5: los dólares, V y C de un pase (UNA sola cuenta) ──────────────────
+#
+# La usan `armar_plan` (al armar el pase) y `revaluar_patas` (cuando la cuenta pasa
+# del dólar vivo al histórico, C.10). Para el mismo pase y la misma versión del dólar
+# las dos tienen que dar EXACTAMENTE lo mismo: si no, la migración dejaría patas que
+# un pase hecho después de migrar no escribiría (es la regla de propagación de
+# CLAUDE.md; antes la cuenta vivía adentro de `armar_plan`).
+
+def dolares_del_pase(conn, fecha: str, moneda: str, moneda_precio: str, *, hist: bool,
+                     tc_blue: float) -> Dict[str, float]:
+    """C.4.3, los dos dólares del pase:
+      · `tc_venta`, el de C: por la moneda de los LOTES, como el persister (un lote en
+        dólares → 1; en pesos → el dólar del día en una cuenta v2, el de la config en
+        una v1);
+      · `tc_pase`, el de V: precio en dólares → 1; precio en pesos de un lote en pesos
+        → el mismo `tc_venta` (así el puente es justo el resultado de vender a V ese
+        día); precio en pesos de un lote en dólares (un CEDEAR en dólares, que Cartera
+        valúa .BA ÷ MEP) → el dólar del día, en las dos versiones.
+    Más `dolar_del_dia` (pasa a pesos un V en dólares) y `tc_pesos` (el de los pesos
+    según la versión: lo usa también el gasto). `tc_blue` es el de la config en v1 y,
+    en v2, sólo el respaldo de una fecha que no está en la serie."""
+    import fx
+    dolar_del_dia = fx.fx_for_date(conn, fecha, fallback=tc_blue) or tc_blue
+    tc_pesos = dolar_del_dia if hist else tc_blue
+    tc_venta = 1.0 if moneda == "USD" else tc_pesos
+    if moneda_precio == "USD":
+        tc_pase = 1.0
+    elif moneda == "ARS":
+        tc_pase = tc_venta
+    else:
+        tc_pase = dolar_del_dia
+    return {"dolar_del_dia": dolar_del_dia, "tc_pesos": tc_pesos, "tc_venta": tc_venta,
+            "tc_pase": tc_pase}
+
+
+def valor_del_par(cantidad: float, precio: float, moneda_precio: str, *, tc_pase: float,
+                  dolar_del_dia: float) -> Tuple[float, float, float]:
+    """C.4.4: (V en la moneda del precio, V en dólares, V en pesos) de `cantidad`
+    títulos a `precio`. Las dos patas del par guardan estos mismos números."""
+    v_nativo = cantidad * precio
+    if moneda_precio == "ARS":
+        return v_nativo, (v_nativo / tc_pase if tc_pase else 0.0), v_nativo
+    return v_nativo, v_nativo, v_nativo * dolar_del_dia
+
+
+def costo_usd_de_lo_movido(conn, lote: Dict[str, Any], take: float, moneda_lote: str, *,
+                           precio: float, moneda_precio: str, dolares: Dict[str, float],
+                           tc_blue: float, hist: bool, fecha: str) -> float:
+    """C.5: C (en dólares, comisiones incluidas) de tomar `take` títulos de `lote` (la
+    fila de `positions` tal como estaba antes del pase: en la receta, su `foto`), con la
+    cuenta única del tramo (`importing/tramo.py`): la misma con que el persister y el
+    rebuild costean una venta. En una cuenta v2 es el costo al dólar de la COMPRA
+    (`tc_compra` del lote o, si no tiene, el de su fecha); en una v1, al de la config."""
+    from importing.tramo import costo_y_resultado_del_tramo
+    tc_pase, dolar_del_dia = dolares["tc_pase"], dolares["dolar_del_dia"]
+    if moneda_precio == moneda_lote:
+        precio_en_su_moneda = precio
+    elif moneda_precio == "ARS":
+        precio_en_su_moneda = precio / tc_pase if tc_pase else 0.0
+    else:
+        precio_en_su_moneda = precio * dolar_del_dia
+    t = costo_y_resultado_del_tramo(
+        conn, lote={**lote, "currency": lote.get("currency") or moneda_lote},
+        take=take, currency=moneda_lote, sell_currency=moneda_lote,
+        exit_price=precio_en_su_moneda, chunk_commission=0.0, tc_venta=dolares["tc_venta"],
+        tc_blue=tc_blue, hist=hist, op_date=fecha, transfer_out=False)
+    return float(t["invested_usd"] or 0)
+
+
+def gasto_en_usd(monto: float, moneda: str, tc_pesos: float) -> float:
+    """El gasto del pase en dólares (la `valor_usd` de su FEE): en pesos, al dólar de
+    los pesos de la versión (`dolares_del_pase()["tc_pesos"]`)."""
+    if moneda == "USD":
+        return monto
+    return monto / tc_pesos if tc_pesos else 0.0
+
+
 # ── armar_plan ─────────────────────────────────────────────────────────────────
 
 def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: bool,
@@ -1431,7 +1507,6 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
     from behavioral import _native_ccy
     from cripto import is_exchange_broker
     from importing import pipeline
-    from importing.tramo import costo_y_resultado_del_tramo
     from importing.maturity import is_bond_like_name
     try:
         from ai.ar_bonds_metadata import is_known_ar_bond
@@ -1723,31 +1798,16 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
         avisos.append(aviso_vela)
 
     # C.4.3 — dos dólares: el de C (por la moneda de los lotes, como el persister) y
-    # el de V (por la moneda del precio).
-    dolar_del_dia = fx.fx_for_date(conn, fecha, fallback=tc_blue) or tc_blue
-    tc_pesos = dolar_del_dia if hist else tc_blue
-    tc_venta = 1.0 if moneda == "USD" else tc_pesos
-    if moneda_precio == "USD":
-        tc_pase = 1.0
-    elif moneda == "ARS":
-        tc_pase = tc_venta
-    else:
-        tc_pase = dolar_del_dia
+    # el de V (por la moneda del precio). La misma cuenta que la revaluación (C.10).
+    dolares = dolares_del_pase(conn, fecha, moneda, moneda_precio, hist=hist, tc_blue=tc_blue)
+    dolar_del_dia, tc_pesos = dolares["dolar_del_dia"], dolares["tc_pesos"]
+    tc_venta, tc_pase = dolares["tc_venta"], dolares["tc_pase"]
 
     # C.5 — C de cada lote, con la cuenta única del tramo (`importing/tramo.py`).
     for l in lotes:
-        if moneda_precio == l.moneda:
-            precio_en_su_moneda = precio
-        elif moneda_precio == "ARS":
-            precio_en_su_moneda = precio / tc_pase if tc_pase else 0.0
-        else:
-            precio_en_su_moneda = precio * dolar_del_dia
-        t = costo_y_resultado_del_tramo(
-            conn, lote={**l.lote, "currency": l.lote.get("currency") or l.moneda},
-            take=l.take, currency=l.moneda, sell_currency=l.moneda,
-            exit_price=precio_en_su_moneda, chunk_commission=0.0, tc_venta=tc_venta,
-            tc_blue=tc_blue, hist=hist, op_date=fecha, transfer_out=False)
-        l.c_usd = float(t["invested_usd"] or 0)
+        l.c_usd = costo_usd_de_lo_movido(conn, l.lote, l.take, l.moneda, precio=precio,
+                                         moneda_precio=moneda_precio, dolares=dolares,
+                                         tc_blue=tc_blue, hist=hist, fecha=fecha)
 
     # #27 — el gasto, siempre de la caja de A.
     gasto = None
@@ -1776,7 +1836,7 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
             "WHERE user_id=? AND broker=? AND is_cash=1", (uid, pata_gasto)).fetchone()["c"]
         queda = float(caja or 0) - monto
         gasto = {"monto": monto, "moneda": g_moneda, "broker": pata_gasto,
-                 "valor_usd": monto if g_moneda == "USD" else (monto / tc_pesos if tc_pesos else 0.0),
+                 "valor_usd": gasto_en_usd(monto, g_moneda, tc_pesos),
                  "caja_queda_negativa": queda < -0.005}
         if gasto["caja_queda_negativa"]:
             avisos.append(f"Con el gasto, la caja de {pata_gasto} queda en {_monto(queda, g_moneda)}.")
@@ -3090,3 +3150,179 @@ def _marcar_desfasados(conn, uid, tids, salidas, llegadas, replay):
                          "WHERE id=? AND user_id=?", (t["id"], uid))
             cambios[t["id"]] = None
     return cambios
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E11 — La migración del dólar revalúa las patas (C.10, D.17)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# QUÉ PROBLEMA RESUELVE. Las patas de un pase guardan V y C en dólares, calculados
+# con la regla del dólar que tenía la cuenta ese día. Una cuenta vieja (v1) pasa
+# pesos a dólares con UN dólar, el de la config; la migración (`migrate_user_fx`) la
+# pasa al dólar de CADA fecha (v2) y rearma todo lo demás con esa regla: los flujos,
+# las ventas y los lotes. Las patas no las rearma nadie: quedaban con los números
+# viejos. Como el capital de A baja C y el de B sube C, B terminaba con el C viejo de
+# capital y lotes cuyo costo, con la regla nueva, es otro: la identidad «capital =
+# lo aportado + el costo de lo que llegó» quedaba corrida en C_v1 − C_v2 (y A al
+# revés), para siempre. Cualquier import posterior dispara la migración sola
+# (`main._auto_migrar_fx_post_import`), así que no es un caso raro.
+#
+# QUÉ HACE. `revaluar_patas` vuelve a calcular, desde la receta de cada pase no
+# deshecho (el precio que vio la persona, la fecha y los lotes con su inversión,
+# comisiones, fecha y dólar de compra), los dos dólares, V y C de cada par y el gasto
+# en dólares, con la MISMA cuenta que usa `armar_plan` (`dolares_del_pase`,
+# `valor_del_par`, `costo_usd_de_lo_movido`, `gasto_en_usd`) y la versión del dólar
+# que tiene la cuenta AHORA. Reescribe las dos patas de cada par con los mismos
+# números, la FEE y la receta (`fx_version`, los dos dólares, V y C, que lee GET
+# /traspasos). La llama `migrate_user_fx` después del rebuild y antes del recálculo,
+# en la misma transacción: el recálculo lee las patas nuevas.
+#
+# LO QUE NO CAMBIA. El precio y V en pesos de un precio en pesos, C en la moneda de
+# los lotes (`costo_nativo`), las cantidades y todo lo que mira el detector de
+# desfase (que compara en la moneda de los lotes): sólo los números en dólares que
+# dependen de la regla. Un pase de lotes en dólares con precio en dólares queda
+# igual. El deshacer no usa V ni C (C.8): un pase revaluado se deshace igual.
+#
+# LA PATA DE UN LADO BORRADO. Se lee y se escribe por `TX_VIVAS`, como todo lector
+# del registro: la pata del broker que se borró (pase incompleto) está en un lote
+# revertido que nadie vuelve a leer (no hay puerta que des-revierta un lote), así que
+# queda como estaba. La del lado vivo sí se revalúa: es la que cuenta en 'global'.
+
+MOTIVO_RECETA_ILEGIBLE = "su receta no tiene el precio del pase"
+MOTIVO_FILAS_NO_CUADRAN = "sus patas no coinciden con la receta"
+
+
+def revaluar_patas(conn, uid: int, *, tc_blue: float) -> Dict[str, Any]:
+    """C.10. Revalúa las patas de todos los pases no deshechos del usuario con la
+    versión del dólar que tiene la cuenta ahora (`fx.fx_version`). `tc_blue`: el
+    dólar de respaldo de la versión (en v2, el de una fecha que no está en la serie;
+    la migración pasa el mismo con que rearma los lotes).
+
+    No hace commit: corre adentro de la transacción de quien llama. Devuelve
+    {"version", "revaluados": [ids], "sin_cambios": [ids], "salteados": [{id,
+    motivo}]}. Un pase salteado (receta sin precio, o patas que no coinciden con la
+    receta) NO se toca a medias: quien llama decide (la migración se revierte
+    entera, ver `migrate_user_fx`)."""
+    import fx
+    version = fx.fx_version(conn, uid)
+    hist = version == fx.FX_V2
+    out: Dict[str, Any] = {"version": version, "revaluados": [], "sin_cambios": [],
+                           "salteados": []}
+    for reg in _registros(conn, uid):
+        try:
+            cambio = _revaluar_un_pase(conn, uid, reg, version=version, hist=hist,
+                                       tc_blue=tc_blue)
+        except _NoSeRevalua as ex:
+            log.warning("traspaso_a_mano: no se revaluó el pase %s (user=%s): %s",
+                        reg.id, uid, ex.motivo)
+            out["salteados"].append({"id": reg.id, "motivo": ex.motivo})
+            continue
+        out["revaluados" if cambio else "sin_cambios"].append(reg.id)
+    return out
+
+
+class _NoSeRevalua(Exception):
+    def __init__(self, motivo: str):
+        super().__init__(motivo)
+        self.motivo = motivo
+
+
+def _filas_de_la_pata(conn, lote: str, traspaso_id: str, op: str) -> List[Any]:
+    """Las filas `op` del pase en su lote, en el orden en que se escribieron, que es
+    el de `Plan.pares()` (`store_preview_txs` las inserta en el orden de `Plan.filas`,
+    y el `n.id` es el que usa el rebuild). Por `TX_VIVAS`: un lote revertido (broker
+    borrado) no devuelve nada."""
+    return conn.execute(
+        f"SELECT n.id, n.quantity, n.valor_usd, n.valor_ars, n.costo_usd FROM {TX_VIVAS} "
+        f"WHERE n.batch_id=? AND n.traspaso_id=? AND n.operation_type=? "
+        f"ORDER BY n.id", (lote, traspaso_id, op)).fetchall()
+
+
+def _distinto(a, b) -> bool:
+    return abs(_num(a) - _num(b)) > 1e-9 * max(1.0, abs(_num(a)), abs(_num(b)))
+
+
+def _revaluar_un_pase(conn, uid: int, reg: Registro, *, version: str, hist: bool,
+                      tc_blue: float) -> bool:
+    """Revalúa un pase. Devuelve si cambió algún número. Primero calcula y compara
+    todo; recién después escribe (nada a medias)."""
+    receta = reg.receta
+    precio_r = receta.get("precio") or {}
+    moneda_precio = str(precio_r.get("moneda") or "")
+    if precio_r.get("unitario") is None or moneda_precio not in ("ARS", "USD"):
+        raise _NoSeRevalua(MOTIVO_RECETA_ILEGIBLE)
+    precio = _num(precio_r.get("unitario"))
+    dol = dolares_del_pase(conn, reg.fecha, reg.moneda, moneda_precio, hist=hist,
+                           tc_blue=tc_blue)
+
+    # Los pares en el orden de la cola FIFO, como `Plan.pares()`. Todos los lotes de un
+    # pase son de la moneda del pase (C.2: el plan sólo toma los de esa moneda).
+    pares: List[Dict[str, Any]] = []
+    idx: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for l in reg.lotes():
+        k = (str(l.get("broker") or ""), str(l.get("broker_destino") or ""))
+        if k not in idx:
+            idx[k] = {"cantidad": 0.0, "c_usd": 0.0}
+            pares.append(idx[k])
+        take = _num(l.get("cantidad"))
+        idx[k]["cantidad"] += take
+        idx[k]["c_usd"] += costo_usd_de_lo_movido(
+            conn, dict(l.get("foto") or {}), take, reg.moneda, precio=precio,
+            moneda_precio=moneda_precio, dolares=dol, tc_blue=tc_blue, hist=hist,
+            fecha=reg.fecha)
+    if not pares:
+        raise _NoSeRevalua(MOTIVO_RECETA_ILEGIBLE)
+    for p in pares:
+        p["v_nativo"], p["v_usd"], p["v_ars"] = valor_del_par(
+            p["cantidad"], precio, moneda_precio, tc_pase=dol["tc_pase"],
+            dolar_del_dia=dol["dolar_del_dia"])
+
+    # Las filas a reescribir: las dos patas de cada par (en el lote de cada lado que
+    # siga vivo) y la FEE del gasto. Tienen que coincidir con la receta, par por par.
+    updates: List[Tuple[float, float, float, int]] = []
+    for lote, op in ((reg.lote_salida, "TRASPASO_SALIDA"), (reg.lote_entrada, "TRASPASO_ENTRADA")):
+        filas = _filas_de_la_pata(conn, lote, reg.id, op)
+        if not filas:
+            continue                  # ese lado se borró: su lote está revertido
+        if len(filas) != len(pares) or any(abs(_num(f["quantity"]) - p["cantidad"]) > _TOL_CANT
+                                           for f, p in zip(filas, pares)):
+            raise _NoSeRevalua(MOTIVO_FILAS_NO_CUADRAN)
+        for f, p in zip(filas, pares):
+            if (_distinto(f["valor_usd"], p["v_usd"]) or _distinto(f["valor_ars"], p["v_ars"])
+                    or _distinto(f["costo_usd"], p["c_usd"])):
+                updates.append((p["v_usd"], p["v_ars"], p["c_usd"], f["id"]))
+    gasto = receta.get("gasto") or None
+    fees = _filas_de_la_pata(conn, reg.lote_salida, reg.id, "FEE")
+    gasto_usd = None
+    if fees:
+        if not gasto or len(fees) != 1:
+            raise _NoSeRevalua(MOTIVO_FILAS_NO_CUADRAN)
+        gasto_usd = gasto_en_usd(_num(gasto.get("monto")),
+                                 "USD" if str(gasto.get("moneda") or "").upper() == "USD" else "ARS",
+                                 dol["tc_pesos"])
+        if _distinto(fees[0]["valor_usd"], gasto_usd):
+            conn.execute("UPDATE import_normalized_tx SET valor_usd=? WHERE id=?",
+                         (gasto_usd, fees[0]["id"]))
+    for v_usd, v_ars, c_usd, nid in updates:
+        conn.execute("UPDATE import_normalized_tx SET valor_usd=?, valor_ars=?, costo_usd=? "
+                     "WHERE id=?", (v_usd, v_ars, c_usd, nid))
+
+    # La receta: la versión con que quedaron V y C, los dos dólares y los totales (los
+    # que muestra GET /traspasos).
+    nueva = dict(receta)
+    nueva.update({
+        "fx_version": version, "tc_venta": dol["tc_venta"], "tc_pase": dol["tc_pase"],
+        "valor_nativo": sum(p["v_nativo"] for p in pares),
+        "valor_usd": sum(p["v_usd"] for p in pares),
+        "valor_ars": sum(p["v_ars"] for p in pares),
+        "costo_usd": sum(p["c_usd"] for p in pares),
+    })
+    cambio_receta = any(
+        (nueva[k] != receta.get(k)) if k == "fx_version" else _distinto(nueva[k], receta.get(k))
+        for k in ("fx_version", "tc_venta", "tc_pase", "valor_nativo", "valor_usd",
+                  "valor_ars", "costo_usd"))
+    if cambio_receta:
+        conn.execute("UPDATE traspasos_a_mano SET receta_json=? WHERE id=? AND user_id=?",
+                     (json.dumps(nueva), reg.id, uid))
+    return bool(updates) or cambio_receta or (
+        gasto_usd is not None and _distinto(fees[0]["valor_usd"], gasto_usd))
