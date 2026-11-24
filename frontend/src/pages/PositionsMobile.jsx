@@ -38,6 +38,7 @@ import ConvertMenuModal from '../components/cash/ConvertMenuModal'
 import { accionDelPedido, cajasParaConvertir } from '../utils/registrar'
 import BondCashflowModal from '../components/BondCashflowModal'
 import { buildPositionActions } from '../utils/positionActions'
+import { useMoverDeBroker } from '../hooks/useMoverDeBroker'
 import PlazosFijosGroup from '../components/PlazosFijosGroup'
 import PosicionesArchivadas from '../components/PosicionesArchivadas'
 import { lineaDelBono } from '../utils/lineaDelBono'
@@ -266,6 +267,14 @@ export default function PositionsMobile() {
   // Modales de gestión de broker (mismo flow que el desktop BrokerManager)
   const [showAddBroker, setShowAddBroker] = useState(false)
   const [editingBroker, setEditingBroker] = useState(null)
+  // «Mover a otro broker» (hooks/useMoverDeBroker): el MISMO flujo que la compu.
+  // `openMove` es null mientras el servidor no lo habilite (el ítem no aparece);
+  // «+ Crear un broker nuevo» abre el alta de esta pantalla.
+  const mover = useMoverDeBroker({
+    brokers, source: 'mobile', onHecho: loadAll,
+    onCrearBroker: () => setShowAddBroker(true),
+  })
+  const openMove = mover.abrir
   const [newBroker, setNewBroker] = useState({ name: '', currency: 'USDT' })
   const [brokerUpgrade, setBrokerUpgrade] = useState(null)
   // Modales unificados del flow de gestión de posiciones.
@@ -1799,6 +1808,7 @@ export default function PositionsMobile() {
                 onDelete={() => deleteBrokerAction(g.broker)}
                 brokerDe={brokerDe}
                 onSellPosition={openSell}
+                onMovePosition={openMove}
                 onBuyPosition={openBuyForPosition}
                 onAlertPosition={openAlertForPosition}
                 onCashFlowPosition={openCashFlow}
@@ -1839,6 +1849,7 @@ export default function PositionsMobile() {
                 nombreCuenta={nombreFiltro}
                 brokerDe={brokerDe}
                 onSell={openSell}
+                onMove={openMove}
                 onBuy={openBuyForPosition}
                 onAlert={openAlertForPosition}
                 onCashFlow={openCashFlow}
@@ -2095,8 +2106,15 @@ export default function PositionsMobile() {
           tcValuacion={pickFinancialRate(dolar, valuationDollar) || 1415}
           onClose={() => setAddModal(null)}
           onSave={saveEditPosition}
+          // Editar ya no cambia el broker: el enlace abre «Mover a otro broker»
+          // con el lote tal como está guardado.
+          onMove={openMove
+            ? () => { setAddModal(null); openMove(positions.find(x => x.id === addForm.id) || addForm) }
+            : null}
         />
       )}
+
+      {mover.host}
 
       {/* Vender posición — SellModal de Positions.jsx con preview FIFO */}
       {addModal === 'sell' && (
@@ -2382,7 +2400,7 @@ const BrokerSection = memo(function BrokerSection({
   listo = true,
   label, unified = false, puedeUnificarse = false, monedasCuenta = [], onToggleUnificar,
   onEdit, onDelete, brokerDe,
-  onSellPosition, onBuyPosition, onAlertPosition, onCashFlowPosition, onConvertPosition,
+  onSellPosition, onMovePosition, onBuyPosition, onAlertPosition, onCashFlowPosition, onConvertPosition,
   onBondCashflowPosition, onEditPosition, onEditGroupPosition, onDeletePosition, onToggleTicker,
 }) {
   const montoCard = useMontoCard()
@@ -2512,6 +2530,7 @@ const BrokerSection = memo(function BrokerSection({
             nombreCuenta={label || broker?.name}
             brokerDe={brokerDe}
             onSell={onSellPosition}
+            onMove={onMovePosition}
             onBuy={onBuyPosition}
             onAlert={onAlertPosition}
             onCashFlow={onCashFlowPosition}
@@ -2814,7 +2833,7 @@ const MS_PULSACION = 450
 const TOLERANCIA_PX = 8
 
 const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada = false, displayCurrency = 'USD', tcValuacion = 1, totalCuenta = null, nombreCuenta = null,
-  onSell, onBuy, onAlert, onCashFlow, onConvert, onBondCashflow, onEditPos, onEditGroup, onDeletePos, onToggleTicker }) {
+  onSell, onMove, onBuy, onAlert, onCashFlow, onConvert, onBondCashflow, onEditPos, onEditGroup, onDeletePos, onToggleTicker }) {
   const montoCard = useMontoCard()
   // El broker de LA FILA, no el de la sección: en una cuenta unificada conviven
   // la pata en pesos y la pata en dólares, y de cuál sea depende si el efectivo
@@ -2907,6 +2926,12 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
       // directo — el servidor busca los lotes en toda la cuenta. El selector de
       // patas de abajo queda sólo para EDITAR.
       onSell(pos)
+    }),
+    // Igual que vender: directo a la página, que pregunta pesos o dólares cuando
+    // la fila junta las dos (con los lotes de ESTA fila, `p._lots || [p]`).
+    onMove: onMove && (pos => {
+      track('mobile_row_action', { code: 'move', asset: p.asset })
+      onMove(pos)
     }),
     onAlert,
     onEdit: onEditPos && (pos => {

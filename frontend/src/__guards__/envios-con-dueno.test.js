@@ -43,6 +43,8 @@ const LIBRES = {
     'es una lectura: manda ticker y fecha de cada operación y vuelve la tendencia de ese día; no guarda nada',
   'pages/TuLista.jsx|/tecnico/lista':
     'es una lectura: manda los tickers de la lista de seguidos y vuelve su lectura técnica; no guarda nada',
+  'components/cartera/MoverDeBrokerModal.jsx|/positions/traspaso/vista-previa':
+    'es una lectura: arma la vista previa del pase; el servidor no guarda nada',
 }
 
 function archivos(dir = SRC, out = []) {

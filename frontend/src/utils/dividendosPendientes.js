@@ -172,9 +172,16 @@ export function detectarDividendos({ positions, historial, operaciones, salteado
 
     for (const pago of aMirar) {
       const exDate = pago.ex_date
-      // Lo que tenía el día de corte: los lotes comprados ANTES. Un lote sin
-      // fecha cuenta como tenido (los cargados sin fecha son viejos).
-      const lotes = g.lotes.filter(({ p }) => !p.entry_date || p.entry_date.slice(0, 10) < exDate)
+      // Lo que tenía el día de corte EN ESTE BROKER: los lotes que estaban acá
+      // ANTES. Un lote que llegó con «Mover a otro broker» guarda su fecha de
+      // compra original, pero cobró en el broker de antes hasta `en_broker_desde`
+      // (el día del pase): mirando sólo `entry_date` el dividendo se proponía en
+      // los dos brokers. Un lote sin fecha cuenta como tenido (los cargados sin
+      // fecha son viejos).
+      const lotes = g.lotes.filter(({ p }) => {
+        const desde = p.en_broker_desde || p.entry_date
+        return !desde || desde.slice(0, 10) < exDate
+      })
       const cedears = lotes.reduce((s, { p }) => s + Number(p.quantity), 0)
       const acciones = lotes.reduce((s, { eq }) => s + eq.shares, 0)
       if (!(acciones > 0)) continue

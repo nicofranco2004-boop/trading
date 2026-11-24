@@ -25,6 +25,12 @@ export function partesDelBorrado(counts) {
   if (n('archived') > 0) {
     partes.push(`${plural(n('archived'), 'posición guardada', 'posiciones guardadas')} en "Posiciones eliminadas" (ya no se van a poder restaurar)`)
   }
+  // Pases con «Mover a otro broker» (2026-11): el borrado no los deshace. Lo que
+  // llegó al otro broker se queda allá; el pase queda «incompleto» y se puede
+  // deshacer lo que sobrevive desde Movimientos.
+  if (n('traspasos') > 0) {
+    partes.push(`${plural(n('traspasos'), 'pase', 'pases')} de títulos con otro broker tuyo (los títulos que llegaron al otro broker se quedan allá; si después reimportás este broker, van a aparecer en los dos lados)`)
+  }
   return partes
 }
 

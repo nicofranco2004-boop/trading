@@ -40,6 +40,7 @@ import { computeBestWorstClosedOp, monthlyReturnArs } from '../utils/insightsMod
 import { esApto, esDibujable, baseIncomparable, esBordeFresco } from '../utils/evolution'
 import { esConversion } from '../utils/tradeStats'
 import { operacionesEnUsd } from '../utils/assetPnl'
+import { puenteDelMes } from '../utils/resultadoDelMes'
 
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
@@ -442,14 +443,23 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
     // Quedan en null cuando no hay baseline real ('partial' usa un proxy de P&L,
     // 'derived' no tiene punta de arranque): ahí no se publica comparación.
     let ciUsd = null, cfUsd = null
+    // El puente de un pase entre brokers (utils/resultadoDelMes.js): está en el
+    // resultado del broker pero no es rendimiento (no se vendió nada). Se saca
+    // SÓLO en un mes cerrado: en el mes en curso el delta trae el no realizado
+    // (capital_final lo suma), que llega al costo original, y el puente es justo
+    // lo que lo compensa (misma regla que `resultadoParaElPorcentaje`, que usa
+    // /mensual). En la fila 'global' con las dos patas vivas vale 0.
+    const _now = new Date()
+    const enCurso = year === _now.getFullYear() && month === (_now.getMonth() + 1)
+    const puente = entry && !enCurso ? puenteDelMes(entry) : 0
     if (source === 'manual') {
       deltaUsd = endUsd - startUsd - flows
-      deltaPct = avgCapital > 0 ? (deltaUsd / avgCapital) * 100 : 0
+      deltaPct = avgCapital > 0 ? ((deltaUsd - puente) / avgCapital) * 100 : 0
       ciUsd = startUsd; cfUsd = endUsd
     } else if (source === 'partial') {
       // Falta data — usamos pnl_realized + pnl_unrealized como proxy
       deltaUsd = pnlRealized + pnlUnrealized
-      deltaPct = avgCapital > 0 ? (deltaUsd / avgCapital) * 100 : 0
+      deltaPct = avgCapital > 0 ? ((deltaUsd - puente) / avgCapital) * 100 : 0
     } else {
       // derived
       deltaUsd = pnlRealized
@@ -466,10 +476,9 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
     // portfolio (misma base en ambas puntas). Si no hay baseline MtM, no mostramos
     // un % fantasma (queda null → el banner muestra "en curso" sin número).
     // Fix de raíz (backlog): sellar capital_final con MtM en el backend.
-    const _now = new Date()
     const isLiveMonth = (source === 'manual' || source === 'partial')
       && selectedBroker === 'global'
-      && year === _now.getFullYear() && month === (_now.getMonth() + 1)
+      && enCurso
     if (isLiveMonth) {
       const monthStart = `${period}-01`
       // Base = último snapshot ANTES del mes (= valor MtM al cierre del mes

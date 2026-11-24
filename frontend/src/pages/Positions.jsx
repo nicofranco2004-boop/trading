@@ -31,6 +31,8 @@ import SplitRatioBanner from '../components/SplitRatioBanner'
 import { isBondPosition, CATEGORY_ASSET_TYPE } from '../utils/tickers'
 import { tipoDeLaEleccion, avisoDeCambioDeTipo, monedaAlCambiarDeTipo } from '../utils/cambioDeTipo'
 import { buildPositionActions } from '../utils/positionActions'
+import { useMoverDeBroker } from '../hooks/useMoverDeBroker'
+import { puedeMoverse } from '../utils/moverDeBroker'
 import CashFlowModal from '../components/cash/CashFlowModal'
 import CashMenuModal from '../components/cash/CashMenuModal'
 import ConvertMenuModal from '../components/cash/ConvertMenuModal'
@@ -180,6 +182,16 @@ function PositionsDesktop() {
   const navigate = useNavigate()
   const location = useLocation()
   const [modal, setModal] = useState(null)
+  // «Mover a otro broker» (hooks/useMoverDeBroker): el MISMO flujo que el
+  // celular. `openMove` es null mientras el servidor no lo habilite, y así el
+  // ítem del menú no aparece. «+ Crear un broker nuevo» abre el alta de siempre
+  // (la de BrokerManager), con un pedido que se cuenta.
+  const [pedidoAltaBroker, setPedidoAltaBroker] = useState(0)
+  const mover = useMoverDeBroker({
+    brokers, source: 'desktop', onHecho: loadAll,
+    onCrearBroker: () => setPedidoAltaBroker(n => n + 1),
+  })
+  const openMove = mover.abrir
   // Lo que el buscador del alta abre ya escrito (ver compraDeFilaSinMoneda).
   const [flowQuery, setFlowQuery] = useState('')
   // Lo que pide el botón «Registrar» del menú lateral (`/posiciones?action=…`,
@@ -1892,7 +1904,7 @@ function PositionsDesktop() {
             modal con form (nombre + moneda) y POSTea a /brokers. Antes,
             el EmptyState decía "configurá desde Config" pero esa UI ya
             no existe — ahora el flow vive acá en Posiciones. */}
-        <BrokerManager brokers={brokers} onChange={loadAll} />
+        <BrokerManager brokers={brokers} onChange={loadAll} abrirAlta={pedidoAltaBroker} />
 
         <div className="bg-bg-1 border border-line rounded-xl mt-6">
           <EmptyState
@@ -2143,7 +2155,7 @@ function PositionsDesktop() {
       {/* Broker cards + agregar (movido desde /config). Va debajo del hero
           KPI y antes del breakdown detallado por broker para que el user
           vea sus cuentas conectadas de un vistazo, con valor y P&L nativos. */}
-      <BrokerManager brokers={brokers} onChange={loadAll} totals={totals.byBroker} hidden={hidden}
+      <BrokerManager brokers={brokers} onChange={loadAll} totals={totals.byBroker} hidden={hidden} abrirAlta={pedidoAltaBroker}
         fueraDeHorario={sesionFdh ? { sesion: sesionFdh, porBroker: impactoFdh.porBroker } : null} />
 
       {/* ─── Barra de filtros + orden ─────────────────────────────────────
@@ -2750,7 +2762,7 @@ function PositionsDesktop() {
                                   subtitle={`${p.asset} · ${brokerLegLabel(p.broker, brokers)}`}
                                 />
                               )}
-                              <ActionMenu items={buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy: openBuyForPosition, openSell, openAlert: openAlertForPosition, del, openCashFlow, openConvert, openBondCashflow, broker: _brokerDe(p.broker) || broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
+                              <ActionMenu items={buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy: openBuyForPosition, openSell, openMove, openAlert: openAlertForPosition, del, openCashFlow, openConvert, openBondCashflow, broker: _brokerDe(p.broker) || broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
                             </div>
                           </td>
                         </tr>
@@ -3001,7 +3013,7 @@ function PositionsDesktop() {
                                 subtitle={`${p.asset} · ${brokerLegLabel(p.broker, brokers)}`}
                               />
                             )}
-                            <ActionMenu items={buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy: openBuyForPosition, openSell, openAlert: openAlertForPosition, del, openCashFlow, openConvert, openBondCashflow, broker: _brokerDe(p.broker) || broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
+                            <ActionMenu items={buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy: openBuyForPosition, openSell, openMove, openAlert: openAlertForPosition, del, openCashFlow, openConvert, openBondCashflow, broker: _brokerDe(p.broker) || broker, isAgg, lotCount, expanded: tickerExpanded, onToggleLots: () => toggleTicker(rowKey) })} />
                           </div>
                         </td>
                       </tr>
@@ -3119,8 +3131,15 @@ function PositionsDesktop() {
           onChangeAsset={modal === 'add'
             ? () => { setForm(f => ({ ...f, asset: '' })); setModal('add-flow') }
             : undefined}
+          // Editar ya no cambia el broker: el enlace abre «Mover a otro broker»
+          // con el lote tal como está guardado (no con el formulario a medio editar).
+          onMove={openMove
+            ? () => { setModal(null); openMove(positions.find(x => x.id === form.id) || form) }
+            : null}
         />
       )}
+
+      {mover.host}
 
       {modal === 'edit-group' && groupTarget && (
         <EditGroupModal
@@ -3829,10 +3848,11 @@ const TONO_ICONO = {
   accent: 'text-data-violet',
 }
 
-function buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy, openSell, openAlert, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded, onToggleLots }) {
+function buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy, openSell, openMove, openAlert, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded, onToggleLots }) {
   const acciones = buildPositionActions(p, {
     onBuy:   pos => (pos?.is_cash ? openAdd(pos?.broker) : openBuy(pos)),
     onSell:  openSell,
+    onMove:  openMove,
     onAlert: openAlert,
     onEdit:  openEdit,
     onEditGroup: openEditGroup,
@@ -4158,7 +4178,7 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
 //  • Sin "Precio override" — quien quiera editar el precio actual lo hace
 //    directo en el campo principal.
 //  • Comisiones: campo opcional. Real cost = invertido + comisiones.
-export function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrency, tcValuacion, onClose, onSave, onChangeAsset }) {
+export function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrency, tcValuacion, onClose, onSave, onChangeAsset, onMove }) {
   // Freno del doble click. En el alta es lo único que lo frena: dos POST de la
   // misma compra son, para el servidor, dos compras (ver hooks/useEnVuelo).
   const enVuelo = useEnVuelo()
@@ -4400,13 +4420,27 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
                 )}
               </div>
             ) : (
-              <select
-                value={form.broker}
-                onChange={e => setForm(f => ({ ...f, broker: e.target.value }))}
-                className={inputClass}
-              >
-                {brokers.map(b => <option key={b.id} value={b.name}>{b.name} ({brokerCurrencyLabel(b, brokers)})</option>)}
-              </select>
+              // Editar NO cambia el broker (el servidor lo rechaza): cambiar el
+              // nombre en el lote dejaba la compra contada en un broker y la plata
+              // en el otro. Pasar los títulos es «Mover a otro broker», que lleva
+              // el costo y la fecha de compra y deja a los dos brokers cuadrados.
+              // El PUT sigue mandando el mismo broker.
+              <div>
+                <div className="flex items-center gap-2 bg-bg-2 border border-line rounded-lg px-3 py-2 min-h-[38px]">
+                  <Wallet size={14} className="text-ink-3 flex-shrink-0" aria-hidden="true" />
+                  <span className="text-sm text-ink-0 font-medium truncate">{form.broker || '—'}</span>
+                  {brokers.some(b => b.name === form.broker) && (
+                    <span className="ml-auto text-[12px] text-ink-3 font-medium">
+                      {brokerCurrencyLabel(brokers.find(b => b.name === form.broker), brokers)}
+                    </span>
+                  )}
+                </div>
+                {onMove && puedeMoverse(form) && (
+                  <button type="button" onClick={onMove} className="mt-1 text-xs text-rendi-accent hover:underline">
+                    Mover a otro broker
+                  </button>
+                )}
+              </div>
             )}
           </div>
           <div>

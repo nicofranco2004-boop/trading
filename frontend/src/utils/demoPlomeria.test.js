@@ -114,6 +114,9 @@ describe('lo que el visitante guarda a mano se bloquea; lo de fondo, no', () => 
     ['PUT', '/tesis'], ['DELETE', '/tesis/3'], ['PUT', '/tesis/3/recordatorio'],
     // Activar los avisos al celular: la clave ya dice «creá una cuenta».
     ['GET', '/push/vapid-public-key'],
+    // «Mover a otro broker»: la vista previa, el confirmar y el deshacer.
+    ['POST', '/positions/traspaso/vista-previa'], ['POST', '/positions/traspaso'],
+    ['POST', '/positions/traspaso/abc123/deshacer'],
   ])('%s %s → "creá una cuenta"', (m, p) => {
     expect(bloqueada(m, p)).toBe(true)
   })
@@ -178,3 +181,28 @@ describe('entrar al demo y seguir en el demo (el formato nuevo de la marca)', ()
   })
 })
 
+
+// «Mover a otro broker» en el demo (spec E.8, revisión E12 problema 4): los tres
+// brokers del demo son de familias distintas (Cocos argentino, Schwab de afuera,
+// Binance exchange), así que ninguna tenencia tiene a dónde pasarse y el menú
+// muestra el aviso «no tenés otro broker», no un formulario que termina en
+// «creá una cuenta». Antes Binance venía sin `is_exchange` y caía en la familia
+// de Schwab: NVDA de Schwab abría el formulario con Binance ya elegido.
+describe('«Mover a otro broker» en el demo: ninguna tenencia tiene a dónde pasarse', () => {
+  it('los brokers traen `is_exchange` como los estampa GET /api/brokers', () => {
+    const brokers = handleDemoRequest('GET', '/brokers')
+    expect(brokers.find(b => b.name === 'Binance').is_exchange).toBe(1)
+    expect(brokers.filter(b => b.name !== 'Binance').every(b => b.is_exchange === 0)).toBe(true)
+  })
+
+  it('cada tenencia del demo: sin destinos posibles (→ el aviso, no el modal)', async () => {
+    const { opcionesDeVenta } = await import('./opcionesDeVenta')
+    const { destinosPosibles, familiaDeCuenta } = await import('./moverDeBroker')
+    const brokers = handleDemoRequest('GET', '/brokers')
+    const posiciones = handleDemoRequest('GET', '/positions')
+    expect(brokers.map(b => familiaDeCuenta(b.name, brokers)).sort()).toEqual(['AR', 'EXCHANGE', 'EXTERIOR'])
+    const opciones = opcionesDeVenta(posiciones, brokers)
+    expect(opciones.length).toBeGreaterThan(5)
+    for (const o of opciones) expect(destinosPosibles(o, brokers), `${o.asset} en ${o.cuenta}`).toEqual([])
+  })
+})

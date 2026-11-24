@@ -31,7 +31,7 @@ import EmptyState from '../components/EmptyState'
 import InfoTooltip from '../components/InfoTooltip'
 import InsightLine from '../components/InsightLine'
 import BottomSheet from '../components/mobile/BottomSheet'
-import { api } from '../utils/api'
+import { api, errorMessage } from '../utils/api'
 import { useIsMobile } from '../hooks/useIsMobile'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
@@ -53,8 +53,10 @@ import MovementsFeed from '../components/operations/MovementsFeed'
 import CobrosView from '../components/operations/CobrosView'
 import { hoyISO } from '../utils/fecha'
 import {
-  MOVEMENT_TYPES, GROUP_OPTIONS, buildGroups, buildPeriodOptions, enPeriodo,
+  MOVEMENT_TYPES, GROUP_OPTIONS, buildGroups, buildPeriodOptions, enPeriodo, coincideConElTipo, cuantosDelTipo,
 } from '../components/operations/shared'
+import { preguntaDeDeshacer } from '../utils/moverDeBroker'
+import { taparMontos } from '../utils/ocultarSaldos'
 import { confirmar } from '../utils/confirmar'
 import { cobradoDe } from '../utils/cobros'
 import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
@@ -1508,12 +1510,56 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     }
   }
 
+  // «Deshacer pase» (las filas «Pase (salió)» / «Pase (entró)»). Un pase entre
+  // brokers no se borra por pata: se deshace entero. Primero se pregunta al
+  // servidor cómo está (GET /api/positions/traspasos): si ya no se puede —se
+  // vendió lo que llegó, hay un pase posterior…— se muestra el porqué; si se
+  // puede, «¿Deshacer…?» con lo que va a pasar, y recién ahí el POST.
+  //
+  // Los textos del servidor (el `motivo`, los errores, el «Listo») pasan por
+  // `taparMontos` con el ojito prendido: el de C.8 #4 dice «({n} a {costo})».
+  function deshacerPase(m) {
+    return borrando.correr(() => deshacerElPase(m), `pase-${m.traspaso_id}`)
+  }
+  const delServidor = (t) => (histMoney.oculto ? taparMontos(t) : t)
+  async function deshacerElPase(m) {
+    let pase = null
+    try {
+      const r = await api.get('/positions/traspasos')
+      pase = (r?.traspasos || []).find(t => t.id === m.traspaso_id) || null
+    } catch (ex) {
+      toast.push(delServidor(errorMessage(ex)) || 'No pudimos ver el estado del pase. Probá de nuevo en un rato.', { type: 'error', duration: 8000 })
+      return
+    }
+    if (!pase) {
+      toast.push('No encontramos ese pase: puede que ya se haya deshecho. Recargá Movimientos.', { type: 'warn', duration: 8000 })
+      return
+    }
+    if (!pase.puede_deshacer) {
+      toast.push(delServidor(pase.motivo) || 'Este pase no se puede deshacer ahora.', { type: 'warn', duration: 12000 })
+      return
+    }
+    if (!await confirmar(preguntaDeDeshacer(pase, m), { si: 'Deshacer', no: 'Cancelar' })) return
+    try {
+      const res = await recalcular(async () => {
+        const r = await api.post(`/positions/traspaso/${encodeURIComponent(m.traspaso_id)}/deshacer`)
+        await load()
+        return r
+      })
+      track('position_move_undone', { source: 'movimientos' })
+      onChanged?.()
+      toast.push(delServidor(res?.mensaje) || 'Listo: deshicimos el pase.', { type: 'success' })
+    } catch (ex) {
+      toast.push(delServidor(errorMessage(ex)) || 'No se pudo deshacer el pase.', { type: 'error', duration: 8000 })
+    }
+  }
+
   // Reset página al cambiar filtros o el modo de agrupación.
   useEffect(() => { setPage(0) }, [filterType, filterBroker, filterYear, groupBy])
 
   const filtered = useMemo(() => {
     return movements.filter(m => {
-      if (filterType !== 'all' && m.type !== filterType) return false
+      if (!coincideConElTipo(m, filterType)) return false
       if (filterBroker !== 'all' && m.broker !== filterBroker) return false
       if (filterYear !== 'all' && !(m.date || '').startsWith(filterYear)) return false
       return true
@@ -1648,7 +1694,8 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
         <div className="flex items-center gap-1.5 flex-wrap mb-3">
           {MOVEMENT_TYPES.map(t => {
             const Icon = t.icon
-            const count = t.id === 'all' ? movements.length : movements.filter(m => m.type === t.id).length
+            // La misma regla que el filtro (coincideConElTipo): «Pases» no es un tipo de fila.
+            const count = cuantosDelTipo(movements, t.id)
             if (t.id !== 'all' && count === 0) return null
             const active = filterType === t.id
             return (
@@ -1717,6 +1764,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
           onToggleGroup={toggleGroup}
           onDelete={handleDelete}
           onDeleteGroup={delGroup}
+          onDeshacerPase={deshacerPase}
           borrando={borrando.activo}
           page={currentPage}
           totalPages={totalPages}
@@ -1755,6 +1803,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
           groups={groups}
           histMoney={histMoney}
           onDelete={handleDelete}
+          onDeshacerPase={deshacerPase}
           borrando={borrando.activo}
         />
       )}

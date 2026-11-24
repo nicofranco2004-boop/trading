@@ -81,6 +81,7 @@ const STEP_RECONCILE = 'reconcile'
 import { TrialCta, TrialFinePrint, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS } from '../plan/TrialCta'
 import { usePlanFeatures as _usePlanFeaturesTrial } from '../../hooks/usePlanFeatures'
 import { parseNum, parseNumOrNull, numACampo } from '../../utils/format'
+import { textoDeImportCambiaUnPase } from '../../utils/moverDeBroker'
 
 const STEP_DONE = 'done'
 
@@ -814,6 +815,9 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
   // Llamar a confirm con o sin seed_state (según haya o no datos cargados)
   async function confirm({ withSeed = false } = {}) {
     if (!preview?.session_id) return
+    // El archivo cambiaría la historia anterior a un pase entre brokers: el
+    // servidor lo frena igual (409); acá ni se manda (el bloque rojo dice qué hacer).
+    if (preview?.cambian_un_pase) return
     setBusy(true)
     setError(null)
     try {
@@ -1178,7 +1182,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
               return (
                 <button
                   onClick={() => confirm({ withSeed: false })}
-                  disabled={busy || toImport === 0}
+                  disabled={busy || toImport === 0 || !!preview?.cambian_un_pase}
                   className="px-4 py-2 text-sm rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 bg-rendi-accent hover:bg-rendi-accent/90 text-white"
                 >
                   {busy && <Loader2 size={14} className="animate-spin" />}
@@ -1220,7 +1224,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
                 <div className="flex flex-col items-end gap-1">
                   <button
                     onClick={() => confirm({ withSeed: true })}
-                    disabled={busy || !seedComplete}
+                    disabled={busy || !seedComplete || !!preview?.cambian_un_pase}
                     className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                   >
                     {busy && <Loader2 size={14} className="animate-spin" />}
@@ -2615,6 +2619,31 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
               ))}
             </tbody>
           </table>
+        </Section>
+      )}
+
+      {/* «Mover a otro broker»: el archivo trae movimientos anteriores a un pase
+          y lo dejaría con otros lotes. Bloquea el confirmar (también el servidor). */}
+      {preview.cambian_un_pase && (
+        <Section title="Este archivo choca con un pase entre tus brokers" variant="error">
+          <p className="text-xs text-rendi-neg leading-relaxed">{textoDeImportCambiaUnPase(preview.cambian_un_pase)}</p>
+        </Section>
+      )}
+
+      {/* Lo que ya entró con «Mover a otro broker»: no se cuenta dos veces (el
+          servidor las omite aunque se fuercen los repetidos). */}
+      {(preview.ya_traspasados || []).length > 0 && (
+        <Section title={`Ya las cargaste con «Mover a otro broker» (${preview.ya_traspasados.length})`}>
+          <p className="text-xs text-ink-2 mb-2">Estas filas ya las cargaste con «Mover a otro broker»: no se cuentan de nuevo.</p>
+          <ul className="text-xs text-ink-2 space-y-0.5 max-h-40 overflow-y-auto">
+            {preview.ya_traspasados.map((t, i) => (
+              <li key={i} className="tabular">
+                {t.fecha ? `${String(t.fecha).slice(8, 10)}/${String(t.fecha).slice(5, 7)}/${String(t.fecha).slice(0, 4)} · ` : ''}
+                {t.lado === 'salida' ? 'salida' : t.lado === 'entrada' ? 'llegada' : 'pase'} de {Number(t.cantidad).toLocaleString('es-AR', { maximumFractionDigits: 6 })} {t.activo}
+                {t.broker ? ` en ${t.broker}` : ''}
+              </li>
+            ))}
+          </ul>
         </Section>
       )}
 

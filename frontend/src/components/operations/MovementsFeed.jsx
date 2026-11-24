@@ -14,10 +14,11 @@
 
 import { Trash2, RotateCcw, Repeat } from 'lucide-react'
 import { TYPE_META, puedeBorrarMovimiento, amountClassFor } from './shared'
+import { esFilaDePase, lineaDeFilaDePase, avisoDeFilaDePase } from '../../utils/moverDeBroker'
 
 // `nuevas`: ids de los movimientos recién agregados; esa tarjeta destella.
 // `borrando(clave)`: ¿ese borrado está viajando? Apaga el tacho (Operations).
-export default function MovementsFeed({ groups, histMoney, onDelete, borrando = () => false, nuevas = new Set() }) {
+export default function MovementsFeed({ groups, histMoney, onDelete, onDeshacerPase, borrando = () => false, nuevas = new Set() }) {
   return (
     <ul className="pt-1">
       {groups.map(g => (
@@ -33,7 +34,9 @@ export default function MovementsFeed({ groups, histMoney, onDelete, borrando = 
                 nueva={nuevas.has(m.id)}
                 histMoney={histMoney}
                 onDelete={onDelete}
+                onDeshacerPase={onDeshacerPase}
                 deleting={borrando(`mov-${m.id}`)}
+                deshaciendo={borrando(`pase-${m.traspaso_id}`)}
               />
             ))}
           </ul>
@@ -43,10 +46,12 @@ export default function MovementsFeed({ groups, histMoney, onDelete, borrando = 
   )
 }
 
-function MovementRowMobile({ m, nueva = false, histMoney, onDelete, deleting }) {
+function MovementRowMobile({ m, nueva = false, histMoney, onDelete, onDeshacerPase, deleting, deshaciendo = false }) {
   const meta = TYPE_META[m.type] || { label: m.type, Icon: Repeat, tone: null }
   const { Icon } = meta
   const canDelete = puedeBorrarMovimiento(m)
+  const pase = esFilaDePase(m)
+  const aviso = pase ? avisoDeFilaDePase(m) : null
   const amountClass = TYPE_META[m.type] ? amountClassFor(m.type) : 'text-ink-1'
   return (
     <li className={`flex items-center gap-3 px-4 py-2.5 border-t border-line/20 first:border-t-0 ${nueva ? 'destello-nueva' : ''}`}>
@@ -56,8 +61,20 @@ function MovementRowMobile({ m, nueva = false, histMoney, onDelete, deleting }) 
       <div className="flex-1 min-w-0">
         <div className="text-sm font-semibold text-ink-0 leading-none">{meta.label}</div>
         <div className="text-[12.5px] text-ink-3 leading-none mt-1.5 truncate font-medium">
-          {m.broker || '—'}{m.asset ? ` · ${m.asset}` : ''}
+          {m.broker || '—'}{pase ? ` · ${lineaDeFilaDePase(m)}` : (m.asset ? ` · ${m.asset}` : '')}
         </div>
+        {aviso && <div className="text-[12px] text-rendi-warn leading-snug mt-1">{aviso}</div>}
+        {pase && onDeshacerPase && m.traspaso_id && (
+          <button
+            type="button"
+            onClick={() => onDeshacerPase(m)}
+            disabled={deshaciendo}
+            className="mt-1.5 inline-flex items-center gap-1 text-[12.5px] font-medium text-ink-2 active:text-ink-0 disabled:opacity-40"
+          >
+            <RotateCcw size={13} strokeWidth={1.75} aria-hidden="true" />
+            Deshacer pase
+          </button>
+        )}
       </div>
       <div className={`flex-shrink-0 text-right text-sm font-medium tabular ${amountClass}`}>
         {histMoney.fmtMoneyAt(m.amount_usd || 0, {

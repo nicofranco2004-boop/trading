@@ -13,6 +13,7 @@ import ImportWizard from '../components/import/ImportWizard'
 import WallbitConnect from '../components/import/WallbitConnect'
 import TenenciaUpload from '../components/import/TenenciaUpload'
 import { api } from '../utils/api'
+import { tituloDeLotePase } from '../utils/moverDeBroker'
 import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
@@ -331,8 +332,8 @@ export default function Imports() {
                     <td className="px-4 py-2 text-sm text-ink-2 tabular whitespace-nowrap">
                       {fmtDate(b.created_at)}
                     </td>
-                    <td className="px-4 py-2 text-sm text-ink-1 max-w-[260px] truncate" title={b.file_name}>
-                      {b.file_name || '—'}
+                    <td className="px-4 py-2 text-sm text-ink-1 max-w-[260px] truncate" title={b.traspaso ? tituloDeLotePase(b.traspaso) : b.file_name}>
+                      {b.traspaso ? tituloDeLotePase(b.traspaso) : (b.file_name || '—')}
                     </td>
                     <td className="px-4 py-2 text-sm text-ink-2">{b.broker}</td>
                     <td className="px-4 py-2 text-sm text-ink-2 tabular">
@@ -343,7 +344,12 @@ export default function Imports() {
                       <StatusPill status={b.status} />
                     </td>
                     <td className="px-4 py-2 text-right">
-                      {b.status === 'confirmed' && (
+                      {/* Un pase entre brokers no se revierte ni se rehace desde acá
+                          (el servidor lo rechaza): se deshace entero desde Movimientos. */}
+                      {b.status === 'confirmed' && b.traspaso && (
+                        <span className="text-xs text-ink-3">Para deshacerlo, usá Movimientos → la fila «Pase».</span>
+                      )}
+                      {b.status === 'confirmed' && !b.traspaso && (
                         <div className="inline-flex items-center gap-2">
                           <button
                             onClick={() => setConfirmRedo(b)}

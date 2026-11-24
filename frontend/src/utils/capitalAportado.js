@@ -228,6 +228,31 @@ function tablaDeAportes({ monthly, brokers, dolarMes, tcEnFecha, tcHoy, broker =
       }
       if (!depManualEnPesos) sumarConDia('dep', dia.a_mano?.dep)
       if (!retManualEnPesos) sumarConDia('ret', dia.a_mano?.ret)
+      // Las patas de un pase entre brokers («Mover a otro broker»): en la tabla
+      // de UN broker cuentan como lo importado —las patas en pesos con sus pesos
+      // (`traspaso_pesos_*`), las en dólares al dólar de su día
+      // (`traspaso_usd_con_dia`)—. En la global no: ahí las dos patas se anulan y
+      // sólo entra el neto de la fila global (abajo). Vienen aparte de
+      // `pesos_importados_*` a propósito: si fueran adentro, la global les
+      // restaría los dólares de cada broker y daría negativo (backend
+      // `_patas_de_traspaso_por_mes`).
+      if (delFiltro) {
+        depSinPesosUsd -= n(b.traspaso_pesos_dep_usd)
+        retSinPesosUsd -= n(b.traspaso_pesos_ret_usd)
+        depPesos += n(b.traspaso_pesos_dep)
+        retPesos += n(b.traspaso_pesos_ret)
+        sumarConDia('dep', b.traspaso_usd_con_dia?.dep)
+        sumarConDia('ret', b.traspaso_usd_con_dia?.ret)
+      }
+    }
+    // Global: el neto de las patas que siguen vivas (un pase al que se le borró
+    // un broker). Con las dos vivas viene 0 y no cambia nada. El signo dice el
+    // lado (+ entró, − salió); los pesos son V en pesos de esas patas.
+    if (!delFiltro) {
+      const netoUsd = n(g.traspaso_neto_usd)
+      const netoPesos = Math.abs(n(g.traspaso_neto_pesos))
+      if (netoUsd > 0.005) { depSinPesosUsd -= netoUsd; depPesos += netoPesos }
+      else if (netoUsd < -0.005) { retSinPesosUsd -= -netoUsd; retPesos += netoPesos }
     }
     // Lo que tiene día cubre parte de los dólares sin pesos; el resto, al dólar
     // del mes (regla 3). Si los días dicen MÁS dólares de los que quedan (una

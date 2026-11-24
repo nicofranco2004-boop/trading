@@ -16,8 +16,11 @@
 //   totals      — opcional: map nombre → resultado de computeBrokerValue
 //                 ({value, valueArs, invested, invArs, pnlUsd, pnlArs})
 //   hidden      — modo privacidad (enmascara montos, no el %)
+//   abrirAlta   — opcional: un número que, al cambiar, abre el alta. Lo usa
+//                 «Mover a otro broker» («+ Crear un broker nuevo»): el alta es
+//                 la de siempre, no una copia.
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { groupBrokersIntoAccounts } from '../utils/brokerAccounts'
 import { isArUsdBroker } from '../utils/valuation'
 import { Plus, Pencil, Trash2, X } from 'lucide-react'
@@ -43,7 +46,7 @@ function currencyTone(c) {
   }
 }
 
-export default function BrokerManager({ brokers, onChange, totals, hidden, fueraDeHorario = null }) {
+export default function BrokerManager({ brokers, onChange, totals, hidden, fueraDeHorario = null, abrirAlta = 0 }) {
   // Mismas cuentas y misma preferencia de separación que las tablas de Cartera:
   // este bloque se dibuja en la MISMA pantalla, justo arriba, así que mostrar
   // las cuentas separadas acá y unificadas abajo era la contradicción más
@@ -59,6 +62,15 @@ export default function BrokerManager({ brokers, onChange, totals, hidden, fuera
   // definición que usa la cuota del plan en el backend.
   const nCuentas = cuentas.length
   const [showAdd, setShowAdd] = useState(false)
+  // El alta se abre cuando `abrirAlta` CAMBIA, no cuando el componente se monta
+  // con un pedido viejo: el contador sigue en 1 después de usarlo, y la Cartera
+  // monta este bloque en dos ramas (sin brokers / con brokers). Antes, al pasar
+  // de una a la otra el alta se abría sola sin que nadie la pidiera.
+  const altaPedida = useRef(abrirAlta)
+  useEffect(() => {
+    if (abrirAlta && abrirAlta !== altaPedida.current) setShowAdd(true)
+    altaPedida.current = abrirAlta
+  }, [abrirAlta])
   const [editing, setEditing] = useState(null)
   const [brokerUpgrade, setBrokerUpgrade] = useState(null)
   const [newBroker, setNewBroker] = useState({ name: '', currency: 'USDT' })

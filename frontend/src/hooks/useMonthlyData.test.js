@@ -1,7 +1,7 @@
 // Tests del builder de reportes mensuales (lógica pura, sin fetch).
 // La fuente de truth combina 3 inputs: monthly_entries + operations + snapshots.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { buildMonthlyReports } from './useMonthlyData.js'
 
 describe('buildMonthlyReports', () => {
@@ -844,5 +844,37 @@ describe('buildMonthlyReports', () => {
       expect(m.deltaUsd).toBeNull()
       expect(m.deltaPct).toBeNull()
     })
+  })
+})
+
+// El puente de un pase entre brokers en el % del mes de un broker (utils/
+// resultadoDelMes.js; revisión E12, problema 2): se saca en un mes CERRADO (no
+// se vendió nada) y NO en el mes en curso, donde capital_final ya trae el no
+// realizado de los títulos que llegaron al costo original y el puente es lo que
+// lo compensa. Misma regla que /mensual (`resultadoParaElPorcentaje`).
+describe('el puente de un pase en el % del mes de un broker', () => {
+  // B recibe títulos con C = 100 que valían V = 300 (un depósito de 300 en su
+  // capital); el realizado trae −(V − C) = −200.
+  const fila = (year, month, extra) => ({ year, month, broker: 'Balanz', capital_inicio: 1000, deposits: 300,
+    withdrawals: 0, pnl_realized: -200, puente_entrada_usd: 200, ...extra })
+
+  it('mes cerrado: el % sin el puente (no se vendió nada)', () => {
+    const out = buildMonthlyReports([fila(2024, 3, { capital_final: 1000 + 300 - 200 })], [], [], 'Balanz')
+    const m = out.years[0].months[0]
+    expect(m.deltaUsd).toBe(-200)                              // el monto lo trae
+    expect(m.deltaPct).toBeCloseTo(0, 9)                       // el % no
+  })
+
+  it('mes en curso: el % cuenta lo mismo que el monto (hoy valen 310 → +10, no +210)', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-18T15:00:00Z'))
+    try {
+      const out = buildMonthlyReports([fila(2026, 11, { pnl_unrealized: 210, capital_final: 1000 + 300 - 200 + 210 })], [], [], 'Balanz')
+      const m = out.years[0].months[0]
+      expect(m.deltaUsd).toBe(10)
+      expect(m.deltaPct).toBeCloseTo((10 / (1000 + 0.5 * 300)) * 100, 9)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

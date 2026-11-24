@@ -16,6 +16,7 @@ import {
 import { colorClass } from '../../utils/format'
 import EmptyState from '../EmptyState'
 import { TYPE_META, puedeBorrarMovimiento, amountClassFor } from './shared'
+import { esFilaDePase, lineaDeFilaDePase, avisoDeFilaDePase } from '../../utils/moverDeBroker'
 
 export const MOV_PAGE_SIZE = 50
 
@@ -26,7 +27,7 @@ export default function MovementsTable({
   nuevas = new Set(),
   movements, filtered, pageRows, groups, grouped, groupBy,
   histMoney, currency, expandedGroups, onToggleGroup,
-  onDelete, onDeleteGroup, borrando = () => false,
+  onDelete, onDeleteGroup, onDeshacerPase, borrando = () => false,
   page, totalPages, onPage,
 }) {
   return (
@@ -55,7 +56,7 @@ export default function MovementsTable({
             </thead>
             <tbody>
               {!grouped && pageRows.map(m => (
-                <MovementRow key={m.id} m={m} nueva={nuevas.has(m.id)} histMoney={histMoney} onDelete={onDelete} deleting={borrando(`mov-${m.id}`)} />
+                <MovementRow key={m.id} m={m} nueva={nuevas.has(m.id)} histMoney={histMoney} onDelete={onDelete} onDeshacerPase={onDeshacerPase} deleting={borrando(`mov-${m.id}`)} deshaciendo={borrando(`pase-${m.traspaso_id}`)} />
               ))}
               {grouped && groups.map(g => {
                 const isOpen = expandedGroups.has(g.key)
@@ -72,7 +73,7 @@ export default function MovementsTable({
                       deleting={borrando(`grp-${g.key}`)}
                     />
                     {isOpen && g.rows.map(m => (
-                      <MovementRow key={m.id} m={m} nueva={nuevas.has(m.id)} histMoney={histMoney} indent onDelete={onDelete} deleting={borrando(`mov-${m.id}`)} />
+                      <MovementRow key={m.id} m={m} nueva={nuevas.has(m.id)} histMoney={histMoney} indent onDelete={onDelete} onDeshacerPase={onDeshacerPase} deleting={borrando(`mov-${m.id}`)} deshaciendo={borrando(`pase-${m.traspaso_id}`)} />
                     ))}
                   </Fragment>
                 )
@@ -113,7 +114,7 @@ export default function MovementsTable({
 // indent: cuando la fila es detalle de un grupo (modo agrupado), la atenuamos
 // e indentamos la primera celda con un marquito "└" — mismo recurso visual que
 // los lotes en Positions.
-function MovementRow({ m, nueva = false, histMoney, indent = false, onDelete, deleting = false }) {
+function MovementRow({ m, nueva = false, histMoney, indent = false, onDelete, onDeshacerPase, deleting = false, deshaciendo = false }) {
   // Phase C (audit fix H1): cada movimiento usa SU PROPIO FX histórico para
   // la conversión a ARS. m.fx_to_usd (si stampeado) > lookup por m.date >
   // tcValuacion actual. Esto evita que un retiro de $1000 USD en 2024 (blue era
@@ -157,10 +158,31 @@ function MovementRow({ m, nueva = false, histMoney, indent = false, onDelete, de
       <td className={`px-3 py-2 text-right font-mono font-medium tabular ${amountClass}`}>
         {fmtUsd(m.amount_usd || 0)}
       </td>
-      <td className="px-3 py-2 text-ink-3 text-xs max-w-xs truncate" title={m.notes}>
-        {m.notes || (m.source === 'monthly' ? 'Agregado mensual' : m.source === 'import' ? 'Desde import CSV' : '')}
-      </td>
+      {esFilaDePase(m) ? (
+        // Un pase: hacia dónde fueron los títulos y, si el pase quedó viejo o le
+        // falta un lado, el aviso de qué hacer.
+        <td className="px-3 py-2 text-ink-2 text-xs max-w-xs" title={m.notes}>
+          <div className="truncate tabular">{lineaDeFilaDePase(m)}</div>
+          {avisoDeFilaDePase(m) && <div className="mt-0.5 text-rendi-warn leading-snug">{avisoDeFilaDePase(m)}</div>}
+        </td>
+      ) : (
+        <td className="px-3 py-2 text-ink-3 text-xs max-w-xs truncate" title={m.notes}>
+          {m.notes || (m.source === 'monthly' ? 'Agregado mensual' : m.source === 'import' ? 'Desde import CSV' : '')}
+        </td>
+      )}
       <td className="px-2 py-2 text-right">
+        {onDeshacerPase && esFilaDePase(m) && m.traspaso_id && (
+          <button
+            type="button"
+            onClick={() => onDeshacerPase(m)}
+            disabled={deshaciendo}
+            title="Deshacer pase"
+            className="inline-flex items-center gap-1 whitespace-nowrap px-1.5 py-1 rounded-sm text-xs text-ink-3 hover:text-ink-0 hover:bg-bg-2 disabled:opacity-40 disabled:cursor-wait"
+          >
+            <RotateCcw size={12} strokeWidth={1.75} aria-hidden="true" />
+            Deshacer pase
+          </button>
+        )}
         {onDelete && puedeBorrarMovimiento(m) && (
           <button
             type="button"

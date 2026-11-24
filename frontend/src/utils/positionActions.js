@@ -33,10 +33,11 @@
 
 import {
   ShoppingCart, DollarSign, Bell, Pencil, Trash2, Coins, Sparkles,
-  ArrowDownCircle, ArrowUpCircle, ChevronUp, Layers as LayersIcon,
+  ArrowDownCircle, ArrowUpCircle, ChevronUp, Layers as LayersIcon, ArrowRightLeft,
 } from 'lucide-react'
 import { filaSinUnaPata } from './filaFusionada'
 import { conversionDeLaCaja } from './registrar'
+import { puedeMoverse } from './moverDeBroker'
 
 /**
  * @param {object}  p          La fila (posición, lote, agregado o efectivo).
@@ -46,10 +47,20 @@ import { conversionDeLaCaja } from './registrar'
  */
 export function buildPositionActions(p, handlers = {}, opts = {}) {
   const {
-    onAnalyze, onBuy, onSell, onAlert, onEdit, onEditGroup, onDelete,
+    onAnalyze, onBuy, onSell, onMove, onAlert, onEdit, onEditGroup, onDelete,
     onCashFlow, onConvert, onBondCashflow, onToggleLots,
   } = handlers
   const { broker, isAgg = false, isBond = false, lotCount = 0, expanded = false } = opts
+
+  // «Mover a otro broker»: los títulos pasan a otro broker tuyo con su costo y su
+  // fecha de compra (POST /api/positions/traspaso). La MISMA regla en las tres
+  // ramas (normal, agregada y fusionada): ni efectivo, ni bonos —también en la
+  // agregada, que hasta acá no miraba `isBond`—, ni fondos comunes, ni Wallbit.
+  // Las ramas de efectivo y bonos de abajo ni lo intentan (ver moverDeBroker.js).
+  const mover = onMove && puedeMoverse(p, { isBond }) && {
+    id: 'move', label: 'Mover a otro broker', icon: ArrowRightLeft, tone: 'accent',
+    onClick: () => onMove(p),
+  }
 
   // "Analizar" (la IA de la fila) va primero donde exista. El escritorio no lo
   // pasa: tiene su propio botón ✦ al lado de la fila.
@@ -86,6 +97,7 @@ export function buildPositionActions(p, handlers = {}, opts = {}) {
         { divider: true },
         onBuy  && { id: 'buy',  label: 'Agregar compra',  icon: ShoppingCart, tone: 'accent', onClick: () => onBuy(p) },
         onSell && { id: 'sell', label: 'Registrar venta', icon: DollarSign,   tone: 'neg',    onClick: () => onSell(p) },
+        mover,
         onAlert && { id: 'alert', label: 'Crear alerta',  icon: Bell,         onClick: () => onAlert(p) },
       ])
     }
@@ -94,6 +106,7 @@ export function buildPositionActions(p, handlers = {}, opts = {}) {
       analizar,
       onBuy  && { id: 'buy',  label: 'Agregar compra',  icon: ShoppingCart, tone: 'accent', onClick: () => onBuy(p) },
       onSell && { id: 'sell', label: 'Registrar venta', icon: DollarSign,   tone: 'neg',    onClick: () => onSell(p) },
+      mover,
       onAlert && { id: 'alert', label: 'Crear alerta',  icon: Bell,         onClick: () => onAlert(p) },
       { divider: true },
       verLotes,
@@ -141,6 +154,7 @@ export function buildPositionActions(p, handlers = {}, opts = {}) {
     ...cabeceraBono,
     onBuy   && { id: 'buy',   label: 'Agregar compra',  icon: ShoppingCart, tone: 'accent', onClick: () => onBuy(p) },
     onSell  && { id: 'sell',  label: 'Registrar venta', icon: DollarSign,   tone: 'neg',    onClick: () => onSell(p) },
+    mover,
     onAlert && { id: 'alert', label: 'Crear alerta',    icon: Bell,         onClick: () => onAlert(p) },
     { divider: true },
     onEdit   && { id: 'edit',   label: 'Editar posición', icon: Pencil, tone: 'accent', onClick: () => onEdit(p) },

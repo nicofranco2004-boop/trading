@@ -31,6 +31,14 @@ describe('avisoBorrarBroker', () => {
       .toEqual(['2 posiciones', '1 operación', '3 entradas mensuales', '1 import'])
   })
 
+  it('avisa de los pases con otro broker: lo que llegó allá se queda', () => {
+    expect(partesDelBorrado({ positions: 1, traspasos: 2 })).toEqual([
+      '1 posición',
+      '2 pases de títulos con otro broker tuyo (los títulos que llegaron al otro broker se quedan allá; si después reimportás este broker, van a aparecer en los dos lados)',
+    ])
+    expect(partesDelBorrado({ traspasos: 1 })[0]).toMatch(/^1 pase de títulos/)
+  })
+
   it('un resumen viejo (sin las claves nuevas) no rompe ni inventa líneas', () => {
     expect(partesDelBorrado({ positions: 1 })).toEqual(['1 posición'])
     expect(partesDelBorrado(undefined)).toEqual([])

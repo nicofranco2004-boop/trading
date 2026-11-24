@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Plus, Pencil, Trash2, Lock, ChevronRight, CalendarClock, Eye, EyeOff, Share2 } from 'lucide-react'
 import Modal from './Modal'
 import Card from './Card'
 import EmptyState from './EmptyState'
 import ShareCardModal from './ShareCardModal'
-import { usd, ars, pct, pctSigned, colorClass, MONTHS, parseNum, numToInput } from '../utils/format'
+import { usd, ars, pct, pctSigned, colorClass, MONTHS, parseNum, numToInput, fmtUsd } from '../utils/format'
+import { resultadoParaElPorcentaje, lineasDelPuente } from '../utils/resultadoDelMes'
 import { api } from '../utils/api'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
@@ -457,7 +458,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   // is rate-independent (pure ratio per month) so it's computed from raw stored values.
   const totals = tabData.reduce((acc, m, idx) => {
     const isCurrentRow = idx === tabData.length - 1
-    const rawRet = snap((m.pnl_realized || 0) + (isCurrentRow ? (m.pnl_unrealized || 0) : 0))
+    // El % (y el compuesto): en un mes cerrado, SIN el puente de un pase entre
+    // brokers (no se vendió nada); en el mes en curso, con el puente y el no
+    // realizado, que llega al costo original. Una sola regla para los totales y
+    // la fila: utils/resultadoDelMes.js `resultadoParaElPorcentaje`.
+    const rawRet = snap(resultadoParaElPorcentaje(m, isCurrentRow))
     const retPct = m.capital_inicio > 0 ? snap(rawRet / m.capital_inicio) : 0
     const conv = (v) => valueAt(v, m.year, m.month) || 0
     const real = realizadoAt(m)
@@ -646,7 +651,14 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                 const net = m.deposits - m.withdrawals
                 const isCurrent = idx === tabData.length - 1
                 const ret = snap((m.pnl_realized || 0) + (isCurrent ? (m.pnl_unrealized || 0) : 0))
-                const retPct = m.capital_inicio > 0 ? snap(ret / m.capital_inicio) : 0
+                // El % con la misma regla que los totales (resultadoParaElPorcentaje):
+                // un mes cerrado, sin el puente de un pase entre brokers (no es una
+                // venta); el mes en curso, con el puente, que compensa el no realizado
+                // de los títulos que llegaron al costo original. El monto de la fila
+                // siempre lo incluye y lo explica el renglón de abajo.
+                const retParaPct = snap(resultadoParaElPorcentaje(m, isCurrent))
+                const retPct = m.capital_inicio > 0 ? snap(retParaPct / m.capital_inicio) : 0
+                const delPuente = lineasDelPuente(m, (x) => (oculto ? OCULTO : fmtUsd(x)))
                 // Lo que se MUESTRA en la moneda de la pestaña (en pesos, con el realizado exacto).
                 const realVista = realizadoAt(m).monto
                 const retVista = tabIsARS
@@ -654,8 +666,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                   : ret
 
                 return (
+                  <Fragment key={m.id}>
                   <tr
-                    key={m.id}
                     className={`border-b border-line/50 dark:border-line/40 hover:bg-bg-2 dark:hover:bg-bg-2 ${
                       isCurrent ? 'bg-bg-2 dark:bg-bg-2/50' : ''
                     }`}
@@ -734,6 +746,20 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                       </div>
                     </td>
                   </tr>
+                  {/* El puente de un pase entre brokers, explicado: está adentro del
+                      resultado de la fila pero no es una venta ni cuenta en el %. */}
+                  {delPuente.length > 0 && (
+                    <tr className="border-b border-line/50 dark:border-line/40">
+                      <td colSpan={viewMode === 'simple' ? 6 : 11} className="px-4 pb-2 pt-0">
+                        <div className="sticky left-4 max-w-[calc(100vw-3rem)] sm:max-w-xl space-y-0.5">
+                          {delPuente.map((t, i) => (
+                            <p key={i} className="text-[11.5px] text-ink-3 leading-relaxed tabular">{t}</p>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 )
               })}
             </tbody>

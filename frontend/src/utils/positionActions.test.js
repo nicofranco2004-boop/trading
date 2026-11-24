@@ -172,3 +172,56 @@ describe('nadie vuelve a escribir el menú a mano', () => {
     expect(duenios).toEqual(['utils/positionActions.js'])
   })
 })
+
+// «Mover a otro broker» (spec E.1): el ítem vive en las TRES ramas —normal,
+// agregada y fusionada— y la misma regla lo esconde en efectivo, bonos (también
+// en la agregada, que antes no miraba `isBond`), fondos comunes y Wallbit.
+describe('«Mover a otro broker» en el menú de la fila', () => {
+  const CON_MOVER = { ...TODOS, onMove: () => {} }
+  const tieneMover = (a) => etiquetas(a).includes('Mover a otro broker')
+
+  it('aparece en la fila normal, al lado de vender', () => {
+    const a = buildPositionActions({ asset: 'NVDA', broker: 'Cocos' }, CON_MOVER, {})
+    expect(etiquetas(a)).toEqual([
+      'Agregar compra', 'Registrar venta', 'Mover a otro broker', 'Crear alerta', 'Editar posición', 'Eliminar',
+    ])
+  })
+
+  it('aparece en la fila agregada y en la que fusiona las dos monedas', () => {
+    expect(tieneMover(buildPositionActions({ asset: 'NVDA', broker: 'Cocos' }, CON_MOVER, { isAgg: true, lotCount: 2 }))).toBe(true)
+    expect(tieneMover(buildPositionActions({ asset: 'NVDA', broker: null, _multiCcy: true }, CON_MOVER, { isAgg: true, lotCount: 2 }))).toBe(true)
+  })
+
+  it('el ítem llama a onMove con la fila tocada', () => {
+    let recibida = null
+    const p = { asset: 'NVDA', broker: 'Cocos', id: 9 }
+    const a = buildPositionActions(p, { onMove: (x) => { recibida = x } }, {})
+    a.find(x => x.id === 'move').onClick()
+    expect(recibida).toBe(p)
+  })
+
+  it('no aparece en efectivo, bonos (tampoco agregados), fondos comunes ni Wallbit', () => {
+    expect(tieneMover(buildPositionActions({ is_cash: true, broker: 'Cocos' }, CON_MOVER, { broker: { currency: 'ARS' } }))).toBe(false)
+    expect(tieneMover(buildPositionActions({ asset: 'AL30', broker: 'Cocos' }, CON_MOVER, { isBond: true }))).toBe(false)
+    expect(tieneMover(buildPositionActions({ asset: 'AL30', broker: 'Cocos' }, CON_MOVER, { isAgg: true, isBond: true, lotCount: 2 }))).toBe(false)
+    expect(tieneMover(buildPositionActions({ asset: 'XYZ', broker: 'Cocos', asset_type: 'BOND' }, CON_MOVER, { isAgg: true, lotCount: 2 }))).toBe(false)
+    expect(tieneMover(buildPositionActions({ asset: 'FCI:Balanz Ahorro', broker: 'Balanz' }, CON_MOVER, {}))).toBe(false)
+    expect(tieneMover(buildPositionActions({ asset: 'VOO', broker: 'Wallbit' }, CON_MOVER, {}))).toBe(false)
+  })
+
+  it('sin onMove (la pantalla no lo habilitó) el ítem no existe', () => {
+    expect(tieneMover(buildPositionActions({ asset: 'NVDA', broker: 'Cocos' }, TODOS, {}))).toBe(false)
+  })
+
+  it('las dos pantallas de la Cartera pasan onMove a su menú', () => {
+    // La compu lo pasa en los dos montajes de buildPositionMenu; el celular, en
+    // PositionRow (que recibe onMove en sus dos montajes) y a buildPositionActions.
+    const compu = readFileSync(join(SRC, 'pages/Positions.jsx'), 'utf8')
+    const montajes = compu.match(/items=\{buildPositionMenu\(p, \{[^}]*\}/g) || []
+    expect(montajes.length).toBe(2)
+    for (const m of montajes) expect(m).toMatch(/openMove/)
+    const celular = readFileSync(join(SRC, 'pages/PositionsMobile.jsx'), 'utf8')
+    expect(celular).toMatch(/onMove:\s*onMove/)
+    expect((celular.match(/<PositionRow[\s\S]*?\/>/g) || []).filter(x => /onMove=/.test(x)).length).toBe(2)
+  })
+})

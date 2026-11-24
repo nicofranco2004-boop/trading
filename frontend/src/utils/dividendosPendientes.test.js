@@ -69,6 +69,14 @@ describe('la cuenta', () => {
   it('comprado DESPUÉS del corte: no hay dividendo', () => {
     expect(detectar({ positions: [lote({ entry_date: '2026-09-15' })] }).paraConfirmar).toEqual([])
   })
+
+  it('un lote que llegó con «Mover a otro broker» después del corte no se propone en el broker nuevo', () => {
+    // Comprado en agosto en otro broker y pasado a Balanz el 20/09: el corte del
+    // 15/09 lo cobró el broker de antes. `entry_date` es la compra original.
+    expect(detectar({ positions: [lote({ entry_date: '2026-08-01', en_broker_desde: '2026-09-20' })] }).paraConfirmar).toEqual([])
+    // Si llegó antes del corte, sí.
+    expect(detectar({ positions: [lote({ entry_date: '2026-08-01', en_broker_desde: '2026-09-10' })] }).paraConfirmar).toHaveLength(1)
+  })
 })
 
 describe('sin monto antes que un monto malo', () => {

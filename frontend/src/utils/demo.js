@@ -168,9 +168,14 @@ function blocked() {
 const BROKERS = [
   // Schwab e IBKR son brokers de acciones US → USD (no USDT).
   // USDT es exclusivo de exchanges cripto (Binance, etc).
-  { id: 1, name: 'Schwab',  currency: 'USD'  },
-  { id: 2, name: 'Cocos',   currency: 'ARS'  },
-  { id: 3, name: 'Binance', currency: 'USDT' },
+  // `is_exchange`: lo estampa GET /api/brokers (main.py, `is_exchange_broker`).
+  // Sin él, «Mover a otro broker» tomaba a Binance por un broker de afuera, de la
+  // misma familia que Schwab, y abría el formulario en vez del aviso de «no tenés
+  // otro broker» (revisión E12). En la valuación no cambia nada: el factor
+  // dólar-cripto sólo corre en cuentas en pesos (crypto.js `cryptoBrokerFactor`).
+  { id: 1, name: 'Schwab',  currency: 'USD',  is_exchange: 0 },
+  { id: 2, name: 'Cocos',   currency: 'ARS',  is_exchange: 0 },
+  { id: 3, name: 'Binance', currency: 'USDT', is_exchange: 1 },
 ]
 
 const POSITIONS = [
@@ -3396,6 +3401,10 @@ export function handleDemoRequest(method, path, body) {
     // la venta), que es la que el servidor usa en una cuenta con historia (v1,
     // backend/fx.py `fx_version_lectura`).
     if (basePath === '/positions/regla-de-venta') return { cada_punta_a_su_dolar: false }
+    // «Mover a otro broker»: habilitado y sin pases. Los brokers del demo son de
+    // familias distintas, así que el menú muestra el aviso de «no tenés otro
+    // broker donde pasarlos» en vez de un formulario vacío; mover pide la cuenta.
+    if (basePath === '/positions/traspasos') return { habilitado: true, traspasos: [] }
     // Activar los avisos al celular es de una cuenta (POST /push/subscribe lo
     // guarda en ella). hooks/usePushNotifications lo dice antes de pedirle
     // permiso al navegador; esto, por si algo pide la clave igual.
@@ -4254,6 +4263,10 @@ const _BASES_DEL_VISITANTE = [
   // escribir una tesis: desde que el demo contesta sus lecturas (19/11/2026)
   // se pueden apretar, y sin esto el demo decía «listo» sin guardar nada.
   '/dividendos', '/tesis',
+  // «Mover a otro broker» (por prefijo: la vista previa, el confirmar y el
+  // deshacer). La vista previa no escribe, pero arma el pase con la cartera de
+  // una cuenta: en el demo pide crear una.
+  '/positions/traspaso',
 ]
 function _esEscrituraDelVisitante(method, path) {
   if (method === 'GET') return false

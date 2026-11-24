@@ -8,7 +8,7 @@
 
 import {
   ArrowUpRight, ArrowDownRight, ArrowDownToLine, ArrowUpFromLine,
-  ArrowLeftRight, Coins, Receipt, SlidersHorizontal,
+  ArrowLeftRight, ArrowRightLeft, Coins, Receipt, SlidersHorizontal,
 } from 'lucide-react'
 import { LOCALE } from '../../utils/format'
 import { esConversion } from '../../utils/tradeStats'
@@ -50,6 +50,12 @@ export const TYPE_META = {
   // "FX_ARS_TO_USD". Ver `_movimiento_de_conversion` en main.py.
   FX_ARS_TO_USD: { label: 'Compra de USD', Icon: ArrowLeftRight, color: 'text-ink-2', tone: null },
   FX_USD_TO_ARS: { label: 'Venta de USD',  Icon: ArrowLeftRight, color: 'text-ink-2', tone: null },
+  // Las dos patas de un pase de títulos entre brokers tuyos («Mover a otro
+  // broker»). No es una compra ni una venta: el monto es lo que valían ese día y
+  // no suma a «Aportado neto» (que mira sólo depósitos y retiros). Tono neutro.
+  // No se borran: se deshace el pase entero (botón «Deshacer pase»).
+  TRASPASO_SALIDA:  { label: 'Pase (salió)', Icon: ArrowRightLeft, color: 'text-ink-2', tone: null },
+  TRASPASO_ENTRADA: { label: 'Pase (entró)', Icon: ArrowRightLeft, color: 'text-ink-2', tone: null },
 }
 
 // Clase del MONTO a partir del `tone`. Es lo que el desktop calculaba con
@@ -70,8 +76,44 @@ export const DELETABLE_MOVEMENT_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INT
 // 2026-10-09 el borrado devuelve las dos monedas). Las conversiones viejas y las
 // importadas no la traen y siguen sin tacho. Una sola regla para la tabla y el
 // feed del celular.
+//
+// Lo que es parte de un pase entre brokers (`traspaso_id`: las dos patas y el
+// gasto del trámite) no tiene tacho aunque su tipo lo tenga: se deshace el pase
+// entero, nunca una pata suelta (el servidor responde 409 igual).
+//
+// Y lo que el servidor marca `borrable: false` tampoco, aunque su tipo esté en
+// la lista. Pasa con la compra original de un lote cargado a mano que se pasó a
+// otro broker (id `trp-…`, `type 'BUY'`, sin `traspaso_id`): por tipo mostraba
+// el tacho, se confirmaba «¿Borrar compra…?» y el DELETE llegaba a una fila que
+// el servidor no reconoce. Hoy el único otro `borrable` que manda el servidor
+// es el de las conversiones (FX_*), que no están en la lista: no cambia nada.
 export function puedeBorrarMovimiento(m) {
+  if (m?.traspaso_id || m?.borrable === false) return false
   return DELETABLE_MOVEMENT_TYPES.includes(m?.type) || m?.borrable === true
+}
+
+/** ¿La fila es parte de un pase entre brokers? (las dos patas y el gasto del trámite) */
+export function esDeUnPase(m) {
+  return !!m?.traspaso_id || m?.type === 'TRASPASO_SALIDA' || m?.type === 'TRASPASO_ENTRADA'
+}
+
+/** El filtro de tipo de Movimientos. «Pases» junta las dos patas y el gasto del trámite. */
+export function coincideConElTipo(m, filterType) {
+  if (!filterType || filterType === 'all') return true
+  if (filterType === 'PASE') return esDeUnPase(m)
+  return m?.type === filterType
+}
+
+/**
+ * Cuántas filas muestra el botón de un tipo (el número al lado de «Pases»). Con
+ * la MISMA regla que el filtro: contar por `m.type === id` daba siempre 0 en
+ * «Pases» (ninguna fila tiene ese tipo; son TRASPASO_* y el gasto con
+ * `traspaso_id`), y la pantalla esconde los botones en 0: el filtro no aparecía.
+ */
+export function cuantosDelTipo(movements, filterType) {
+  const lista = movements || []
+  if (!filterType || filterType === 'all') return lista.length
+  return lista.filter((m) => coincideConElTipo(m, filterType)).length
 }
 
 export const MOVEMENT_TYPES = [
@@ -86,6 +128,7 @@ export const MOVEMENT_TYPES = [
   { id: 'FEE',      label: 'Comisiones',   icon: Receipt,           tone: 'neg' },
   { id: 'FX_ARS_TO_USD', label: 'Compras de USD', icon: ArrowLeftRight },
   { id: 'FX_USD_TO_ARS', label: 'Ventas de USD',  icon: ArrowLeftRight },
+  { id: 'PASE',     label: 'Pases',        icon: ArrowRightLeft },
 ]
 
 // ─── Etiquetas ─────────────────────────────────────────────────────────────

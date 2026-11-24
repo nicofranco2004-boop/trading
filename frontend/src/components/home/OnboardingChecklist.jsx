@@ -200,7 +200,9 @@ export default function OnboardingChecklist({ onDecidida, aLaVista = true } = {}
       api.get('/primeros-pasos').catch(() => null),
     ]).then(([profile, imports, pasos]) => {
       if (cancelled) return
-      const hasImported = Array.isArray(imports) && imports.length > 0
+      // Un pase entre brokers («Mover a otro broker») también se lista como lote
+      // (`traspaso`), pero no es haber importado un archivo.
+      const hasImported = Array.isArray(imports) && imports.some(b => !b?.traspaso)
       // El endpoint devuelve {} cuando no hay perfil, así que checkeamos keys.
       // Si tiene cualquier respuesta válida del quiz (horizonte, tolerancia, etc.)
       // marcamos como completado.
