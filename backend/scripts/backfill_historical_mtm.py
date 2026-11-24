@@ -70,6 +70,7 @@ if BACKEND not in sys.path:
 import main                                              # noqa: E402
 import snapshots_job as sj                               # noqa: E402
 from importing.recompute_backfill import _clone_db                 # noqa: E402
+from importing.traspaso_a_mano import FORMATO as _FORMATO_PASE    # noqa: E402
 
 
 # ─── Fetch de cierre mensual histórico por símbolo de precio ──────────────────
@@ -355,32 +356,71 @@ def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
             return None                    # no se puede afirmar el costo en USD
         return monto / tc
 
+    def _lote_no_visto(broker, asset, quantity, invested, moneda, desde):
+        """Un lote que estaba en `broker` a `date_iso`: su costo en USD si el import
+        no lo valuó. La MISMA regla para los lotes de `positions` y para los cargados
+        a mano que un pase sacó de su broker."""
+        nonlocal costo, afirmable
+        qty_vista = vistos.get((broker, asset))
+        qty = float(quantity or 0)
+        if qty_vista is not None and qty > 0 and qty_vista >= qty - 1e-9:
+            return                         # el import ya valuó al menos esta cantidad
+        inv = float(invested or 0)
+        if qty_vista is not None and qty > 0:
+            # visto PARCIAL: sólo la fracción no vista queda al costo.
+            inv = inv * max(0.0, (qty - qty_vista)) / qty
+        usd = _a_usd(inv, moneda) if inv > 0 else 0.0
+        if usd is None:
+            afirmable = False
+        elif usd > 0:
+            costo += usd
+        elif not desde:
+            afirmable = False              # hay algo, sin fecha y sin costo
+
     try:
         for r in conn.execute(
-            """SELECT broker, asset, invested, quantity, currency, entry_date
+            """SELECT broker, asset, invested, quantity, currency, entry_date, en_broker_desde
                  FROM positions
                 WHERE user_id=? AND COALESCE(is_cash,0)=0""",
             (uid,),
         ).fetchall():
+            # Desde cuándo está en ESTE broker. Un lote que llegó por un pase entre
+            # brokers conserva su fecha de compra (`entry_date`) y anota el día que
+            # llegó (`en_broker_desde`): antes de ese día estaba en el otro broker,
+            # donde lo cuenta el registro (o el bucle de abajo, si era cargado a mano).
             # Sin entry_date NO se puede afirmar que no estuviera: se cuenta.
-            if r["entry_date"] and str(r["entry_date"])[:10] > date_iso:
+            desde = r["en_broker_desde"] or r["entry_date"]
+            if desde and str(desde)[:10] > date_iso:
                 continue
-            qty_vista = vistos.get((r["broker"], r["asset"]))
-            qty = float(r["quantity"] or 0)
-            if qty_vista is not None and qty > 0 and qty_vista >= qty - 1e-9:
-                continue                   # el import ya valuó al menos esta cantidad
-            inv = float(r["invested"] or 0)
-            if qty_vista is not None and qty > 0:
-                # visto PARCIAL: sólo la fracción no vista queda al costo.
-                inv = inv * max(0.0, (qty - qty_vista)) / qty
-            usd = _a_usd(inv, r["currency"]) if inv > 0 else 0.0
-            if usd is None:
-                afirmable = False
-            elif usd > 0:
-                costo += usd
-            elif not r["entry_date"]:
-                afirmable = False          # hay algo, sin fecha y sin costo
+            _lote_no_visto(r["broker"], r["asset"], r["quantity"], r["invested"],
+                           r["currency"], desde)
     except Exception:
+        afirmable = False
+    # Los lotes cargados A MANO que salieron de su broker por un pase: hasta el día
+    # del pase estaban ahí, y ni el registro (no son de un archivo) ni `positions`
+    # (el pase los sacó) los muestran. `lotes_a_mano_que_salieron` ya descarta los
+    # pases deshechos y los de un broker de origen borrado.
+    try:
+        from importing import traspaso_a_mano as _tam
+        for l in _tam.lotes_a_mano_que_salieron(conn, uid):
+            ed = l["entry_date"]
+            if ed and ed > date_iso:
+                continue                   # todavía no lo había comprado
+            if not l["fecha_pase"] or date_iso >= l["fecha_pase"]:
+                continue                   # ya se había ido de este broker
+            _lote_no_visto(l["broker"], l["asset"], l["cantidad"], l["invested"],
+                           l["currency"], ed)
+    except Exception:
+        afirmable = False
+    # Qué día llegó a su broker actual cada lote que vino por un pase: una venta
+    # posterior guarda la fecha de compra ORIGINAL, y antes de la llegada ese lote
+    # estaba en el otro broker (contado allá).
+    try:
+        from importing import traspaso_a_mano as _tam
+        raiz = _tam.raices_de_brokers(conn, uid)
+        llegadas = _tam.llegadas_por_lote(conn, uid)
+    except Exception:
+        raiz, llegadas = {}, {}
         afirmable = False
     try:
         for r in conn.execute(
@@ -391,6 +431,10 @@ def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
         ).fetchall():
             ed = str(r["entry_date"])[:10] if r["entry_date"] else None
             sd = str(r["date"])[:10] if r["date"] else None
+            if ed and llegadas:
+                llegada = llegadas.get((raiz.get(r["broker"], r["broker"]), r["asset"], ed))
+                if llegada and llegada > ed:
+                    ed = llegada           # antes de llegar estaba en el otro broker
             if ed and ed > date_iso:
                 continue                   # se abrió después
             if sd and sd <= date_iso:
@@ -529,44 +573,148 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
     borró. Antes filtraba el lote confirmado pero no la lápida (`excluded_at`), y
     una compra borrada seguía en la foto valuada a mercado: con MSFT de 100 a 150,
     la curva publicaba +US$ 500 de una suba que la persona ya no tenía, mientras
-    `positions` (el rebuild sí filtra) mostraba bien la cartera."""
+    `positions` (el rebuild sí filtra) mostraba bien la cartera.
+
+    ⚠️ TRES COSAS QUE ESTA VERSIÓN CUENTA (MOTOR_VERSION 4):
+      · (a) EL TIPO DE ACTIVO NO PARTE EL GRUPO. Se agrupaba por broker, activo Y
+        tipo: una venta con otro tipo que sus compras caía en otro grupo, daba
+        cantidad negativa y se descartaba, así que la tenencia NO bajaba. Pasa de
+        verdad: Bull Market, PPI e IEB dejan el tipo en OTHER y Cocos o Balanz
+        mandan CEDEAR o STOCK, y un pase lleva el tipo de la compra original. El
+        tipo se toma de las COMPRAS, como la moneda (ver el comentario de abajo).
+      · (b) LA SALIDA DE UN PASE ENTRE BROKERS (una venta con `traspaso_id`) se
+        lleva SU costo (`costo_nativo`: la inversión de los lotes que se fueron, en
+        la misma unidad que el monto de una compra), no el promedio. Sin esto, lo
+        que queda en A heredaba el costo de los lotes que pasaron a B.
+      · (c) LA VENTA A MANO DE UN LOTE DEL REGISTRO. `sell_position_fifo` no
+        escribe el registro de lo importado, así que vender a mano un lote que
+        vino de un archivo dejaba esa compra en la historia para siempre: la curva
+        seguía valuando a mercado títulos que la persona ya no tenía. Se resta desde
+        la fecha de la venta (ver `_ventas_a_mano_de_lotes_del_registro`)."""
     from importing.schema import TX_VIVAS
     rows = conn.execute(
-        f"""SELECT n.broker AS broker, n.asset_symbol AS asset, n.asset_type AS asset_type,
+        f"""SELECT n.broker AS broker, n.asset_symbol AS asset,
+                  MAX(CASE WHEN n.operation_type='BUY' THEN n.asset_type END) AS asset_type,
                   MAX(CASE WHEN n.operation_type='BUY' AND COALESCE(n.currency,'') <> ''
                            THEN UPPER(n.currency) END) AS currency,
                   SUM(CASE n.operation_type WHEN 'BUY'  THEN COALESCE(n.quantity,0)
                                             WHEN 'SELL' THEN -COALESCE(n.quantity,0)
                                             ELSE 0 END) AS qty,
-                  SUM(CASE n.operation_type WHEN 'BUY'
+                  SUM(CASE WHEN n.operation_type='BUY'
                         THEN COALESCE(n.gross_amount, COALESCE(n.quantity,0)*COALESCE(n.unit_price,0))
+                           WHEN n.operation_type='SELL' AND n.traspaso_id IS NOT NULL
+                                AND n.costo_nativo IS NOT NULL
+                        THEN -n.costo_nativo
                         ELSE 0 END) AS buy_amt,
-                  SUM(CASE n.operation_type WHEN 'BUY' THEN COALESCE(n.quantity,0) ELSE 0 END) AS buy_qty
+                  SUM(CASE WHEN n.operation_type='BUY' THEN COALESCE(n.quantity,0)
+                           WHEN n.operation_type='SELL' AND n.traspaso_id IS NOT NULL
+                                AND n.costo_nativo IS NOT NULL
+                        THEN -COALESCE(n.quantity,0)
+                        ELSE 0 END) AS buy_qty
              FROM {TX_VIVAS}
             WHERE b.user_id = ?
               AND n.asset_symbol IS NOT NULL AND n.asset_symbol != ''
               AND n.operation_type IN ('BUY','SELL')
               AND n.date <= ?
-            GROUP BY n.broker, n.asset_symbol, n.asset_type""",
+            GROUP BY n.broker, n.asset_symbol""",
         (uid, date_iso),
     ).fetchall()
-    out = []
+    grupos = {}
     for r in rows:
-        qty = r["qty"] or 0
+        grupos[(r["broker"], r["asset"])] = {
+            "asset_type": r["asset_type"], "currency": r["currency"],
+            "qty": float(r["qty"] or 0), "buy_amt": float(r["buy_amt"] or 0),
+            "buy_qty": float(r["buy_qty"] or 0)}
+    # (c) Lo que la persona vendió a mano de esos lotes, hasta esta fecha. Igual que
+    # la salida de un pase (b): se va la cantidad y SU costo, no el promedio.
+    for broker, asset, cantidad, costo in _ventas_a_mano_de_lotes_del_registro(conn, uid, date_iso):
+        g = grupos.get((broker, asset))
+        if g is None:
+            continue
+        g["qty"] -= cantidad
+        g["buy_qty"] -= cantidad
+        g["buy_amt"] -= costo
+    out = []
+    for (broker, asset), g in grupos.items():
+        qty = g["qty"]
         if qty <= 1e-9:        # cerrada / sobre-vendida → no es tenencia
             continue
-        buy_qty = r["buy_qty"] or 0
-        avg_cost = (r["buy_amt"] / buy_qty) if buy_qty > 0 else 0
+        buy_qty = g["buy_qty"]
+        avg_cost = max(0.0, g["buy_amt"]) / buy_qty if buy_qty > 1e-9 else 0
         # currency: para que compute_broker_value_usd respete el costo USD (sin ÷MEP)
         # de bonos/ONs/FCI-USD/CEDEAR-MEP en un broker ARS. Se TAGEA desde las patas de
         # COMPRA (no se particiona el GROUP BY): una VENTA de reducción sin cash (rescate
         # parcial / reducción de capital / canje) llega con moneda vacía→'ARS' y, si
         # particionáramos, caería en otro bucket y NO restaría la cantidad (qty inflada).
         # MAX prioriza 'USD' si alguna compra fue en dólares (el caso "costo en dólares").
+        # El tipo, por la misma razón y de la misma forma (a).
         out.append({
-            "broker": r["broker"], "asset": r["asset"], "asset_type": r["asset_type"],
-            "currency": (r["currency"] or None), "quantity": qty, "invested": avg_cost * qty,
+            "broker": broker, "asset": asset, "asset_type": g["asset_type"],
+            "currency": (g["currency"] or None), "quantity": qty, "invested": avg_cost * qty,
         })
+    return out
+
+
+def _ventas_a_mano_de_lotes_del_registro(conn, uid: int, date_iso: str) -> list:
+    """[(broker, activo, cantidad, costo)] de cada venta A MANO, con fecha ≤
+    `date_iso`, de un lote que salió del registro de lo importado.
+
+    Una venta a mano (`sell_position_fifo`) consume los lotes de `positions` y deja
+    una 'Venta' en `operations` SIN vínculo con el registro; cada una guarda la foto
+    del lote que consumió (`undo_meta_json`, `src = 'fifo_sell'`). Si ese lote nació
+    de un import (su id figura como `position_id` en `import_op_links` de un lote
+    confirmado), la compra sigue en el registro y nadie la resta: es lo que hay que
+    restar acá. Una venta a mano de un lote cargado a mano no entra: ese lote nunca
+    estuvo en el registro. El costo es el del lote, en su moneda (la misma unidad
+    que el monto de una compra): `invested × consumido / cantidad`, o precio ×
+    cantidad si el lote no tenía `invested` (`fx.costo_del_lote`).
+
+    ⚠️ Si el lote tenía un split aplicado sólo en `positions`, la cantidad vendida
+    está en títulos nuevos y el registro en viejos. No se convierte: esos activos se
+    valúan al costo (`split_assets` en `backfill_user`) y la cuenta sólo mueve la
+    cobertura del mes."""
+    import json as _json
+    import fx as _fx
+    # Primero las ventas a mano (lo común es no tener ninguna): sin ellas no hace falta
+    # leer los vínculos. Esto corre una vez por mes reconstruido.
+    ventas = [r for r in conn.execute(
+        "SELECT o.date, o.undo_meta_json FROM operations o "
+        "WHERE o.user_id=? AND o.op_type='Venta' AND o.undo_meta_json LIKE '%fifo_sell%' "
+        "AND NOT EXISTS (SELECT 1 FROM import_op_links l WHERE l.operation_id = o.id)",
+        (uid,)).fetchall() if r["date"] and str(r["date"])[:10] <= date_iso]
+    if not ventas:
+        return []
+    lotes_del_registro = set()
+    for r in conn.execute(
+            "SELECT DISTINCT l.position_id FROM import_op_links l "
+            "JOIN import_batches b ON b.id = l.batch_id "
+            "WHERE b.user_id=? AND b.status='confirmed' AND l.position_id IS NOT NULL",
+            (uid,)).fetchall():
+        try:
+            lotes_del_registro.add(int(r["position_id"]))
+        except (TypeError, ValueError):
+            pass
+    out = []
+    for r in ventas:
+        try:
+            meta = _json.loads(r["undo_meta_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        lote = meta.get("lot") if isinstance(meta, dict) and meta.get("src") == "fifo_sell" else None
+        if not isinstance(lote, dict):
+            continue
+        try:
+            if int(lote.get("id")) not in lotes_del_registro:
+                continue
+        except (TypeError, ValueError):
+            continue
+        consumido = float(lote.get("consumed") or 0)
+        cantidad = float(lote.get("quantity") or 0)
+        if consumido <= 0:
+            continue
+        costo_lote = _fx.costo_del_lote(lote.get("invested"), lote.get("buy_price"), cantidad) or 0
+        costo = float(costo_lote) * consumido / cantidad if cantidad > 0 else 0.0
+        out.append((lote.get("broker"), lote.get("asset"), consumido, costo))
     return out
 
 
@@ -588,8 +736,11 @@ def _month_end(year: int, month: int) -> str:
 MTM_SOURCE = "mtm_backfill"
 # Entra en `huella_de_entrada`. Subirlo cuando cambia lo que la foto vale para la
 # MISMA contabilidad. 2 = la caja medida y al dólar-MEP de su fecha. 3 = los
-# bonos al cierre de su mes en data912 (antes, al costo).
-MOTOR_VERSION = 3
+# bonos al cierre de su mes en data912 (antes, al costo). 4 = la tenencia entiende
+# los pases entre brokers y corrige dos errores que ya estaban: una venta con otro
+# tipo de activo que sus compras no bajaba la tenencia, y una venta a mano de un
+# lote importado la dejaba en la historia para siempre (`_holdings_asof`).
+MOTOR_VERSION = 4
 
 # ⚠️ YA NO HAY PISO DE COBERTURA. La cobertura se estampa y SE MUESTRA; no filtra
 # nada. Un piso —fuera 0,70 o 0,995— esconde la curva entera al que no llega, que
@@ -785,16 +936,26 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
               "monthly_entries WHERE user_id=? AND broker='global' AND year*100+month < ?",
               "year, month", uid, ym_hoy)
     _agregado(("id",), "import_batches WHERE user_id=? AND status='confirmed'", "id", uid)
+    # De un pase entre brokers: la salida resta SU costo (`costo_nativo`) y la llegada
+    # dice desde qué día está en el broker nuevo (`fecha_compra` es la compra original,
+    # `llegadas_por_lote`).
     _agregado(("n.id", "n.date", "n.broker", "n.asset_symbol", "n.asset_type",
                "n.operation_type", "n.quantity", "n.gross_amount", "n.unit_price",
-               "n.currency", "CASE WHEN n.excluded_at IS NULL THEN 1 ELSE 0 END"),
+               "n.currency", "CASE WHEN n.excluded_at IS NULL THEN 1 ELSE 0 END",
+               "n.traspaso_id", "n.costo_nativo", "n.fecha_compra"),
               "import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
               "WHERE b.user_id=? AND b.status='confirmed' "
               "AND n.operation_type IN ('BUY','SELL') AND n.date < ?",
               "n.id", uid, hoy)
-    _agregado(("id", "broker", "asset", "quantity", "invested", "currency", "entry_date"),
+    _agregado(("id", "broker", "asset", "quantity", "invested", "currency", "entry_date",
+               "en_broker_desde"),
               "positions WHERE user_id=? AND COALESCE(is_cash,0)=0 "
               "AND (entry_date IS NULL OR entry_date < ?)", "id", uid, hoy)
+    # Los pases y si se deshicieron: de acá salen los lotes cargados a mano que un
+    # pase sacó de su broker (`lotes_a_mano_que_salieron`). Su receta no cambia
+    # después de escrita; lo que cambia es si sigue vigente (`deshecho_at`, y el
+    # estado de su lote de salida, que ya entra con los lotes confirmados).
+    _agregado(("id", "deshecho_at"), "traspasos_a_mano WHERE user_id=?", "id", uid)
     _agregado(("s.asset",),
               "(SELECT DISTINCT asset FROM positions WHERE user_id=? "
               "AND split_adjusted_through IS NOT NULL) s", "s.asset", uid)
@@ -871,6 +1032,16 @@ def _meses_a_reconstruir(huella: list, today: _date) -> list:
     return out
 
 
+# ¿La cuenta tiene historia que reconstruir? Un import confirmado que NO sea un pase
+# entre brokers. Los dos lotes de un pase (`traspaso_a_mano.FORMATO`) son de la
+# app, no de un archivo: una cuenta 100 % cargada a mano no pasa a «reconstruible»
+# por mover un lote, y al deshacer el pase no se le borran fotos. La MISMA consulta
+# decide si se reconstruye y si las fotos reconstruidas que quedaron ya no valen.
+_HAY_IMPORT_RECONSTRUIBLE = (
+    "SELECT 1 FROM import_batches WHERE user_id=? AND status='confirmed' "
+    f"AND COALESCE(parser_format,'') <> '{_FORMATO_PASE}'")
+
+
 def _borrar_reconstruidas_con_el_turno(conn, uid: int, motivo_ya_no_vale: str) -> int:
     """Borra las fotos reconstruidas de una cuenta que ya no tiene qué reconstruir.
 
@@ -905,16 +1076,14 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     # Lo que describen las fotos de esta corrida; se compara al final.
     res["huella"] = entrada = huella_de_entrada(conn, uid, today)
 
-    # Cuenta reconstruible solo si hay import confirmado.
-    has_import = conn.execute(
-        "SELECT 1 FROM import_batches WHERE user_id=? AND status='confirmed' LIMIT 1", (uid,),
-    ).fetchone()
+    # Cuenta reconstruible solo si hay import confirmado (sin contar los pases).
+    has_import = conn.execute(_HAY_IMPORT_RECONSTRUIBLE + " LIMIT 1", (uid,)).fetchone()
     if not has_import:
         # Si ya no hay import (se revirtió el único), las fotos reconstruidas que
         # quedaron —p. ej. de meses con movimientos cargados a mano antes del
         # import, que el revert no borra— describen una cuenta que ya no existe.
         res["snapshots_borrados"] = _borrar_reconstruidas_con_el_turno(
-            conn, uid, "SELECT 1 FROM import_batches WHERE user_id=? AND status='confirmed'")
+            conn, uid, _HAY_IMPORT_RECONSTRUIBLE)
         res.update(skipped=True, reason="sin import confirmado (cuenta manual)")
         return res
 
