@@ -60,10 +60,13 @@ const BROKERS = [{ id: 1, name: 'Cocos', currency: 'ARS' }, { id: 3, name: 'Bala
 const OPCION = { key: 'k', asset: 'NVDA', cuenta: 'Cocos', moneda: 'ARS', dosMonedas: true, broker: 'Cocos', lots: [], qty: 10 }
 let hecho = null
 
-async function abrir() {
+// Las pruebas del pase abren en «En una fecha»; las de «tal cual», con lo que viene
+// elegido de entrada.
+async function abrir(modoInicial = 'pase') {
   hecho = null
   const el = () => h(PrivacyProvider, null, h(MoverDeBrokerModal, {
     opcion: OPCION, brokers: BROKERS, onClose: () => {}, onHecho: (res) => { hecho = res }, onCrearBroker: () => {},
+    modoInicial,
   }))
   montado = await montar(el())
   return { leer: () => texto(montado.contenedor) }
@@ -157,5 +160,49 @@ describe('MoverDeBrokerModal montado: confirmar', () => {
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Mover 10 NVDA'))
     await esperar(50)
     expect(hecho).toMatchObject({ traspaso_id: 't1' })
+  }, 30000)
+})
+
+// «Tal cual» (24/11/2026): viene elegido; con el único destino posible ya puesto,
+// la vista previa se pide sola, y el botón manda el mismo cuerpo, sin fecha.
+describe('MoverDeBrokerModal montado: tal cual', () => {
+  const VISTA_TC = '/positions/tal-cual/vista-previa'
+  const PASAR_TC = '/positions/tal-cual'
+  const TC = (freno = null) => () => Promise.resolve({
+    origen: 'Cocos', destino: 'Balanz', asset: 'NVDA', moneda: 'ARS', cantidad: 10, freno,
+    lotes: [{ fecha_compra: '2024-03-10', cantidad: 10, costo: 120000, moneda: 'ARS' }],
+  })
+
+  it('abre elegido, pide la vista previa y pasa con el mismo cuerpo', async () => {
+    respuestas = { [VISTA_TC]: [TC()], [PASAR_TC]: [() => Promise.resolve({ ok: true, mensaje: 'Listo.' })] }
+    const v = await abrir('tal_cual')
+    await esperar(50)
+    const pedido = { broker_origen: 'Cocos', broker_destino: 'Balanz', asset: 'NVDA', moneda: 'ARS' }
+    expect(pedidos.filter((p) => p.ruta === VISTA_TC).map((p) => p.body)).toEqual([pedido])
+    expect(v.leer()).toContain('10 NVDA · comprados el 10/03/2024')
+    expect(v.leer()).not.toContain('¿Qué día llegaron')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pasar 10 NVDA a Balanz'))
+    await esperar(50)
+    expect(pedidos.find((p) => p.ruta === PASAR_TC).body).toEqual(pedido)
+    expect(hecho).toMatchObject({ ok: true })
+  }, 30000)
+
+  it('con freno muestra el porqué y no deja pasar', async () => {
+    const FRENO = 'Tus NVDA en Cocos vienen de un archivo de Cocos que importaste.'
+    respuestas = { [VISTA_TC]: [TC(FRENO)] }
+    const v = await abrir('tal_cual')
+    await esperar(50)
+    expect(v.leer()).toContain(FRENO)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pasar 10 NVDA a Balanz'))
+    await esperar(50)
+    expect(pedidos.some((p) => p.ruta === PASAR_TC)).toBe(false)
+  }, 30000)
+
+  it('«En una fecha» vuelve al formulario del pase', async () => {
+    respuestas = { [VISTA_TC]: [TC()] }
+    const v = await abrir('tal_cual')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'En una fecha'))
+    expect(v.leer()).toContain('¿Qué día llegaron a Balanz?')
+    expect(v.leer()).toContain('Gasto del trámite (opcional)')
   }, 30000)
 })

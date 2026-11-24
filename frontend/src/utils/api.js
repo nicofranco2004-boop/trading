@@ -510,9 +510,10 @@ async function req(method, path, body, opts) {
 // entre todos, `PESADOS_A_LA_VEZ`); antes sólo se reintentaban los GET, y estas
 // tres mostraban el error en el 37 % de los pedidos con 3 cuentas atacando
 // (re-test E1, ronda 2). Tampoco avisan «cambió la cartera»: no la cambian.
-// La vista previa de «Mover a otro broker» también: arma el pase y no guarda nada
-// (el servidor la marca `@no_escribe_en_el_cliente`).
-const LECTURAS_POR_POST = ['/tecnico/cartera', '/tecnico/lista', '/tecnico/en-fechas', '/positions/traspaso/vista-previa']
+// Las vistas previas de «Mover a otro broker» (en una fecha y tal cual) también:
+// arman el pase y no guardan nada (el servidor las marca `@no_escribe_en_el_cliente`).
+const LECTURAS_POR_POST = ['/tecnico/cartera', '/tecnico/lista', '/tecnico/en-fechas',
+  '/positions/traspaso/vista-previa', '/positions/tal-cual/vista-previa']
 export function esLecturaPorPost(method, path) {
   return method === 'POST' && LECTURAS_POR_POST.includes(String(path || '').split('?')[0])
 }

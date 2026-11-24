@@ -4269,9 +4269,9 @@ const _BASES_DEL_VISITANTE = [
   // se pueden apretar, y sin esto el demo decía «listo» sin guardar nada.
   '/dividendos', '/tesis',
   // «Mover a otro broker» (por prefijo: la vista previa, el confirmar y el
-  // deshacer). La vista previa no escribe, pero arma el pase con la cartera de
-  // una cuenta: en el demo pide crear una.
-  '/positions/traspaso',
+  // deshacer; en una fecha y tal cual). La vista previa no escribe, pero arma el
+  // pase con la cartera de una cuenta: en el demo pide crear una.
+  '/positions/traspaso', '/positions/tal-cual',
 ]
 function _esEscrituraDelVisitante(method, path) {
   if (method === 'GET') return false

@@ -1232,7 +1232,13 @@ class LaCompraAManoSeBorraPorCualquierTacho(ConRecetaBase):
         """Guardián: los dos borrados de una compra (importada y a mano) sólo se
         llaman desde `_borrar_posicion` — y el de importadas, además, desde la ruta
         de las filas importadas (`_route_tx_delete`), que ya sabe que lo es. Si un
-        tacho nuevo llama directo a uno de los dos, vuelve el error de hoy."""
+        tacho nuevo llama directo a uno de los dos, vuelve el error de hoy.
+
+        La excepción es «tal cual» (`pasar_tal_cual`, 24/11/2026), que NO es un tacho:
+        borra una compra cargada a mano en un broker para cargarla igual en otro. Antes
+        filtra con `_plan_tal_cual`, que sólo deja pasar compras cargadas a mano y con
+        receta (ni importadas, ni de un pase), así que llamar directo al de las
+        cargadas a mano es la decisión que `_borrar_posicion` habría tomado."""
         arbol = ast.parse(open(MAIN, encoding="utf-8").read())
         quien_llama = {"_delete_position_cascade": set(), "_delete_manual_position_cascade": set()}
         for fn in ast.walk(arbol):
@@ -1245,7 +1251,8 @@ class LaCompraAManoSeBorraPorCualquierTacho(ConRecetaBase):
         # adentro de `delete_movement`, así que un llamado ahí aparece con los dos nombres.
         self.assertEqual(quien_llama["_delete_position_cascade"],
                          {"_borrar_posicion", "_route_tx_delete"})
-        self.assertEqual(quien_llama["_delete_manual_position_cascade"], {"_borrar_posicion"})
+        self.assertEqual(quien_llama["_delete_manual_position_cascade"],
+                         {"_borrar_posicion", "pasar_tal_cual"})
 
 
 class ElDepositoCuyaPlataNoEstaNoSeBorra(ConRecetaBase):

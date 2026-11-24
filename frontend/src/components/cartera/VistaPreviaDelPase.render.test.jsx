@@ -6,7 +6,7 @@
 // que fija backend/tests/test_mover_entre_brokers_contrato.py.
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import VistaPreviaDelPase, { SelectorDeDestino, CREAR_BROKER } from './VistaPreviaDelPase'
+import VistaPreviaDelPase, { SelectorDeDestino, VistaTalCual, CREAR_BROKER } from './VistaPreviaDelPase'
 import { OCULTO } from '../../utils/ocultarSaldos'
 
 const PLAN = {
@@ -115,10 +115,25 @@ describe('MoverDeBrokerModal — el formulario al abrir', () => {
   ]
   const OPCION = { key: 'k', asset: 'NVDA', cuenta: 'Cocos', moneda: 'ARS', dosMonedas: true, broker: 'Cocos', lots: [], qty: 10 }
 
-  it('título, bajada, destino, fecha sin valor y el botón apagado', async () => {
+  it('abre en «Tal cual»: sin fecha, sin cantidad, sin gasto, y el botón apagado', async () => {
     const { default: MoverDeBrokerModal } = await import('./MoverDeBrokerModal')
     const html = renderToStaticMarkup(
       <MoverDeBrokerModal opcion={OPCION} brokers={BROKERS} onClose={() => {}} onHecho={() => {}} onCrearBroker={() => {}} />)
+    expect(html).toContain('Mover NVDA a otro broker')
+    expect(html).toMatch(/aria-checked="true"[^>]*>.*?Tal cual/)
+    expect(html).toContain('En una fecha')
+    expect(html).toContain('Siempre estuvieron en el otro broker')
+    expect(html).toMatch(/<option value="Balanz" selected="">Balanz<\/option>/)
+    expect(html).not.toContain('¿Qué día llegaron')
+    expect(html).not.toContain('Gasto del trámite')
+    expect(html).toContain('Revisando tus compras…')
+    expect(html).toMatch(/<button type="button" disabled=""[^>]*>Pasar NVDA a Balanz<\/button>/)
+  })
+
+  it('«En una fecha»: título, bajada, destino, fecha sin valor y el botón apagado', async () => {
+    const { default: MoverDeBrokerModal } = await import('./MoverDeBrokerModal')
+    const html = renderToStaticMarkup(
+      <MoverDeBrokerModal opcion={OPCION} brokers={BROKERS} onClose={() => {}} onHecho={() => {}} onCrearBroker={() => {}} modoInicial="pase" />)
     expect(html).toContain('Mover NVDA a otro broker')
     expect(html).toContain('Desde Cocos · en pesos')
     expect(html).toContain('¿A qué broker?')
@@ -131,5 +146,35 @@ describe('MoverDeBrokerModal — el formulario al abrir', () => {
     expect(html).toContain('Usá la fecha que figura en tu broker.')
     expect(html).toContain('Gasto del trámite (opcional)')
     expect(html).toMatch(/<button type="button" disabled=""[^>]*>Mover NVDA<\/button>/)
+  })
+})
+
+// «Tal cual» (24/11/2026): la forma de POST /api/positions/tal-cual/vista-previa
+// (la fija backend/tests/test_tal_cual.py).
+describe('VistaTalCual', () => {
+  const VISTA = {
+    origen: 'Santander', destino: 'Galicia', asset: 'MSFT', moneda: 'ARS', cantidad: 20, freno: null,
+    lotes: [{ fecha_compra: '2026-06-29', cantidad: 20, costo: 384000, moneda: 'ARS' }],
+  }
+
+  it('las compras con su fecha y su costo, y qué queda en cada broker', () => {
+    const html = renderToStaticMarkup(<VistaTalCual vista={VISTA} />)
+    expect(html).toContain('Se pasan estas compras a Galicia:')
+    expect(html).toContain('20 MSFT · comprados el 29/06/2026 · costo $384.000 ARS')
+    expect(html).toContain('Quedan en Galicia como si siempre hubieran estado ahí, con su fecha y su costo de compra. De Santander desaparecen: sin pérdida ni ganancia.')
+    expect(html).not.toContain('Valían')
+  })
+
+  it('con el ojito, el costo se tapa y la cantidad y la fecha quedan', () => {
+    const html = renderToStaticMarkup(<VistaTalCual vista={VISTA} hidden />)
+    expect(html).toContain(`20 MSFT · comprados el 29/06/2026 · costo ${OCULTO}`)
+    expect(html).not.toContain('384.000')
+  })
+
+  it('con freno: sólo el motivo, sin la lista', () => {
+    const html = renderToStaticMarkup(<VistaTalCual vista={{ ...VISTA, freno: 'Tus MSFT en Santander vienen de un archivo.' }} />)
+    expect(html).toContain('role="alert"')
+    expect(html).toContain('Tus MSFT en Santander vienen de un archivo.')
+    expect(html).not.toContain('Se pasan estas compras')
   })
 })

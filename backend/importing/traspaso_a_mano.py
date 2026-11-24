@@ -1581,6 +1581,18 @@ def gasto_en_usd(monto: float, moneda: str, tc_pesos: float) -> float:
 
 # ── armar_plan ─────────────────────────────────────────────────────────────────
 
+def lotes_del_activo(conn, uid: int, patas, asset: str) -> List[Dict[str, Any]]:
+    """Los lotes abiertos de `asset` en esas patas, en el orden FIFO del persister
+    (`persister.py`): el más viejo primero, los sin fecha al final. Los usan el pase
+    (`armar_plan`) y el «tal cual» (`main._plan_tal_cual`): la misma fila de Cartera."""
+    return [dict(r) for r in conn.execute(
+        f"""SELECT * FROM positions
+             WHERE user_id=? AND broker IN ({_ph(patas)}) AND asset=? AND is_cash=0
+               AND quantity > 0
+             ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
+        (uid, *patas, asset)).fetchall()]
+
+
 def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: bool,
                cuentas: Optional[Cuentas] = None) -> Plan:
     """B.6 (en ese orden), C.1–C.6 y C.9. Sólo LEE: la vista previa la llama sin
@@ -1612,13 +1624,7 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
         raise PaseInvalido(400, "El efectivo no se mueve con esta opción. Usá Retirar en un "
                                 "broker y Depositar en el otro.")
 
-    # Los lotes de A de ese activo, en el orden FIFO del persister (`persister.py`).
-    todos = [dict(r) for r in conn.execute(
-        f"""SELECT * FROM positions
-             WHERE user_id=? AND broker IN ({_ph(c.patas_a)}) AND asset=? AND is_cash=0
-               AND quantity > 0
-             ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
-        (uid, *c.patas_a, asset)).fetchall()]
+    todos = lotes_del_activo(conn, uid, c.patas_a, asset)
     tipos = {(l.get("asset_type") or "").upper() for l in todos}
 
     # #9 — bonos y letras.
@@ -2223,8 +2229,8 @@ MSG_LIMPIAR_CON_PASE = ("Este broker tiene títulos que pasaste a otro broker (o
 MSG_BORRAR_PATA_CON_PASE = ("«{nombre}» tiene títulos de un pase entre tus brokers. Deshacé "
                             f"primero el pase ({CAMINO_DESHACER}) y después borralo.")
 MSG_PUT_OTRO_BROKER = ("Para pasar este lote a otro broker usá «Mover a otro broker» (en el "
-                       "menú ⋯ de la fila). Si lo cargaste en el broker equivocado, borralo y "
-                       "cargalo de nuevo en el correcto.")
+                       "menú ⋯ de la fila). Si lo cargaste en el broker equivocado, elegí "
+                       "«Tal cual»: queda como si siempre hubiera estado en el otro.")
 # El mismo freno con el interruptor apagado: la opción «Mover a otro broker» no se ve
 # (la pantalla la esconde), así que el texto no puede mandar ahí.
 MSG_PUT_OTRO_BROKER_SIN_MOVER = ("Un lote no se cambia de broker editándolo. Si lo cargaste en "
@@ -2236,6 +2242,27 @@ def msg_put_otro_broker(habilitado: bool) -> str:
     """El 409 de cambiarle el broker a un lote editándolo (D.19): manda a «Mover a otro
     broker» sólo si la opción existe (el interruptor prendido)."""
     return MSG_PUT_OTRO_BROKER if habilitado else MSG_PUT_OTRO_BROKER_SIN_MOVER
+
+
+# «Tal cual» (2026-11-24): la posición estaba cargada en el broker equivocado (con el
+# plan gratis, un solo broker, muchos cargaron todo en uno). Por qué no se puede.
+MSG_TAL_CUAL_IMPORTADO = ("Tus {asset} en {broker} vienen de un archivo de {broker} que "
+                          "importaste, así que no se pueden pasar tal cual. Si los "
+                          "transferiste, usá «En una fecha».")
+MSG_TAL_CUAL_CON_PASE = ("Parte de estos {asset} ya se movió con un pase. Deshacelo primero "
+                         "(" + CAMINO_DESHACER + ") y volvé a intentar.")
+MSG_TAL_CUAL_CAMBIO = ("Una compra de {asset} en {broker} tiene una venta anotada o la "
+                       "editaste después de cargarla, así que no se puede pasar tal cual. "
+                       "Borrá primero la venta (o cargá la compra de nuevo) y volvé a intentar.")
+MSG_TAL_CUAL_VIEJA = ("Una compra de {asset} en {broker} se cargó antes de que Rendi guardara "
+                      "cómo deshacerla, así que no se puede pasar tal cual. Cargala de nuevo "
+                      "en el broker que corresponde.")
+MSG_TAL_CUAL_SIN_DEPOSITO = ("El depósito que pagó una compra de {asset} en {broker} ya no está "
+                             "registrado, así que pasarla descuadraría el saldo. Restauralo "
+                             "primero.")
+MSG_TAL_CUAL_HECHO = ("Listo: {cantidad} {asset} pasaron de {origen} a {destino} tal cual, con "
+                      "su fecha y su costo de compra. {origen} queda como si nunca los "
+                      "hubiera tenido.")
 MOTIVO_ASESOR = "se pasó a otro broker: deshacé primero ese pase"
 # C.11, la regla única de lo que cambia la historia anterior a un pase.
 MSG_CAMBIA_UN_PASE = ("Esto cambia la historia de {asset} en {broker} antes de tu pase del "

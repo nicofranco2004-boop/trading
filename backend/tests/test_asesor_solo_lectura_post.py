@@ -146,8 +146,14 @@ class AsesorSoloLecturaTest(unittest.TestCase):
                 "broker_origen": "Cocos", "asset": "GGAL", "moneda": "ARS",
                 "broker_destino": "Balanz", "fecha": "2025-06-16", "precio_manual": 6000},
                 headers=self._h(self.ana))
+            # La de «tal cual» (24/11/2026), la misma marca y la misma regla.
+            tc = self.client.post("/api/positions/tal-cual/vista-previa", json={
+                "broker_origen": "Cocos", "asset": "GGAL", "moneda": "ARS",
+                "broker_destino": "Balanz"}, headers=self._h(self.ana))
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["cantidad"], 10.0)
+        self.assertEqual(tc.status_code, 200, tc.text)
+        self.assertEqual(tc.json()["cantidad"], 10.0)
         self.assertEqual(escribio, [], "la vista previa escribió en la base")
         self.assertEqual(self._filas(), antes, "la vista previa dejó filas en la base")
 
@@ -166,8 +172,10 @@ class AsesorSoloLecturaTest(unittest.TestCase):
             if getattr(getattr(r, "endpoint", None), "_rendi_no_escribe_en_el_cliente", False)
             for m in sorted(getattr(r, "methods", ()) or ()))
         self.assertEqual(marcadas, [
-            # «Mover a otro broker»: la vista previa sólo lee (se prueba arriba, en
+            # «Mover a otro broker»: las dos vistas previas (tal cual y en una fecha)
+            # sólo leen (se prueba arriba, en
             # test_la_vista_previa_del_pase_no_escribe_en_el_cliente).
+            ("POST", "/api/positions/tal-cual/vista-previa"),
             ("POST", "/api/positions/traspaso/vista-previa"),
             ("POST", "/api/tecnico/cartera"),
             ("POST", "/api/tecnico/en-fechas"),

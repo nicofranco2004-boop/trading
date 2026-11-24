@@ -1,7 +1,8 @@
 // VistaPreviaDelPase — lo que se DIBUJA de «Mover a otro broker». Sólo dibuja.
 // ═══════════════════════════════════════════════════════════════════════════
 // Sin estado, sin efectos y sin pedidos: recibe la vista previa que armó el
-// servidor (POST /api/positions/traspaso/vista-previa) y la escribe. Así se puede
+// servidor (POST /api/positions/traspaso/vista-previa, o la de «tal cual»:
+// `VistaTalCual`) y la escribe. Así se puede
 // probar entera con `renderToStaticMarkup`, que no corre efectos: el contenedor
 // (MoverDeBrokerModal) maneja el formulario y los pedidos.
 //
@@ -48,6 +49,43 @@ export default function VistaPreviaDelPase({ plan = null, hidden = false, error 
             </ul>
           )}
         </div>
+      )}
+      {error && (
+        <p role="alert" className="text-[13px] leading-relaxed text-rendi-neg whitespace-pre-line">{tapar(error)}</p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * La vista previa de «tal cual» (POST /api/positions/tal-cual/vista-previa): las
+ * compras que se pasan, con su fecha y su costo, y qué queda en cada broker. Si
+ * alguna no se puede pasar, `vista.freno` dice por qué (el mismo texto que daría
+ * el confirmar) y el contenedor apaga el botón.
+ */
+export function VistaTalCual({ vista = null, hidden = false, error = null }) {
+  const fmt = formateadorDeMontos(hidden)
+  const tapar = (t) => (hidden ? taparMontos(t) : t)
+  const A = vista?.origen || ''
+  const B = vista?.destino || ''
+  return (
+    <div className="space-y-3">
+      {vista && !vista.freno && (
+        <div className="rounded-xl border border-line bg-bg-2/40 px-3 py-3 space-y-2.5 text-[13px] leading-relaxed text-ink-1">
+          <div>
+            <p className="font-medium text-ink-0">Se pasan estas compras a {B}:</p>
+            <ul className="mt-1 space-y-0.5">
+              {(vista.lotes || []).map((l, i) => (
+                <li key={i} className="tabular text-ink-2">{lineaDeLote(l, vista.asset, fmt)}</li>
+              ))}
+            </ul>
+          </div>
+          <p>Quedan en {B} como si siempre hubieran estado ahí, con su fecha y su costo de compra. De {A} desaparecen: sin pérdida ni ganancia.</p>
+          <p className="text-ink-3">No es una venta: no cuenta en tus operaciones cerradas ni en los impuestos.</p>
+        </div>
+      )}
+      {vista?.freno && (
+        <p role="alert" className="text-[13px] leading-relaxed text-rendi-warn">{tapar(vista.freno)}</p>
       )}
       {error && (
         <p role="alert" className="text-[13px] leading-relaxed text-rendi-neg whitespace-pre-line">{tapar(error)}</p>

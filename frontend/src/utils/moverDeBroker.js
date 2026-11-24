@@ -135,6 +135,34 @@ export function cuerpoDeMover(form = {}, opcion) {
   return { body }
 }
 
+/**
+ * Las dos formas de mover. «Tal cual» va primero y viene elegida: el caso más común
+ * es el de quien cargó todo en un broker (con el plan gratis había uno solo) y ahora
+ * quiere cada activo donde siempre estuvo (24/11/2026, el primer usuario que lo probó).
+ */
+export const MODOS_DE_MOVER = [
+  { id: 'tal_cual', label: 'Tal cual', sub: 'Siempre estuvieron en el otro broker: los cargaste en el que no era' },
+  { id: 'pase', label: 'En una fecha', sub: 'Los transferiste: salieron de uno y llegaron al otro ese día' },
+]
+
+/**
+ * El cuerpo de «tal cual» (POST /api/positions/tal-cual y su vista previa): sin
+ * fecha, sin cantidad (se pasa la fila entera) y sin gasto.
+ */
+export function cuerpoTalCual(form = {}, opcion) {
+  if (!opcion) return { error: 'Elegí qué querés mover.' }
+  const destino = String(form.destino || '').trim()
+  if (!destino) return { error: 'Elegí a qué broker lo pasás.' }
+  return {
+    body: {
+      broker_origen: opcion.broker,
+      asset: opcion.asset,
+      moneda: String(opcion.moneda || '').toUpperCase() === 'ARS' ? 'ARS' : 'USD',
+      broker_destino: destino,
+    },
+  }
+}
+
 // ─── Fechas y textos ────────────────────────────────────────────────────────
 
 const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']

@@ -45,6 +45,8 @@ const LIBRES = {
     'es una lectura: manda los tickers de la lista de seguidos y vuelve su lectura técnica; no guarda nada',
   'components/cartera/MoverDeBrokerModal.jsx|/positions/traspaso/vista-previa':
     'es una lectura: arma la vista previa del pase; el servidor no guarda nada',
+  'components/cartera/MoverDeBrokerModal.jsx|/positions/tal-cual/vista-previa':
+    'es una lectura: lista las compras que se pasarían tal cual; el servidor no guarda nada',
 }
 
 function archivos(dir = SRC, out = []) {
