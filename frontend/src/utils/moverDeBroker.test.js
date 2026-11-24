@@ -167,6 +167,13 @@ describe('los renglones de la vista previa', () => {
     expect(lineaDelValor(PLAN)).toBe('Valían $250.000 ARS (USD 178,57) el 20/11/2026 · cierre de ese día')
   })
 
+  it('con precio en dólares, el monto va una sola vez y con el formato de «Te costaron»', () => {
+    const enUsd = { ...PLAN, valor_nativo: 1980.6, valor_usd: 1980.6,
+      valuacion: { ...PLAN.valuacion, moneda_precio: 'USD' } }
+    expect(lineaDelValor(enUsd)).toBe('Valían USD 1.980,60 el 20/11/2026 · cierre de ese día')
+    expect(lineaDelValor(enUsd, formateadorDeMontos(true))).toBe(`Valían ${OCULTO} el 20/11/2026 · cierre de ese día`)
+  })
+
   it('el puente: ganancia o pérdida según el signo, y siempre «no es una venta»', () => {
     const gana = lineaDelPuente(PLAN, 'Cocos', 'Balanz')
     expect(gana).toEqual([

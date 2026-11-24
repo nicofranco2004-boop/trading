@@ -240,12 +240,18 @@ export function lineaDelGasto(plan, A, fmt = formateadorDeMontos(false)) {
   return `Gasto del trámite: ${fmt.dinero(g.monto, g.moneda)} de la caja de ${g.broker || A || 'tu broker'}.`
 }
 
-/** El renglón del valor: «Valían $250.000 ARS (USD 178,57) el 20/11/2026 · cierre de ese día». */
+/** El renglón del valor: «Valían $250.000 ARS (USD 178,57) el 20/11/2026 · cierre de ese día».
+ *  Con precio en dólares no hay nada que convertir: «Valían USD 1.980,60 el …», con el mismo
+ *  formato que «Te costaron USD …» del renglón de abajo (antes decía «$1.980,60 USD (USD 1.980,60)»). */
 export function lineaDelValor(plan, fmt = formateadorDeMontos(false)) {
   if (!plan) return ''
   const v = plan.valuacion || {}
   const fuente = textoDeFuente(v.fuente, v.fecha_precio, plan.fecha)
-  return `Valían ${fmt.dinero(plan.valor_nativo, v.moneda_precio)} (${fmt.usd(plan.valor_usd)}) el ${fechaDelPase(plan.fecha)}${fuente ? ` · ${fuente}` : ''}`
+  const enDolares = ['USD', 'USDT'].includes(String(v.moneda_precio || '').toUpperCase())
+  const monto = enDolares
+    ? fmt.usd(plan.valor_usd)
+    : `${fmt.dinero(plan.valor_nativo, v.moneda_precio)} (${fmt.usd(plan.valor_usd)})`
+  return `Valían ${monto} el ${fechaDelPase(plan.fecha)}${fuente ? ` · ${fuente}` : ''}`
 }
 
 /** «pesos» | «dólares», para los textos que dicen en qué moneda escribir un precio. */
