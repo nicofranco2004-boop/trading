@@ -48,6 +48,13 @@ llegada o la salida que el pase ya anotó no entra otra vez y queda anotada en e
 historia anterior al pase frena el archivo entero (#17, #21); y en el orden inverso el
 pase frena con instrucciones (#18, #19).
 
+MOVIMIENTOS, EL CSV Y LAS COMISIONES (E9). `GET /api/movements`,
+`GET /api/export/transactions.csv` y `GET /api/insights/commissions`, por HTTP: del
+pase se ven sus dos patas (con `traspaso_id`, `contraparte` y `estado`) y el gasto, y
+nada más cambia —ni la venta a precio 0 de A ni las compras de llegada en B, cuya
+comisión se contaba dos veces—; la compra original de un lote cargado a mano que se
+pasó sigue (`trp-…`). El total de comisiones queda igual (#6, #7).
+
 Los números de las pruebas son los de la tabla F.2 de la especificación (#n).
 
 Corre con: cd backend && python3 -m pytest tests/test_mover_entre_brokers.py
@@ -1967,7 +1974,7 @@ class SinVentasNiEstadisticas(_Confirmar):
         acierto de toda la historia y `operations.csv` quedan iguales, con una venta
         real en la cuenta para que haya algo que comparar. (Las filas de
         `transactions.csv` —«TRASPASO (SALE)/(ENTRA)» en vez de COMPRA/VENTA— son de
-        la etapa E9, D.9.)"""
+        la etapa E9, D.9: `CsvDeTransacciones`.)"""
         from reporting.timeline import _compute_user_historical_win_rate
         self._historia()
         self._importar("Cocos", ["2025-04-01,COMPRA,Cocos,AAPL,5,20000,100000,,,0,ARS,compra",
@@ -4502,6 +4509,340 @@ class LaCuentaUnicaDeLasPatas(unittest.TestCase):
         sin_filtro = sum((f["valor_usd"] - f["costo_usd"]) * (1 if f["op"] == "TRASPASO_SALIDA" else -1)
                          for f in filas if f["op"] != "FEE")
         self.assertAlmostEqual(g["puente_salida_usd"] - g["puente_entrada_usd"], sin_filtro)
+
+
+
+# ── E9: Movimientos, el CSV de transacciones y las comisiones (D.9) ─────────────
+
+class _Movimientos(_Deshacer):
+    """Lo que necesitan las pruebas de E9: Movimientos (`GET /api/movements`), el CSV
+    para el contador (`GET /api/export/transactions.csv`) y el total de comisiones
+    (`GET /api/insights/commissions`), por HTTP como los pide la pantalla.
+
+    La cuenta: la historia de siempre (Cocos importó 10 NVDA el 10/01 a $30.000 con
+    $1.500 de comisión) y un lote de NVDA CARGADO A MANO en Cocos, más viejo (2 del
+    02/01 a $28.000 con $280 de comisión): el pase lo saca de `positions`, así que su
+    compra original tiene que seguir en Movimientos (D.9.2)."""
+
+    def _escenario(self):
+        self._historia()
+        return self._lote_a_mano("Cocos", "NVDA", 2, 28000, "2025-01-02", commissions=280)
+
+    def _movs(self):
+        return self._get("/api/movements").json()
+
+    def _csv(self):
+        return list(csv.DictReader(io.StringIO(self._get("/api/export/transactions.csv").text)))
+
+    def _comisiones(self):
+        return self._get("/api/insights/commissions").json()
+
+    @staticmethod
+    def _como_se_ve(m):
+        """Una fila de Movimientos como la ve la persona, sin ids."""
+        return (m["type"], str(m["date"] or "")[:10], m["broker"], m["asset"] or "",
+                round(float(m["amount_usd"] or 0), 6), round(float(m["fees_usd"] or 0), 6),
+                round(float(m["quantity"] or 0), 6))
+
+    @staticmethod
+    def _partes(movs):
+        """(las dos patas, el gasto del trámite, las compras originales de lotes
+        cargados a mano que se pasaron, el resto)."""
+        patas = [m for m in movs if m["type"] in (OP_TRASPASO_SALIDA, OP_TRASPASO_ENTRADA)]
+        gasto = [m for m in movs if m["type"] == OP_FEE and m.get("traspaso_id")]
+        pasadas = [m for m in movs if str(m["id"]).startswith("trp-")]
+        resto = [m for m in movs if m not in patas and m not in gasto and m not in pasadas]
+        return patas, gasto, pasadas, resto
+
+    @staticmethod
+    def _total_como_la_pantalla(movs):
+        """El total de comisiones como lo suma la pantalla (`commTotalUsd`,
+        Operations.jsx): las FEE sueltas más la comisión de cada fila que no es FEE
+        ni IMPUESTO."""
+        return (sum(float(m["amount_usd"] or 0) for m in movs if m["type"] == "FEE")
+                + sum(float(m["fees_usd"] or 0) for m in movs
+                      if m["type"] not in ("FEE", "IMPUESTO")))
+
+
+class MovimientosDelPase(_Movimientos):
+
+    def test_movimientos_muestran_las_patas_y_no_las_compras_internas(self):
+        """#6 (Movimientos, D.9.1 y D.9.2). Después del pase (todo, con un gasto de
+        $5.000), Movimientos muestra las dos patas —«Pase (salió)» en Cocos y «Pase
+        (entró)» en Balanz, con lo que valían ese día, el cociente exacto de sus pesos,
+        `traspaso_id`, `contraparte` y `estado`— y el gasto, y NADA más cambia: sin la
+        venta a precio 0 de Cocos ni las compras de llegada en Balanz, y con la compra
+        original del lote cargado a mano (ahora `trp-…`, la misma fila que antes era
+        `pos-…`). La compra pasada no se borra suelta (409 con el camino para deshacer
+        el pase) y el rebuild real no cambia nada."""
+        lote = self._escenario()
+        antes = self._movs()
+        self.assertEqual(sorted(str(m["id"]).split("-")[0] for m in antes if m["asset"] == "NVDA"),
+                         ["pos", "tx"], "control: la compra importada y la cargada a mano")
+        com_antes = self._comisiones()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, gasto=5000)
+        tid = p["traspaso_id"]
+        despues = self._movs()
+        patas, gasto, pasadas, resto = self._partes(despues)
+
+        # Nada inventado y nada perdido: sin las filas del pase, lo de antes.
+        self.assertEqual(sorted(map(self._como_se_ve, resto + pasadas)),
+                         sorted(map(self._como_se_ve, antes)))
+        self.assertEqual([m for m in despues if m["type"] in ("BUY", "SELL")
+                          and str(m["date"])[:10] == FECHA_PASE], [],
+                         "una compra o una venta interna del pase llegó a Movimientos")
+
+        # Las dos patas.
+        self.assertEqual(sorted((m["type"], m["broker"], m["contraparte"], m["estado"]) for m in patas),
+                         [(OP_TRASPASO_ENTRADA, "Balanz", "Cocos", "vivo"),
+                          (OP_TRASPASO_SALIDA, "Cocos", "Balanz", "vivo")])
+        for m in patas:
+            self.assertEqual((str(m["id"])[:3], m["date"], m["asset"], m["quantity"], m["currency"],
+                              m["traspaso_id"], m["borrable"], m["fees_usd"], m["cobro"]),
+                             ("tx-", FECHA_PASE, "NVDA", 12.0, "ARS", tid, False, 0, None))
+            self.assertAlmostEqual(m["amount_usd"], p["V"], places=9)
+            self.assertAlmostEqual(m["fx_to_usd"], p["V_ars"] / p["V"], places=9)
+            # La vista en pesos (amount_usd × el dólar sellado) da los pesos de la pata.
+            self.assertAlmostEqual(m["amount_usd"] * m["fx_to_usd"], 12 * PRECIO_PASE, places=6)
+            self.assertAlmostEqual(m["unit_price"], PRECIO_PASE, places=6)
+
+        # El gasto del trámite: una comisión de Cocos, que no se borra suelta.
+        self.assertEqual([(g["broker"], g["traspaso_id"], g["borrable"]) for g in gasto],
+                         [("Cocos", tid, False)])
+        self.assertAlmostEqual(gasto[0]["amount_usd"], p["gasto_usd"], places=9)
+
+        # La compra original del lote cargado a mano.
+        self.assertEqual([{k: c[k] for k in ("id", "type", "date", "broker", "asset", "quantity",
+                                             "unit_price", "currency", "source", "traspaso_id",
+                                             "borrable", "notes")} for c in pasadas],
+                         [{"id": f"trp-{tid}-0", "type": "BUY", "date": "2025-01-02",
+                           "broker": "Cocos", "asset": "NVDA", "quantity": 2.0,
+                           "unit_price": 28000.0, "currency": "ARS", "source": "traspaso",
+                           "traspaso_id": tid, "borrable": False,
+                           "notes": "La pasaste a Balanz el 16/06/2025"}])
+        self.assertNotIn(f"pos-{lote['id']}", {m["id"] for m in despues})
+
+        # Las comisiones: las de antes más el gasto (una fila más).
+        com = self._comisiones()
+        self.assertAlmostEqual(com["total_usd"], com_antes["total_usd"] + p["gasto_usd"], places=4)
+        self.assertEqual(com["count"], com_antes["count"] + 1)
+        self.assertAlmostEqual(self._total_como_la_pantalla(despues), com["total_usd"], places=4)
+
+        # Borrar la compra pasada: 409 con el camino para deshacer el pase; nada escrito.
+        tablas = self._tablas()
+        r = self.http.delete(f"/api/movements/{pasadas[0]['id']}", headers=self.h)
+        self.assertEqual((r.status_code, r.json()["detail"]),
+                         (409, traspaso_a_mano.MSG_DESHACE_EL_PASE), r.text)
+        self.assertEqual(self._tablas(), tablas)
+
+        # El rebuild real no cambia nada de lo que se ve.
+        self._rebuild()
+        self.assertEqual(sorted(map(self._como_se_ve, self._movs())),
+                         sorted(map(self._como_se_ve, despues)))
+
+    def test_contraparte_y_estado_siguen_al_pase(self):
+        """D.9.1: `contraparte` es el nombre de HOY de la otra cuenta (renombrar B lo
+        cambia en las patas, en el CSV y en la compra pasada) y `estado` el del pase:
+        desfasado (el detector es de E10; acá se marca a mano, como en
+        `test_desfasado_se_ve_y_se_deshace`), incompleto si se borra B (queda la pata
+        de A y la compra pasada, que es de A). Deshecho el pase, no queda ninguna fila
+        suya y la compra cargada a mano vuelve a ser una posición abierta."""
+        self._escenario()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        tid = p["traspaso_id"]
+
+        def patas():
+            return {m["type"]: m for m in self._movs() if m["type"].startswith("TRASPASO")}
+
+        r = self.http.put(f"/api/brokers/{self._id_broker('Balanz')}", headers=self.h,
+                          json={"name": "Balanz SA", "currency": "ARS"})
+        self.assertEqual(r.status_code, 200, r.text)
+        ps_ = patas()
+        self.assertEqual({op: (m["broker"], m["contraparte"]) for op, m in ps_.items()},
+                         {OP_TRASPASO_SALIDA: ("Cocos", "Balanz SA"),
+                          OP_TRASPASO_ENTRADA: ("Balanz SA", "Cocos")})
+        self.assertEqual(sorted(f["Notas"] for f in self._csv() if f["Tipo"].startswith("TRASPASO")),
+                         [f"llegaron desde Cocos · costo original US$ {p['C']:.2f}",
+                          f"pasaron a Balanz SA · costo original US$ {p['C']:.2f}"])
+        self.assertEqual([m["notes"] for m in self._movs() if str(m["id"]).startswith("trp-")],
+                         ["La pasaste a Balanz SA el 16/06/2025"])
+
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE traspasos_a_mano SET desfasado_at=datetime('now'), "
+                         "desfasado_motivo='origen' WHERE id=?", (tid,))
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual({op: m["estado"] for op, m in patas().items()},
+                         {OP_TRASPASO_SALIDA: "desfasado", OP_TRASPASO_ENTRADA: "desfasado"})
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE traspasos_a_mano SET desfasado_at=NULL, desfasado_motivo=NULL "
+                         "WHERE id=?", (tid,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        r = self.http.delete(f"/api/brokers/{self._id_broker('Balanz SA')}",
+                             params={"force": "true"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual({op: (m["broker"], m["contraparte"], m["estado"]) for op, m in patas().items()},
+                         {OP_TRASPASO_SALIDA: ("Cocos", "Balanz SA", "incompleto")})
+        self.assertEqual([m["id"] for m in self._movs() if str(m["id"]).startswith("trp-")],
+                         [f"trp-{tid}-0"])
+
+        self._deshacer_ok(tid)
+        movs = self._movs()
+        self.assertEqual([m["id"] for m in movs if m.get("traspaso_id")
+                          or m["type"].startswith("TRASPASO")], [])
+        self.assertEqual([(m["type"], m["broker"], m["quantity"]) for m in movs
+                          if str(m["id"]).startswith("pos-")], [("BUY", "Cocos", 2.0)])
+
+    def test_borrar_a_saca_la_compra_pasada_y_deja_la_llegada(self):
+        """Con A borrado (`?force=true`), el pase queda incompleto del lado de B: la pata
+        de entrada sigue, con `contraparte` = la A que ya no existe (de la receta), y la
+        compra pasada se va con A (era una compra de A: `lotes_a_mano_que_salieron`
+        sólo cuenta los pases cuyo lote de salida sigue confirmado)."""
+        self._escenario()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        r = self.http.delete(f"/api/brokers/{self._id_broker('Cocos')}", params={"force": "true"},
+                             headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        movs = self._movs()
+        self.assertEqual([(m["type"], m["broker"], m["contraparte"], m["estado"], m["traspaso_id"])
+                          for m in movs if m["type"].startswith("TRASPASO")],
+                         [(OP_TRASPASO_ENTRADA, "Balanz", "Cocos", "incompleto", p["traspaso_id"])])
+        self.assertEqual([m for m in movs if str(m["id"]).startswith("trp-")], [])
+        self.assertEqual([m for m in movs if m["broker"] == "Cocos"], [])
+
+
+class ComisionesIgualesAntesYDespues(_Movimientos):
+
+    def test_kpi_comisiones_igual_antes_y_despues(self):
+        """#7. `/api/insights/commissions` igual antes y después del pase (todo, sin
+        gasto), también con el lote cargado a mano movido (su comisión sigue en la fila
+        `trp-`): la comisión de la compra de llegada en Balanz es la COPIA de la de
+        Cocos y antes se contaba dos veces. Igual después del rebuild real y del
+        deshacer. Y la pantalla, que suma las mismas filas, da lo mismo, igual que el
+        diagnóstico de admin que «espeja» este total (D.9.5: sin la compra de llegada)."""
+        self._escenario()
+        antes = self._comisiones()
+        self.assertEqual(antes["count"], 2, "control: la comisión importada y la cargada a mano")
+
+        def diagnostico():
+            return self._get(f"/api/admin/commissions-debug?user_id={self.uid}").json()
+
+        diag_antes = diagnostico()
+        self.assertGreater(diag_antes["comisiones_usd"], 0)
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        self.assertEqual([l["origen"] for l in p["receta"]["lotes"]], ["a_mano", "importado"])
+        self.assertEqual(self._comisiones(), antes)
+        self.assertEqual(diagnostico()["comisiones_usd"], diag_antes["comisiones_usd"])
+        self.assertAlmostEqual(self._total_como_la_pantalla(self._movs()), antes["total_usd"], places=4)
+        self._rebuild()
+        self.assertEqual(self._comisiones(), antes)
+        self._deshacer_ok(p["traspaso_id"])
+        self.assertEqual(self._comisiones(), antes)
+
+    def test_parte_de_un_lote_cargado_a_mano(self):
+        """#7, variante: se pasa 1 de los 2 cargados a mano. La compra se ve en dos
+        renglones —lo que quedó en Cocos (`pos-`) y lo que se pasó (`trp-`), con la
+        mitad de la comisión cada uno— y el total de comisiones no cambia. (`count`
+        sube uno: es la misma compra en dos renglones.)"""
+        lote = self._escenario()
+        antes = self._comisiones()
+        fila_antes = [m for m in self._movs() if m["id"] == f"pos-{lote['id']}"][0]
+        self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=1)
+        despues = self._comisiones()
+        self.assertAlmostEqual(despues["total_usd"], antes["total_usd"], places=4)
+        self.assertEqual(despues["count"], antes["count"] + 1)
+        dos = [m for m in self._movs() if m["type"] == "BUY" and str(m["date"])[:10] == "2025-01-02"]
+        self.assertEqual(sorted((str(m["id"]).split("-")[0], m["quantity"]) for m in dos),
+                         [("pos", 1.0), ("trp", 1.0)])
+        for campo in ("amount_usd", "fees_usd"):
+            self.assertAlmostEqual(sum(m[campo] for m in dos), fila_antes[campo], places=9)
+
+
+class CsvDeTransacciones(_Movimientos):
+
+    def test_transactions_csv_con_las_patas_y_sin_compras_ni_ventas_de_mas(self):
+        """#6 (la parte de E9, D.9.3 y D.9.4). `transactions.csv` después del pase (con
+        gasto): una fila «TRASPASO (SALE)» en Cocos y una «TRASPASO (ENTRA)» en Balanz,
+        con lo que valían en pesos (12 × $45.000), el precio del día, sin comisión y
+        las notas «pasaron a Balanz / llegaron desde Cocos · costo original US$ C»;
+        el gasto como COMISIÓN; ni la VENTA a precio 0 ni las COMPRAS de llegada. El
+        resto, igual que antes: la compra del lote cargado a mano sigue (sus notas
+        dicen ahora a dónde se pasó)."""
+        self._escenario()
+        antes = self._csv()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, gasto=5000)
+        despues = self._csv()
+        patas = [f for f in despues if f["Tipo"].startswith("TRASPASO")]
+        campos = ("Fecha", "Tipo", "Broker", "Activo", "Cantidad", "Precio unit.", "Monto",
+                  "Moneda", "Comisiones", "Notas")
+        costo = f"{p['C']:.2f}"
+        self.assertEqual(sorted(tuple(f[c] for c in campos) for f in patas), [
+            (FECHA_PASE, "TRASPASO (ENTRA)", "Balanz", "NVDA", "12.0", "45000.0", "540000.0",
+             "ARS", "0", f"llegaron desde Cocos · costo original US$ {costo}"),
+            (FECHA_PASE, "TRASPASO (SALE)", "Cocos", "NVDA", "12.0", "45000.0", "540000.0",
+             "ARS", "0", f"pasaron a Balanz · costo original US$ {costo}")])
+        self.assertEqual([f for f in despues if f["Tipo"] in ("COMPRA", "VENTA")
+                          and f["Fecha"] == FECHA_PASE], [])
+        gasto = [f for f in despues if f["Tipo"] == "COMISIÓN" and f["Fecha"] == FECHA_PASE]
+        self.assertEqual([(f["Broker"], f["Monto"], f["Moneda"]) for f in gasto],
+                         [("Cocos", "5000.0", "ARS")])
+        resto = [f for f in despues if f not in patas and f not in gasto]
+
+        def sin_notas(filas):
+            return sorted(tuple(f[c] for c in campos if c != "Notas") for f in filas)
+
+        self.assertEqual(sin_notas(resto), sin_notas(antes))
+        self.assertEqual([f["Notas"] for f in antes if f["Fecha"] == "2025-01-02"],
+                         ["manual · posición abierta"])
+        self.assertEqual([f["Notas"] for f in resto if f["Fecha"] == "2025-01-02"],
+                         ["manual · La pasaste a Balanz el 16/06/2025"])
+        self.assertEqual(sorted(f["Notas"] for f in resto if f["Fecha"] != "2025-01-02"),
+                         sorted(f["Notas"] for f in antes if f["Fecha"] != "2025-01-02"))
+
+    def test_lote_en_dolares_valuado_en_pesos(self):
+        """Un CEDEAR comprado en dólares (en «Cocos · USD») se valúa con su precio en
+        PESOS: la pata guarda `unit_price` = $45.000 y `currency` = USD. Movimientos y
+        el CSV muestran el monto en la moneda de los lotes (US$ V) y el precio por
+        título en esa MISMA moneda (V / 3), así cantidad × precio = monto. Con la
+        comisión de la compra en dólares, el total de comisiones no cambia."""
+        self._broker("Cocos · USD", "USDT", padre="Cocos")
+        con_tipo = HDR.rstrip("\n") + ",asset_type\n"
+        self._importar("Cocos · USD", [
+            "2025-01-06,DEPOSITO,Cocos · USD,,,,500,,,,USD,dep,",
+            "2025-01-25,COMPRA,Cocos · USD,NVDA,3,14,42,,,0.5,USD,compra,CEDEAR"], hdr=con_tipo)
+        com_antes = self._comisiones()
+        p = self._aplicar(self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, moneda="USD",
+                                       precio_manual=PRECIO_PASE))
+        salida = [f for f in p["filas"] if f["operation_type"] == OP_TRASPASO_SALIDA]
+        self.assertEqual([(f["currency"], f["unit_price"]) for f in salida], [("USD", PRECIO_PASE)],
+                         "control: el precio guardado es en pesos y los lotes en dólares")
+        V = p["V"]
+        self.assertAlmostEqual(V, 3 * PRECIO_PASE / dolar(FECHA_PASE), places=6)
+        patas = [m for m in self._movs() if m["type"].startswith("TRASPASO")]
+        self.assertEqual(sorted((m["type"], m["broker"], m["contraparte"]) for m in patas),
+                         [(OP_TRASPASO_ENTRADA, "Balanz · USD", "Cocos"),
+                          (OP_TRASPASO_SALIDA, "Cocos · USD", "Balanz")])
+        for m in patas:
+            self.assertEqual((m["currency"], m["quantity"]), ("USD", 3.0))
+            self.assertAlmostEqual(m["amount_usd"], V, places=9)
+            self.assertAlmostEqual(m["unit_price"], V / 3, places=9)
+            self.assertAlmostEqual(m["fx_to_usd"], p["V_ars"] / V, places=9)
+        filas = [f for f in self._csv() if f["Tipo"].startswith("TRASPASO")]
+        self.assertEqual(len(filas), 2)
+        for f in filas:
+            self.assertEqual((f["Moneda"], f["Cantidad"], f["Monto"], f["Precio unit."]),
+                             ("USD", "3.0", str(round(V, 2)), str(round(V / 3, 6))))
+            self.assertAlmostEqual(float(f["Cantidad"]) * float(f["Precio unit."]),
+                                   float(f["Monto"]), delta=0.01)
+        self.assertEqual(self._comisiones(), com_antes)
 
 
 if __name__ == "__main__":

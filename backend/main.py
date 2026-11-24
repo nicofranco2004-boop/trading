@@ -15,7 +15,7 @@ from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 # Las filas importadas que CUENTAN (confirmadas y sin lápida). Va arriba de todo:
 # `init_db()` corre al importar este módulo y su migración de flujos manuales ya
 # las lee, mucho antes del bloque de imports de `importing` más abajo.
-from importing.schema import TX_VIVAS, tx_vivas, estado_inicial
+from importing.schema import TX_VIVAS, tx_vivas, estado_inicial, OPERATION_TYPES_INTERNOS
 # Las patas de capital y el puente de un pase entre brokers del usuario («Mover a
 # otro broker»): una sola lectura del registro, que comparten el recálculo del mes,
 # /api/monthly, Movimientos y los reportes. Va arriba por lo mismo que TX_VIVAS:
@@ -21864,6 +21864,13 @@ def get_movements(uid: int = Depends(get_effective_user)):
          cargados a mano. Fecha aproximada al día 15 del mes.
       4. positions abiertas manuales   → compras sin venta todavía
          (BUY puro, sin pair)
+      5. la compra original de un lote cargado a mano que un pase a otro
+         broker sacó de su broker (`trp-…`, de la receta del pase)
+
+    Un pase entre brokers del usuario («Mover a otro broker») se ve con sus dos
+    patas (TRASPASO_SALIDA / TRASPASO_ENTRADA, con `traspaso_id`, `contraparte` y
+    `estado`) y el gasto del trámite; las compras y ventas internas que escribe
+    para mover los lotes no aparecen (D.9).
 
     Cada movement devuelve:
       { id, kind, date, type, broker, asset, quantity, unit_price,
@@ -21876,7 +21883,8 @@ def get_movements(uid: int = Depends(get_effective_user)):
         (solo manual lo es; los demás vienen de imports o agregados).
       - amount_usd: monto USD canónico. Para BUY/SELL = qty × price (o
         pnl si solo P&L). Para flujos = el monto neto.
-      - id: único dentro del scope (op-{id}, tx-{id}, me-{id}, pos-{id}).
+      - id: único dentro del scope (op-{id}, tx-{id}, me-{id}, pos-{id},
+        trp-{pase}-{k}).
 
     NO incluye:
       - Cobranzas de bonos (sub-tipo de operations.notes con kind '_bond_*')
@@ -22059,6 +22067,92 @@ def _tipo_de_fila_importada(d) -> str:
             op_type, d["asset_symbol"], d["asset_type"], d["notes"]):
         return "AMORTIZATION"
     return op_type
+
+
+def _compra_a_mano_en_usd(invested, commissions, currency, tc_compra, tc_blue):
+    """(monto, comisión) en dólares de una compra CARGADA A MANO, como la muestra
+    Movimientos: la posición abierta (`pos-`) y la compra original de un lote que se
+    pasó a otro broker (`trp-`). Una sola cuenta para las dos: lo que quedó en A más
+    lo que se pasó tiene que dar la compra de antes, también en el KPI de comisiones.
+
+    La comisión va por el MISMO dólar que el invested de su propia fila: las dos
+    están en la moneda de la posición. Antes sólo se convertía `invested` y la
+    comisión salía en pesos rotulada en dólares, que es lo que inflaba el KPI
+    "Comisiones"."""
+    monto = _safe_float_or_none(invested) or 0
+    comision = _safe_float_or_none(commissions) or 0
+    if (currency or "USD").upper() == "ARS":
+        tc = _safe_float_or_none(tc_compra)
+        div = tc if (tc and tc > 0) else tc_blue
+        if div and div > 0:
+            return monto / div, comision / div
+    return monto, comision
+
+
+def _movimiento_de_pata_de_pase(d: dict, lado) -> dict:
+    """Una pata de un pase entre brokers del usuario (TRASPASO_SALIDA en A,
+    TRASPASO_ENTRADA en B) como fila de Movimientos (D.9.1).
+
+    `amount_usd` es lo que valían los títulos ese día (V), y `fx_to_usd` el cociente
+    de los pesos y los dólares de la propia pata: la vista en pesos (que multiplica
+    `amount_usd` por el dólar sellado si la fila es en pesos, useHistoricalMoney.js)
+    muestra los pesos de la pata, no V al dólar del día. No tiene comisión (no se
+    contó nada dos veces) ni se borra suelta: se deshace el pase entero
+    (`borrable: False`; el botón «Deshacer pase» usa `traspaso_id`). `contraparte` es
+    la otra cuenta (el nombre de hoy) y `estado`, cómo está el pase (vivo, incompleto
+    o desfasado), de `traspaso_a_mano.lados_de_los_pases`."""
+    op = (d.get("operation_type") or "").upper()
+    m = _traspaso_a_mano.monto_de_la_pata(d)
+    return {
+        "id": f"tx-{d['id']}",
+        "kind": "movement",
+        "date": d.get("date"),
+        "type": op,
+        "broker": d.get("broker") or "",
+        "asset": d.get("asset_symbol") or d.get("asset_name") or "",
+        "quantity": _safe_float_or_none(d.get("quantity")),
+        "unit_price": m["precio"],
+        "amount_usd": m["usd"],
+        "currency": (d.get("currency") or "USD").upper(),
+        "fx_to_usd": (m["ars"] / m["usd"]) if (m["usd"] > 0 and m["ars"] > 0) else None,
+        "fees_usd": 0,
+        "notes": d.get("notes") or "",
+        "source": "traspaso",
+        "ref_id": d["id"],
+        "transfer_out": False,
+        "traspaso_id": d.get("traspaso_id"),
+        "borrable": False,
+        "contraparte": _traspaso_a_mano.contraparte_de_la_pata(lado, op),
+        "estado": (lado or {}).get("estado"),
+    }
+
+
+def _movimiento_de_compra_pasada(lote: dict, lado, tc_blue) -> dict:
+    """La compra original de un lote CARGADO A MANO que un pase sacó de A, como fila
+    de Movimientos (D.9.2). `lote` es un elemento de
+    `traspaso_a_mano.lotes_a_mano_que_salieron` (la parte que se movió, de la
+    receta). El id `trp-{pase}-{k}` es estable (k = su lugar en la receta)."""
+    cur = (lote.get("currency") or "USD").upper()
+    monto, comision = _compra_a_mano_en_usd(lote.get("invested"), lote.get("commissions"),
+                                            cur, lote.get("tc_compra"), tc_blue)
+    return {
+        "id": f"trp-{lote['traspaso_id']}-{lote['k']}",
+        "kind": "movement",
+        "date": lote.get("entry_date") or "",
+        "type": "BUY",
+        "broker": lote.get("broker") or "",
+        "asset": lote.get("asset") or "",
+        "quantity": lote.get("cantidad"),
+        "unit_price": _safe_float_or_none(lote.get("buy_price")),
+        "amount_usd": monto,
+        "currency": cur,
+        "fees_usd": comision,
+        "notes": _traspaso_a_mano.nota_de_compra_pasada(lote, lado),
+        "source": "traspaso",
+        "ref_id": None,
+        "traspaso_id": lote["traspaso_id"],
+        "borrable": False,
+    }
 
 
 def _build_movements(uid: int):
@@ -22276,15 +22370,30 @@ def _build_movements(uid: int):
             f"""SELECT t.id, t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
                       t.currency, t.fees, t.notes, t.gross_amount_usd, t.transfer_out,
-                      t.asset_type
+                      t.asset_type, t.traspaso_id, t.valor_usd, t.valor_ars
                 FROM {tx_vivas('t')}
                 WHERE b.user_id = ?
                 ORDER BY {_por_fecha(desc=True, alias="t")}""",
             (uid,),
         ).fetchall()
+        # Hacia dónde fue cada pase y cómo está (D.9.1): se lee una vez, y sólo si
+        # hay alguna fila de un pase (quien nunca hizo uno no paga la consulta).
+        _lados = (_traspaso_a_mano.lados_de_los_pases(conn, uid)
+                  if any(r["traspaso_id"] for r in tx_rows) else {})
         for r in tx_rows:
             d = dict(r)
+            _tid = d.get("traspaso_id")
+            # Las compras y ventas que un pase escribió para mover los lotes no son
+            # operaciones de la persona (D.9.1): la venta a precio 0 de A (con su
+            # «Reabrir posición») y la copia de cada compra en B, cuya comisión se
+            # contaba dos veces —la compra original en A sigue acá— en el KPI y en
+            # /api/insights/commissions, que suma estas mismas filas.
+            if _traspaso_a_mano.es_fila_interna_del_pase(d.get("operation_type"), _tid):
+                continue
             op_type = _tipo_de_fila_importada(d)
+            if op_type in OPERATION_TYPES_INTERNOS:
+                movements.append(_movimiento_de_pata_de_pase(d, _lados.get(_tid)))
+                continue
             # La conversión importada casi nunca trae moneda (en el backup de prod
             # del 2026-08-16, 533 de 534 sin `currency`): caía al `else` de abajo y
             # mostraba los PESOS como dólares (comprar US$1.000 → "US$1.400.000").
@@ -22318,7 +22427,12 @@ def _build_movements(uid: int):
             else:
                 amount_usd = amt
                 fees_usd = fees
+            # El gasto del trámite de un pase (la FEE con `traspaso_id`) es una comisión
+            # como cualquiera (cuenta en el KPI), pero no se borra suelta: se deshace el
+            # pase entero (D.9.1, D.10).
+            _del_pase = {"traspaso_id": _tid, "borrable": False} if _tid else {}
             movements.append({
+                **_del_pase,
                 "id": f"tx-{d['id']}",
                 "kind": "movement",
                 "date": d.get("date"),
@@ -22427,22 +22541,9 @@ def _build_movements(uid: int):
         ).fetchall()
         for r in pos_rows:
             d = dict(r)
-            qty = _safe_float_or_none(d.get("quantity"))
-            buy_p = _safe_float_or_none(d.get("buy_price"))
-            invested = _safe_float_or_none(d.get("invested")) or 0
             cur = (d.get("currency") or "USD").upper()
-            fees_pos = _safe_float_or_none(d.get("commissions")) or 0
-            amount_usd = invested
-            # La comisión va por el MISMO dólar que el invested de su propia fila:
-            # las dos están en la moneda de la posición. Antes sólo se convertía
-            # `invested` y la comisión salía en pesos rotulada en dólares, que es
-            # lo que inflaba el KPI "Comisiones".
-            if cur == "ARS":
-                tc_compra = _safe_float_or_none(d.get("tc_compra"))
-                div = tc_compra if (tc_compra and tc_compra > 0) else tc_blue
-                if div and div > 0:
-                    amount_usd = invested / div
-                    fees_pos = fees_pos / div
+            amount_usd, fees_pos = _compra_a_mano_en_usd(
+                d.get("invested"), d.get("commissions"), cur, d.get("tc_compra"), tc_blue)
             movements.append({
                 "id": f"pos-{d['id']}",
                 "kind": "movement",
@@ -22450,8 +22551,8 @@ def _build_movements(uid: int):
                 "type": "BUY",
                 "broker": d.get("broker") or "",
                 "asset": d.get("asset") or "",
-                "quantity": qty,
-                "unit_price": buy_p,
+                "quantity": _safe_float_or_none(d.get("quantity")),
+                "unit_price": _safe_float_or_none(d.get("buy_price")),
                 "amount_usd": amount_usd,
                 "currency": cur,
                 "fees_usd": fees_pos,
@@ -22460,6 +22561,20 @@ def _build_movements(uid: int):
                 "ref_id": d["id"],
                 "is_open_position": True,
             })
+
+        # ── 5) La compra original de un lote cargado a mano que se pasó ─────
+        # El pase lo sacó de `positions` de A (en B llega como una compra del pase,
+        # que no se muestra), así que sin esto la compra desaparecía de Movimientos
+        # —y su comisión del KPI—. Sale de la receta (D.9.2), con la parte que se
+        # movió y la misma cuenta que una posición manual abierta: lo que quedó en A
+        # (si el pase se llevó una parte) más esta fila suman la compra de antes. No
+        # se borra (`borrable: False`): para cambiarla, se deshace el pase.
+        _lados_mano = None
+        for l in _traspaso_a_mano.lotes_a_mano_que_salieron(conn, uid):
+            if _lados_mano is None:
+                _lados_mano = _traspaso_a_mano.lados_de_los_pases(conn, uid)
+            movements.append(_movimiento_de_compra_pasada(l, _lados_mano.get(l["traspaso_id"]),
+                                                          tc_blue))
 
     finally:
         conn.close()
@@ -24365,6 +24480,12 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
                 elif mid.startswith("tx-"):
                     # Importado: cash-flow → reverso clásico; compra/venta → cascada FIFO.
                     out.update(_route_tx_delete(conn, uid, mid) or {})
+                elif mid.startswith("trp-"):
+                    # La compra original de un lote cargado a mano que se pasó a otro
+                    # broker (D.9.2): vive en la receta del pase, no en una tabla que se
+                    # pueda borrar. Se deshace el pase entero (y el lote vuelve a A, donde
+                    # sí se borra). La pantalla no ofrece el tacho (`borrable: False`).
+                    raise HTTPException(409, _traspaso_a_mano.MSG_DESHACE_EL_PASE)
                 else:
                     since_date, brokers, entrada, antes = _delete_one_movement(conn, uid, mid)
                     _cascade_after_movement_delete(conn, uid, since_date, brokers,
@@ -24708,6 +24829,8 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
       • Dividendos cobrados (de imports)
       • Intereses cobrados  (de imports)
       • Comisiones aisladas (de imports)
+      • Pases de títulos entre brokers del usuario: «TRASPASO (SALE)» y
+        «TRASPASO (ENTRA)», sin la venta ni las compras internas del pase
 
     Ordenado por fecha DESC (más reciente primero).
 
@@ -24725,12 +24848,23 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
         tx_rows = conn.execute(
             f"""SELECT t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
-                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.asset_type
+                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.asset_type,
+                      t.traspaso_id, t.valor_usd, t.valor_ars, t.costo_usd
                FROM {tx_vivas('t')}
                WHERE b.user_id = ?""",
             (uid,),
         ).fetchall()
+        _lados = (_traspaso_a_mano.lados_de_los_pases(conn, uid)
+                  if any(r["traspaso_id"] for r in tx_rows) else {})
         for r in tx_rows:
+            # Un pase entre brokers del usuario (D.9.3): ni la venta a precio 0 de A
+            # ni la copia de cada compra en B son operaciones para el contador. Van
+            # sus dos patas, «TRASPASO (SALE)» / «TRASPASO (ENTRA)», con lo que valían.
+            if _traspaso_a_mano.es_fila_interna_del_pase(r["operation_type"], r["traspaso_id"]):
+                continue
+            if (r["operation_type"] or "").upper() in OPERATION_TYPES_INTERNOS:
+                rows.append(_fila_csv_de_pata_de_pase(r, _lados.get(r["traspaso_id"])))
+                continue
             if (r["operation_type"] or "").upper() in _TIPOS_CONVERSION:
                 rows.append(_fila_csv_de_conversion(
                     _leer_conversion_importada(r), fecha=r["date"], broker=r["broker"],
@@ -24866,6 +25000,26 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
                     "" if has_date else " (sin fecha registrada)"
                 ),
             })
+        # La compra original de un lote cargado a mano que un pase sacó de A (D.9.3,
+        # la misma fila que Movimientos): sin ella, el contador dejaba de ver esa
+        # compra (en B llega como una compra del pase, que no se exporta).
+        _lados_mano = None
+        for l in _traspaso_a_mano.lotes_a_mano_que_salieron(conn, uid):
+            if _lados_mano is None:
+                _lados_mano = _traspaso_a_mano.lados_de_los_pases(conn, uid)
+            rows.append({
+                "fecha": l["entry_date"] or "",
+                "tipo": "COMPRA",
+                "broker": l["broker"] or "",
+                "activo": l["asset"] or "",
+                "cantidad": l["cantidad"],
+                "precio_unitario": l["buy_price"],
+                "monto": l["invested"],
+                "moneda": l["currency"] or "USD",
+                "comisiones": l["commissions"] or 0,
+                "notas": "manual · " + _traspaso_a_mano.nota_de_compra_pasada(
+                    l, _lados_mano.get(l["traspaso_id"]), con_notas=False),
+            })
 
         # ── 4) Monthly entries: SÓLO lo cargado a mano, agregado por mes ─────
         # Antes exportaba el TOTAL del mes, que ya incluye lo importado: un
@@ -24907,7 +25061,8 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
     # ordena después de todo lo fechado (DESC).
     _TYPE_ORDER = {"COMPRA": 0, "VENTA": 1, "DEPÓSITO": 2, "RETIRO": 3,
                    "DIVIDENDO": 4, "INTERÉS": 5, "AMORTIZACIÓN": 5, "COMISIÓN": 6,
-                   "COMPRA USD": 7, "VENTA USD": 8}
+                   "COMPRA USD": 7, "VENTA USD": 8,
+                   "TRASPASO (SALE)": 9, "TRASPASO (ENTRA)": 10}
     def _sort_key(r):
         # En modo DESC, "0000-..." quedaría al final (el menor). Pero queremos
         # que las sin fecha queden DESPUÉS de las fechadas — así que usamos un
@@ -24945,7 +25100,31 @@ def _humanize_tx_type(t: str) -> str:
         "INTEREST":  "INTERÉS",
         "AMORTIZATION": "AMORTIZACIÓN",
         "FEE":       "COMISIÓN",
+        # Las dos patas de un pase de títulos entre brokers del usuario (D.9.4).
+        "TRASPASO_SALIDA":  "TRASPASO (SALE)",
+        "TRASPASO_ENTRADA": "TRASPASO (ENTRA)",
     }.get(t, t)
+
+
+def _fila_csv_de_pata_de_pase(r, lado) -> dict:
+    """Una pata de un pase como fila de `transactions.csv` (D.9.3). El monto es lo
+    que valían los títulos ese día en la moneda de los lotes (los pesos de la pata si
+    son en pesos, los dólares si no), con su moneda al lado y el precio por título en
+    esa misma moneda (cantidad × precio = monto, como el resto del archivo). Las
+    notas dicen hacia dónde pasaron y cuánto costaron."""
+    m = _traspaso_a_mano.monto_de_la_pata(r)
+    return {
+        "fecha": r["date"],
+        "tipo": _humanize_tx_type(r["operation_type"]),
+        "broker": r["broker"] or "",
+        "activo": r["asset_symbol"] or r["asset_name"] or "",
+        "cantidad": r["quantity"],
+        "precio_unitario": round(m["precio"], 6) if m["precio"] is not None else "",
+        "monto": round(m["nativo"], 2),
+        "moneda": r["currency"] or "",
+        "comisiones": 0,
+        "notas": _traspaso_a_mano.nota_csv_de_la_pata(r, lado),
+    }
 
 
 @app.get("/api/export/monthly.csv")
@@ -30094,10 +30273,14 @@ def admin_commissions_debug(email: str = "", user_id: int = 0,
         # Total EXACTO como get_commissions_total (comisiones = FEE.gross + trade.fees).
         total_com = 0.0
         total_tax = 0.0
+        # Sin la COMPRA de llegada de un pase entre brokers: es la copia de una compra
+        # que ya está (en A), y `_build_movements` no la muestra (D.9.5).
         for r in conn.execute(
             """SELECT n.operation_type AS op, n.gross_amount AS g, n.fees AS f, n.currency AS c
                  FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
-                WHERE b.user_id=? AND b.status='confirmed'""", (au,)).fetchall():
+                WHERE b.user_id=? AND b.status='confirmed'
+                  AND NOT (n.traspaso_id IS NOT NULL AND n.operation_type = 'BUY')""",
+                (au,)).fetchall():
             fac = (1.0 / tc_blue) if (r["c"] or "").upper() == "ARS" else 1.0
             op = r["op"] or ""
             if op == "IMPUESTO":

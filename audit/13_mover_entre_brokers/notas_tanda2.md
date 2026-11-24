@@ -120,3 +120,30 @@ Pendientes que deja:
 - **En duda (no es de la spec)**: editar en grupo el precio promedio o el tipo de
   cambio reescribe las COMPRAS vinculadas del registro (también la del lote partido
   por un pase) y no pasa por `pase_que_cambia`; lo vería el detector de E10.
+
+## De E9 (Movimientos, el CSV de transacciones y las comisiones)
+Hecho: `GET /api/movements` saltea las compras y ventas internas del pase
+(`traspaso_a_mano.es_fila_interna_del_pase`: BUY/SELL con `traspaso_id`) y muestra las
+dos patas (`main._movimiento_de_pata_de_pase`: `amount_usd` = V, `fx_to_usd` =
+V_ars / V, `unit_price` = V en la moneda de los lotes / cantidad, `fees_usd` 0,
+`source` 'traspaso', `traspaso_id`, `borrable: False`, `contraparte`, `estado`); la FEE
+del gasto suma `traspaso_id` y `borrable: False`; la compra original de cada lote
+cargado a mano que salió (`trp-{pase}-{k}`, `main._movimiento_de_compra_pasada`, con
+`traspaso_id`, `borrable: False`, `source` 'traspaso') con la MISMA cuenta que una
+posición manual (`main._compra_a_mano_en_usd`, unificada). `transactions.csv`:
+«TRASPASO (SALE)/(ENTRA)» con monto en la moneda de los lotes y las notas «pasaron a
+X / llegaron desde X · costo original US$ C»; sin la VENTA ni las COMPRAS internas; la
+compra pasada como COMPRA. `/api/insights/commissions` y el diagnóstico de admin
+igual antes y después. `DELETE /api/movements/trp-…` → 409 `MSG_DESHACE_EL_PASE`.
+Pendientes que deja:
+- **Integración / pantalla**: las filas `trp-` llevan `traspaso_id` (lo pidió el
+  orquestador), así que `esDeUnPase` de `components/operations/shared.js` las cuenta en
+  el filtro «Pases» y en su número (el comentario y `moverDeBroker.test.js` suponen
+  que vienen SIN `traspaso_id`). Decidir: excluir `source === 'traspaso'` /
+  `id` `trp-` en `esDeUnPase`, o sacarles `traspaso_id` en el servidor.
+- `count` de `/api/insights/commissions` sube 1 cuando se pasa PARTE de un lote cargado
+  a mano (la compra queda en dos renglones: lo que quedó y lo que se pasó); el total no
+  cambia. Insights muestra «promedio por operación» = total / count.
+- **E10**: Movimientos ya pasa `estado = 'desfasado'` si `desfasado_at` está puesto.
+- **E11**: Movimientos y el CSV leen `valor_usd`/`valor_ars`/`costo_usd` de las filas:
+  `revaluar_patas` tiene que reescribir las dos patas (nada que cambiar acá).

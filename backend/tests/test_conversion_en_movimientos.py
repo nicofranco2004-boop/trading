@@ -533,6 +533,20 @@ class FlujosImportadosPorMes(unittest.TestCase):
                              (0.0, 0.0))
             self.assertEqual(main._import_flows_for_period(conn, uid, "global", "2024", "06", tc),
                              (50.0, 0.0))
+            # Movimientos (`_build_movements`, lo que devuelve /api/movements, E9 / D.9)
+            # ve cada pata como lo que es —una fila TRASPASO_* con lo que valían (V)—
+            # y no como un depósito o un retiro «a mano»: el residual del mes contra
+            # `_import_flows_por_mes` da 0. La salida revertida (p3) no se muestra.
+            movs = main._build_movements(uid)
+            self.assertEqual([m for m in movs if m["source"] == "monthly"], [])
+            self.assertEqual(sorted((m["type"], m["broker"], m["amount_usd"], m["currency"])
+                                    for m in movs),
+                             [("TRASPASO_ENTRADA", "Balanz", 50.0, "ARS"),
+                              ("TRASPASO_ENTRADA", "Balanz", 400.0, "ARS"),
+                              ("TRASPASO_ENTRADA", "Balanz · USD", 90.0, "USD"),
+                              ("TRASPASO_SALIDA", "Cocos", 400.0, "ARS"),
+                              ("TRASPASO_SALIDA", "Cocos · USD", 90.0, "USD")])
+            self.assertTrue(all(m["fx_to_usd"] == 1100 and m["fees_usd"] == 0 for m in movs))
         finally:
             conn.close()
 

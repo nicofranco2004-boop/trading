@@ -6,7 +6,7 @@ fecha de compra. Cada pase escribe dos lotes de import confirmados
 (`parser_format = FORMATO`, uno por broker) y una fila en `traspasos_a_mano` que
 los une y guarda la receta para deshacerlo (especificación, secciones A.1–A.7).
 
-QUÉ HAY ACÁ HOY (etapas E3 a E8).
+QUÉ HAY ACÁ HOY (etapas E3 a E9).
 
   · E5 («Armar el pase»): cómo se arma un pase ANTES de escribirlo —
     las validaciones de la sección B.6, qué lotes se mueven, a qué pata de B va
@@ -30,6 +30,12 @@ QUÉ HAY ACÁ HOY (etapas E3 a E8).
     única `pase_que_cambia` sobre lo que queda del archivo). Lo usan la vista previa
     y el confirm del importador (`importing/pipeline.py`, `main.import_confirm`) y la
     lista de Importaciones (`lotes_de_pases`).
+  · E9, al final («Cómo se muestra un pase»): lo que necesitan Movimientos, el CSV
+    de transacciones y el total de comisiones (`main._build_movements`,
+    `main.export_transactions_csv`) para mostrar las dos patas del pase y no las
+    compras y ventas internas (`es_fila_interna_del_pase`, `lados_de_los_pases`,
+    `contraparte_de_la_pata`, `monto_de_la_pata`, `nota_csv_de_la_pata`,
+    `nota_de_compra_pasada`).
 
 Las LECTURAS que necesitan los que leen el
 registro: el capital, el resultado del mes y los reportes (E4, abajo, «Las patas
@@ -122,8 +128,10 @@ def lotes_a_mano_que_salieron(conn, uid: int) -> List[Dict[str, Any]]:
 
     Cada elemento: {broker (la pata de A donde vivía), asset, entry_date (la compra
     original), fecha_pase, cantidad, invested, commissions (lo que se movió de ese
-    lote, en su moneda), currency, tc_compra, traspaso_id, k (su lugar en la receta,
-    estable: lo usa el id de la fila de Movimientos)}."""
+    lote, en su moneda), currency, tc_compra, buy_price y notes (los de la foto),
+    traspaso_id, k (su lugar en la receta, estable: lo usa el id de la fila de
+    Movimientos)}. Lo leen la historia a mercado (E3) y, para que la compra
+    original no desaparezca, Movimientos y `transactions.csv` (E9)."""
     out: List[Dict[str, Any]] = []
     filas = conn.execute(
         """SELECT t.id, t.fecha, t.asset, t.moneda, t.receta_json
@@ -155,6 +163,8 @@ def lotes_a_mano_que_salieron(conn, uid: int) -> List[Dict[str, Any]]:
                 "commissions": _num(lote.get("commissions")),
                 "currency": foto.get("currency") or t["moneda"],
                 "tc_compra": foto.get("tc_compra"),
+                "buy_price": foto.get("buy_price"),
+                "notes": foto.get("notes"),
                 "traspaso_id": t["id"],
                 "k": k,
             })
@@ -2852,3 +2862,84 @@ def lotes_de_pases(conn, uid: int) -> Dict[str, Dict[str, Any]]:
         out[reg.lote_salida] = {**base, "lado": "salida", "contraparte": reg.raiz_b}
         out[reg.lote_entrada] = {**base, "lado": "entrada", "contraparte": reg.raiz_a}
     return out
+
+
+# ── E9: cómo se MUESTRA un pase (Movimientos, el CSV del contador, D.9) ──────────
+#
+# Un pase escribe en el registro filas que no son operaciones de la persona: la
+# VENTA de salida de A (a precio 0, sólo para que A suelte los lotes) y una COMPRA de
+# llegada en B por cada lote (la copia del costo, las comisiones y la fecha de compra
+# de A). Mostradas, Movimientos y `transactions.csv` tenían una venta y una compra que
+# nadie hizo, y la comisión de cada lote se contaba DOS veces (la compra original en
+# A y su copia en B) en el KPI «Comisiones» y en /api/insights/commissions. Del pase
+# se muestran sus dos patas (TRASPASO_SALIDA y TRASPASO_ENTRADA, con lo que valían
+# los títulos ese día) y el gasto del trámite. Y la compra original de un lote
+# CARGADO A MANO, que el pase sacó de `positions` (sin ella desaparecía de
+# Movimientos, con su comisión), sale de la receta (`lotes_a_mano_que_salieron`).
+
+# Las notas del CSV de transacciones en las dos patas: hacia dónde fueron (o de dónde
+# vinieron) y lo que costaron. Se arman al leer, así llevan el nombre de HOY de la
+# otra cuenta (las notas guardadas en el registro no llevan ninguno, A.6).
+NOTA_CSV_SALIDA = "pasaron a {contraparte} · costo original US$ {costo:.2f}"
+NOTA_CSV_ENTRADA = "llegaron desde {contraparte} · costo original US$ {costo:.2f}"
+# La compra original de un lote cargado a mano que se pasó (Movimientos y el CSV).
+NOTA_COMPRA_PASADA = "La pasaste a {B} el {fecha}"
+
+
+def es_fila_interna_del_pase(op, traspaso_id) -> bool:
+    """¿Es una de las compras o ventas que el pase escribió para mover los lotes? No
+    son operaciones de la persona: no se muestran (D.9.1, D.9.3)."""
+    return bool(traspaso_id) and str(op or "").upper() in ("BUY", "SELL")
+
+
+def lados_de_los_pases(conn, uid: int) -> Dict[str, Dict[str, Any]]:
+    """{traspaso_id: {origen, destino, estado}} de los pases que no se deshicieron:
+    el nombre de HOY de cada cuenta (si un lado se borró, el de la receta) y cómo está
+    el pase (vivo, incompleto o desfasado: la misma regla que GET /traspasos). Lo usan
+    Movimientos y el CSV para decir hacia dónde fue cada pata. Una lectura por pedido,
+    no una por fila."""
+    return {reg.id: {"origen": reg.raiz_a, "destino": reg.raiz_b, "estado": reg.estado}
+            for reg in _registros(conn, uid, vivos=True)}
+
+
+def contraparte_de_la_pata(lado: Optional[Dict[str, Any]], op) -> Optional[str]:
+    """La OTRA cuenta del pase, vista desde una de sus patas: la de destino para la
+    que salió, la de origen para la que entró."""
+    if not lado:
+        return None
+    return lado["destino"] if str(op or "").upper() == "TRASPASO_SALIDA" else lado["origen"]
+
+
+def monto_de_la_pata(fila) -> Dict[str, Optional[float]]:
+    """Lo que valían los títulos de una pata del pase (V de ese par, el MISMO número
+    en las dos patas, A.6): en dólares (`usd`), en pesos (`ars`), en la moneda de los
+    lotes (`nativo`: los pesos si los lotes son en pesos, los dólares si no) y por
+    título en esa moneda (`precio`).
+
+    El `unit_price` guardado en la fila está en la moneda del PRECIO, que no siempre
+    es la de los lotes (un CEDEAR comprado en dólares se valúa con su precio en
+    pesos): al lado de un monto en dólares no cuadraba. Movimientos y el CSV muestran
+    `precio`, que sí: cantidad × precio = monto."""
+    usd, ars = _num(fila["valor_usd"]), _num(fila["valor_ars"])
+    nativo = ars if str(fila["currency"] or "").upper() == "ARS" else usd
+    q = abs(_num(fila["quantity"]))
+    return {"usd": usd, "ars": ars, "nativo": nativo, "precio": (nativo / q) if q else None}
+
+
+def nota_csv_de_la_pata(fila, lado: Optional[Dict[str, Any]]) -> str:
+    """Las notas de una pata del pase en `transactions.csv` (D.9.3): hacia dónde
+    pasaron (o de dónde llegaron) y lo que costaron en dólares (C de ese par)."""
+    op = str(fila["operation_type"] or "").upper()
+    plantilla = NOTA_CSV_SALIDA if op == "TRASPASO_SALIDA" else NOTA_CSV_ENTRADA
+    return plantilla.format(contraparte=contraparte_de_la_pata(lado, op) or "otro broker tuyo",
+                            costo=_num(fila["costo_usd"]))
+
+
+def nota_de_compra_pasada(lote: Dict[str, Any], lado: Optional[Dict[str, Any]], *,
+                          con_notas: bool = True) -> str:
+    """La nota de la compra original de un lote cargado a mano que se pasó
+    (`lotes_a_mano_que_salieron`): a qué cuenta y cuándo. Con `con_notas`, seguida
+    de las notas que tenía el lote (Movimientos las mostraba antes del pase)."""
+    destino = (lado or {}).get("destino") or "otro broker tuyo"
+    nota = NOTA_COMPRA_PASADA.format(B=destino, fecha=_ddmmaaaa(lote.get("fecha_pase")))
+    return f"{nota} · {lote['notes']}" if (con_notas and lote.get("notes")) else nota
