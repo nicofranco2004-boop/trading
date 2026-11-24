@@ -7432,6 +7432,9 @@ def _contar_datos_de_brokers(conn, uid: int, nombres) -> dict:
     def _n(sql):
         return conn.execute(sql, (uid, *nombres)).fetchone()[0]
 
+    # Los pases vivos, por lado: el aviso dice cosas distintas si los títulos salieron
+    # de este broker (se quedan en el otro) o llegaron acá (se borran con éste).
+    _por_lado = _traspaso_a_mano.pases_de_brokers_por_lado(conn, uid, nombres)
     return {
         "positions": _n(f"SELECT COUNT(*) FROM positions WHERE user_id=? AND broker IN ({ph})"),
         "operations": _n(f"SELECT COUNT(*) FROM operations WHERE user_id=? AND broker IN ({ph})"),
@@ -7450,6 +7453,8 @@ def _contar_datos_de_brokers(conn, uid: int, nombres) -> dict:
         # Los pases vivos con otro broker del usuario (D.10.8): el borrado los deja
         # «incompletos» (lo que llegó al otro broker se queda allá).
         "traspasos": len(_traspaso_a_mano.pases_de_brokers(conn, uid, nombres)),
+        "traspasos_salida": len(_por_lado["salida"]),
+        "traspasos_entrada": len(_por_lado["entrada"]),
     }
 
 
@@ -15844,8 +15849,8 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
         # _EFECTIVO_NO_SE_EDITA).
         _tomar_turno_de_la_puerta(conn, uid)
         _actual = conn.execute(
-            "SELECT is_cash, broker, asset_type FROM positions WHERE id=? AND user_id=?",
-            (pid, uid)).fetchone()
+            "SELECT is_cash, broker, asset_type, asset, currency FROM positions "
+            "WHERE id=? AND user_id=?", (pid, uid)).fetchone()
         if p.is_cash or (_actual and _actual["is_cash"]):
             raise HTTPException(400, _EFECTIVO_NO_SE_EDITA)
         # Cambiarle el broker a un lote ya no se hace editándolo (D.19): a un lote
@@ -15853,9 +15858,22 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
         # mano se le rompía la receta (borrarlo después daba 409 para siempre) y la
         # cuenta de cada broker. Para eso está «Mover a otro broker»; si se cargó en el
         # broker equivocado, se borra y se carga de nuevo. Sólo si CAMBIA: editar el
-        # precio de un lote no depende de esto.
+        # precio de un lote no depende de esto. El texto manda a «Mover a otro broker»
+        # sólo si la opción existe (con el interruptor apagado la pantalla no la
+        # muestra).
         if _actual and p.broker != _actual["broker"]:
-            raise HTTPException(409, _traspaso_a_mano.MSG_PUT_OTRO_BROKER)
+            raise HTTPException(409, _traspaso_a_mano.msg_put_otro_broker(
+                bool(interruptor(_traspaso_a_mano.INTERRUPTOR, conn))))
+        # El ticker o la moneda de un lote que es parte de un pase vivo (el que se
+        # llevó una parte en A, o el que llegó a B): la misma regla que la edición de
+        # grupo (D.10.14), propagada al PUT de un lote. Sin esto el deshacer devolvía
+        # los títulos a un lote que ya era de otro activo (NVDA sumados a un AAPL).
+        if _actual and (
+                (p.asset or "").strip().upper() != (_actual["asset"] or "").strip().upper()
+                or (p.currency and _actual["currency"]
+                    and p.currency.strip().upper() != _actual["currency"].strip().upper())) \
+                and pid in _traspaso_a_mano.lotes_de_pases_vivos(conn, uid):
+            raise HTTPException(409, _traspaso_a_mano.MSG_EDITAR_ACTIVO_CON_PASE)
         # Un lote en pesos no se lleva (ni se pasa) a una cuenta sin caja en pesos:
         # después la venta manda su moneda y no hay dónde cobrar (auditoría 29/10).
         # Sólo si CAMBIA el broker o la moneda: un lote viejo así se puede seguir
@@ -15996,6 +16014,21 @@ def interruptor(nombre: str, conn=None) -> bool:
 
 _splits_cache = {}  # { 'SYM.BA': (timestamp, [(ex_date, factor)]) }
 
+# Verdadero mientras corre algo que NO puede esperar a Yahoo: el confirmar de un pase
+# entre brokers arma el plan con el turno de la cuenta tomado (y en SQLite, la base
+# entera). `_splits_de_yahoo_ba` sirve la caché aunque esté vencida. (`_contextvars`
+# ya está importado arriba.)
+_SIN_RED_SPLITS = _contextvars.ContextVar("sin_red_splits", default=False)
+
+
+@contextmanager
+def sin_red_para_splits():
+    token = _SIN_RED_SPLITS.set(True)
+    try:
+        yield
+    finally:
+        _SIN_RED_SPLITS.reset(token)
+
 
 # Por símbolo: la lista de splits de una cartera se precalienta en paralelo
 # (`_precalentar_splits`), así que esto sólo lo paga quien pide UN símbolo.
@@ -16053,12 +16086,20 @@ def _precalentar_splits(ba_symbols) -> None:
 
 
 def _splits_de_yahoo_ba(ba_symbol: str):
-    """Splits de un símbolo .BA vía yfinance, cacheado con el TTL de eventos (6h)."""
+    """Splits de un símbolo .BA vía yfinance, cacheado con el TTL de eventos (6h).
+
+    Dentro de `sin_red_para_splits()` (el confirmar de un pase, con el turno de la
+    cuenta tomado) no sale a internet: sirve lo que haya en la caché aunque esté
+    vencido, o nada —lo mismo que cuando Yahoo no contesta—. Lo de la red ya lo
+    trajo `traspaso_a_mano.precargar` antes del turno."""
     import time as _t
     now = _t.time()
     cached = _splits_cache.get(ba_symbol)
     if cached and (now - cached[0]) < EVENTS_TTL:
         return cached[1]
+    if _SIN_RED_SPLITS.get():
+        log.info("splits %s: caché vencida dentro de un pase, sin salir a la red", ba_symbol)
+        return cached[1] if cached else []
     try:
         out = _parsear_splits(_yahoo.con_tope(_splits_de_yahoo, ba_symbol, tope=SPLITS_TOPE_SEG,
                                               que=f"splits {ba_symbol}"))
@@ -16629,19 +16670,87 @@ def admin_cambios_ratio(uid: int = Depends(get_admin_user)):
                 "lista": sorted(lista, key=lambda r: (r["estado"], r["fecha"]), reverse=True)}
 
 
+def _poner_interruptor(conn, nombre: str, encendido: bool, admin: int) -> dict:
+    """Prende o apaga el interruptor `nombre` en la base (sin deploy) y devuelve su
+    estado. LA escritura de los interruptores del panel: el del aviso de ratio y el de
+    «Mover a otro broker»."""
+    conn.execute(
+        """INSERT INTO interruptores (nombre, encendido, cambiado_at, cambiado_por)
+           VALUES (?, ?, datetime('now'), ?)
+           ON CONFLICT(nombre) DO UPDATE SET encendido=excluded.encendido,
+             cambiado_at=excluded.cambiado_at, cambiado_por=excluded.cambiado_por""",
+        (nombre, 1 if encendido else 0, admin))
+    conn.commit()
+    log.info("interruptor %s → %s (admin %s)", nombre, encendido, admin)
+    return _estado_interruptor(conn, nombre)
+
+
 @app.post("/api/admin/cambios-ratio/interruptor")
 def admin_cambios_ratio_interruptor(data: InterruptorIn, uid: int = Depends(get_admin_user)):
     """Prende o apaga el aviso nuevo. Queda en la base: se cambia sin deploy."""
     with db_abierta() as conn:
-        conn.execute(
-            """INSERT INTO interruptores (nombre, encendido, cambiado_at, cambiado_por)
-               VALUES (?, ?, datetime('now'), ?)
-               ON CONFLICT(nombre) DO UPDATE SET encendido=excluded.encendido,
-                 cambiado_at=excluded.cambiado_at, cambiado_por=excluded.cambiado_por""",
-            (AVISO_RATIO_NUEVO, 1 if data.encendido else 0, uid))
-        conn.commit()
-        log.info("interruptor %s → %s (admin %s)", AVISO_RATIO_NUEVO, data.encendido, uid)
-        return _estado_interruptor(conn, AVISO_RATIO_NUEVO)
+        return _poner_interruptor(conn, AVISO_RATIO_NUEVO, data.encendido, uid)
+
+
+# ─── /admin: «Mover a otro broker» (el interruptor y la vuelta atrás, G.3) ────
+
+@app.get("/api/admin/mover-entre-brokers")
+def admin_mover_entre_brokers(uid: int = Depends(get_admin_user)):
+    """El interruptor de «Mover a otro broker» y cuántos pases sin deshacer hay, por
+    cuenta (lo que habría que deshacer antes de volver atrás un deploy). Sólo lee."""
+    with db_abierta() as conn:
+        cuentas = [{"user_id": r["user_id"], "pases": r["n"]} for r in conn.execute(
+            "SELECT user_id, COUNT(*) AS n FROM traspasos_a_mano WHERE deshecho_at IS NULL "
+            "GROUP BY user_id ORDER BY user_id").fetchall()]
+        return {"interruptor": _estado_interruptor(conn, _traspaso_a_mano.INTERRUPTOR),
+                "cuentas_con_pases": cuentas}
+
+
+@app.post("/api/admin/mover-entre-brokers/interruptor")
+def admin_mover_entre_brokers_interruptor(data: InterruptorIn,
+                                          uid: int = Depends(get_admin_user)):
+    """Prende o apaga «Mover a otro broker» para todos. Apagado: nadie arma pases
+    nuevos (la vista previa y el confirmar dan 403); los hechos se siguen viendo y
+    deshaciendo. Queda en la base: se cambia sin deploy."""
+    with db_abierta() as conn:
+        return _poner_interruptor(conn, _traspaso_a_mano.INTERRUPTOR, data.encendido, uid)
+
+
+class DeshacerPasesIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    user_id: int = Field(..., ge=1)
+    aplicar: bool = False
+
+
+@app.post("/api/admin/mover-entre-brokers/deshacer-pases")
+def admin_deshacer_pases(data: DeshacerPasesIn, uid: int = Depends(get_admin_user)):
+    """Deja una cuenta sin pases vivos, para poder volver atrás un deploy (G.3: «antes
+    de volver atrás, apagar el interruptor y deshacer los pases vivos»). El único
+    deshacer que había era el del propio usuario, que pasa por el muro de la cuenta en
+    pausa (402) y no hay forma de pedírselo a todos.
+
+    Sin `aplicar` (por defecto) sólo LISTA los pases vivos de la cuenta, cada uno con
+    si se puede deshacer y, si no, por qué (el mismo texto que vería el usuario). Con
+    `aplicar`, los deshace de a uno, del más nuevo al más viejo (un pase posterior
+    frena el deshacer del anterior: «Deshacé primero ese pase»), cada uno con el
+    deshacer de siempre (turno, lotes tomados, validaciones de C.8, cola de cualquier
+    puerta). Los que no se pueden deshacer quedan, con su motivo: hay que resolverlos a
+    mano antes de volver atrás."""
+    with db_abierta() as conn:
+        pases = _traspaso_a_mano.traspasos_vivos(conn, data.user_id)
+    if not data.aplicar:
+        return {"user_id": data.user_id, "aplicado": False, "pases": pases}
+    hechos, quedan = [], []
+    # `traspasos_vivos` viene del más viejo al más nuevo (fecha, creado, id).
+    for p in reversed(pases):
+        try:
+            out = _deshacer_un_pase(data.user_id, p["id"])
+            hechos.append({"id": p["id"], "mensaje": out["mensaje"]})
+        except HTTPException as ex:
+            quedan.append({"id": p["id"], "status": ex.status_code, "motivo": ex.detail})
+    log.info("admin %s deshizo %d pases de la cuenta %s (quedan %d)", uid, len(hechos),
+             data.user_id, len(quedan))
+    return {"user_id": data.user_id, "aplicado": True, "deshechos": hechos, "quedan": quedan}
 
 
 # ─── Plazos fijos ─────────────────────────────────────────────────────────────
@@ -20013,6 +20122,73 @@ def regla_de_venta(uid: int = Depends(get_effective_user)):
     return {"cada_punta_a_su_dolar": v2}
 
 
+def _cola_de_la_venta(conn, uid: int, broker: str, asset: str, sell_ccy: str, fecha: str) -> dict:
+    """La cola FIFO que consume una venta A MANO de `asset` en el par de `broker`, en
+    `sell_ccy`, con fecha `fecha`. UNA sola cuenta: la usan la venta
+    (`sell_position_fifo`) y la vista previa de la venta del chat
+    (`_register_trade_handler`), que antes repetía la selección a mano y se había
+    quedado sin la regla C4 (armaba un borrador que al confirmar rebotaba).
+
+      · NETEO del par padre↔'· USD': los lotes del activo en los dos brokers del par
+        (el mismo modelo FIFO que el import y el rebuild; la caja sigue por broker).
+      · POR MONEDA: una venta en X consume SÓLO lotes en X (`behavioral._native_ccy`,
+        que cubre `currency` NULL de lotes viejos). Sin lotes de esa moneda (data
+        vieja / dólar-MEP legacy) cae a todos, con conversión de costo. Una venta a
+        mano NO hace spill a la otra moneda: eso es sólo de la reconstrucción.
+      · Regla C4: los lotes que llegaron por un pase entre brokers DESPUÉS de `fecha`
+        (`en_broker_desde` posterior) no estaban: van a `no_estaban`.
+    Devuelve {pair, positions (las de la moneda, en orden FIFO), estaban, no_estaban,
+    total, disponible, solo_su_moneda}."""
+    from importing.persister import broker_pair
+    from behavioral import _native_ccy
+    pair = broker_pair(conn, uid, broker)
+    ph = ",".join("?" * len(pair))
+    todas = conn.execute(
+        f"""SELECT * FROM positions
+           WHERE user_id=? AND broker IN ({ph}) AND asset=? AND is_cash=0 AND quantity > 0
+           ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
+        (uid, *pair, asset)).fetchall()
+    misma = [p for p in todas if _native_ccy(dict(p)) == sell_ccy]
+    positions = misma if misma else todas
+    no_estaban = _traspaso_a_mano.lotes_que_no_estaban(positions, fecha)
+    fuera = {l["id"] for l in no_estaban}
+    estaban = [p for p in positions if p["id"] not in fuera]
+    return {"pair": pair, "positions": positions, "estaban": estaban, "no_estaban": no_estaban,
+            "total": sum((p["quantity"] or 0) for p in positions),
+            "disponible": sum((p["quantity"] or 0) for p in estaban),
+            "solo_su_moneda": bool(misma)}
+
+
+def _por_que_no_se_vende(conn, uid: int, broker: str, broker_pedido: str, asset: str,
+                         sell_ccy: str, fecha: str, cantidad: float, cola: dict):
+    """(status, texto) si una venta a mano no se puede hacer, o None. Los mismos frenos
+    para la venta y para la vista previa del chat, en este orden:
+      1. más de lo que hay (400);
+      2. regla C4: con fecha anterior a la llegada de un pase, sólo alcanza lo que ya
+         estaba (409, el texto dice qué fecha elegir);
+      3. C.11 lado A: una venta con fecha ANTERIOR a un pase vivo que sacó este activo
+         de este broker cambia los lotes que el pase se llevó —FIFO la habría pagado
+         con los que se pasaron— y el deshacer ya no vuelve al mundo sin pase (409,
+         `MSG_CAMBIA_UN_PASE`). Una del MISMO día cuenta como posterior (consume lo que
+         quedó; el deshacer la ve, C.8 #3). Si la venta sólo puede consumir lotes de
+         otra moneda que la del pase, no lo toca. El lado B lo cubre la regla C4."""
+    if cantidad > cola["total"] + 1e-9:
+        return 400, f"Cantidad solicitada ({cantidad}) excede el total disponible ({cola['total']})"
+    if cola["no_estaban"] and cantidad > cola["disponible"] + 1e-9:
+        return 409, _traspaso_a_mano.texto_venta_antes_de_llegar(
+            fecha=fecha, broker=broker_pedido, asset=asset,
+            q=sum((l["quantity"] or 0) for l in cola["no_estaban"]),
+            llegada=min(str(l["en_broker_desde"])[:10] for l in cola["no_estaban"]),
+            disp=cola["disponible"])
+    cambia = _traspaso_a_mano.pase_que_cambia(
+        conn, uid, [{"broker": broker, "asset": asset, "op": "SELL", "date": fecha,
+                     "currency": sell_ccy, "solo_su_moneda": cola["solo_su_moneda"]}],
+        lados=("origen",), el_dia_del_pase=False)
+    if cambia:
+        return 409, cambia["mensaje"]
+    return None
+
+
 @app.post("/api/positions/sell")
 @reintentar_si_trabada
 def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
@@ -20062,64 +20238,18 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                     sell_ccy = "ARS" if currency == "ARS" else "USD"
                 cur_blue = _user_tc_blue(conn, uid)
 
-                # NETEO CROSS-BROKER del par padre↔'· USD': el mismo activo comprado vía
-                # dólar-MEP (pata USD en el sibling) y vendido en pesos (pata ARS en el
-                # padre) debe NETEAR. Buscamos lotes del activo en AMBOS brokers del par.
-                # En la práctica es casi no-op para ventas manuales (el user vende desde
-                # la fila donde vive el lote), pero deja el modelo FIFO idéntico al del
-                # import/rebuild. El cash sigue per-broker (entra al broker de la venta).
-                from importing.persister import broker_pair
-                _pair = broker_pair(conn, uid, broker)
-                _ph = ",".join("?" * len(_pair))
-                # Posiciones del par, FIFO por entry_date (NULLs al final), tie-break por id.
-                all_positions = conn.execute(
-                    f"""SELECT * FROM positions
-                       WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0 AND quantity > 0
-                       ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
-                    (uid, *_pair, data.asset)
-                ).fetchall()
-                # FIFO POR MONEDA: una venta en X consume SOLO lotes en X (el mismo
-                # ticker se puede tener en ARS y USD). La moneda nativa de cada lote la
-                # resuelve behavioral._native_ccy (cubre currency NULL legacy). Si NO hay
-                # lotes de la moneda de la venta (data vieja / dólar-MEP legacy), cae a
-                # TODOS con conversión cross-currency (red de seguridad: no rompe P&L
-                # existente ni genera seeds fantasma).
-                from behavioral import _native_ccy
-                # Venta MANUAL: respeta la moneda explícita del user. Con lotes
-                # currency-aware (mismo ticker en ARS y USD en el mismo broker) una venta
-                # en USD consume SOLO lotes USD y se RECHAZA si no alcanzan — NO hace spill
-                # a los lotes ARS (eso sería romper la separación de monedas que el user
-                # eligió). El spill cross-currency (dólar-MEP) es exclusivo de la RECONSTRUCCIÓN
-                # de IMPORT (rebuild/persister), donde no hay intención de moneda por fila.
-                # Fallback a todos solo si NO hay lotes de esa moneda (data legacy NULL).
-                _same_ccy = [p for p in all_positions if _native_ccy(dict(p)) == sell_ccy]
-                positions = _same_ccy if _same_ccy else all_positions
-
-                total = sum((p["quantity"] or 0) for p in positions)
-                if data.quantity > total + 1e-9:
-                    raise HTTPException(400, f"Cantidad solicitada ({data.quantity}) excede el total disponible ({total})")
-
                 op_date = data.date or _iso_today()
-                # Un lote que llegó a esta cuenta por un pase entre brokers DESPUÉS del
-                # día de la venta no estaba ahí: no se puede vender (hueco C4 de la
-                # revisión del pase). Lleva la fecha de compra original, así que va
-                # primero en la cola; sin esto, una venta fechada antes de la llegada
-                # se lo comía, y deshacer el pase o rearmar la cuenta ya no cuadraban.
-                # Si lo que sí estaba alcanza, la venta consume eso; si no, 409.
-                _no_estaban = _traspaso_a_mano.lotes_que_no_estaban(positions, op_date)
-                if _no_estaban:
-                    _fuera = {l["id"] for l in _no_estaban}
-                    _estaban = [p for p in positions if p["id"] not in _fuera]
-                    _disp = sum((p["quantity"] or 0) for p in _estaban)
-                    if data.quantity > _disp + 1e-9:
-                        raise HTTPException(409, _traspaso_a_mano.MSG_VENTA_ANTES_DE_LLEGAR.format(
-                            fecha=_traspaso_a_mano._ddmmaaaa(op_date), broker=data.broker,
-                            asset=data.asset,
-                            q=_traspaso_a_mano._cant(sum((l["quantity"] or 0) for l in _no_estaban)),
-                            llegada=_traspaso_a_mano._ddmmaaaa(
-                                min(str(l["en_broker_desde"])[:10] for l in _no_estaban)),
-                            disp=_traspaso_a_mano._cant(_disp)))
-                    positions = _estaban
+                # La cola FIFO de la venta y sus frenos: UNA cuenta para esta puerta y
+                # para la vista previa de la venta del chat (`_cola_de_la_venta`,
+                # `_por_que_no_se_vende`), así el chat no arma un borrador que acá
+                # rebota.
+                _cola = _cola_de_la_venta(conn, uid, broker, data.asset, sell_ccy, op_date)
+                _freno = _por_que_no_se_vende(conn, uid, broker, data.broker, data.asset,
+                                              sell_ccy, op_date, data.quantity, _cola)
+                if _freno:
+                    raise HTTPException(*_freno)
+                _pair = _cola["pair"]
+                positions = _cola["estaban"]
                 remaining = data.quantity
                 ops_created = []
                 total_pnl_usd = 0.0          # "true USD" P&L → goes to monthly_entries global
@@ -20539,7 +20669,10 @@ def confirmar_pase(body: PaseIn, uid: int = Depends(get_effective_user)):
         _exigir_interruptor(conn, _traspaso_a_mano.INTERRUPTOR)
         _traspaso_a_mano.precargar(conn, uid, body, helpers=_import_helpers)
         try:
-            with conn:
+            # Con el turno tomado no se sale a internet: los cambios de ratio de Yahoo
+            # ya los trajo `precargar` (si la caché venció mientras se esperaba el
+            # turno, se usa la vencida). El dólar cripto es sólo de la caché.
+            with sin_red_para_splits(), conn:
                 _tomar_turno(conn, uid)
                 hoy = _iso_today()
                 cuentas = _traspaso_a_mano.cuentas_del_pedido(conn, uid, body, hoy=hoy)
@@ -20589,6 +20722,13 @@ def deshacer_pase(traspaso_id: str, uid: int = Depends(get_effective_user)):
       5. Deshacer (`traspaso_a_mano.deshacer`, sin `revert_batch`: ése borra las
          fotos medidas) y 6. la cola de cualquier puerta (cadena, RECÁLCULO, fotos).
     Todo en un solo `with conn:`: si algo falla no queda nada a medias."""
+    out = _deshacer_un_pase(uid, traspaso_id)
+    return {"ok": True, "mensaje": out["mensaje"]}
+
+
+def _deshacer_un_pase(uid: int, traspaso_id: str) -> dict:
+    """El deshacer de un pase (el cuerpo de `deshacer_pase`), para la puerta del
+    usuario y la del admin (`admin_deshacer_pases`, G.3). Levanta HTTPException."""
     with db_abierta() as conn:
         try:
             with conn:
@@ -20611,7 +20751,7 @@ def deshacer_pase(traspaso_id: str, uid: int = Depends(get_effective_user)):
             raise HTTPException(500, _traspaso_a_mano.MSG_NO_SE_DESHIZO.format(
                 motivo="un error inesperado"))
     _ai_cache_invalidate(uid)
-    return {"ok": True, "mensaje": out["mensaje"]}
+    return out
 
 
 @app.get("/api/positions/traspasos")
@@ -21293,6 +21433,21 @@ def get_monthly(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+def _pase_para_la_ia(r: dict, es_global: bool) -> dict:
+    """Lo que la herramienta del chat `get_monthly_detail` suma a una fila de un mes
+    con un pase entre brokers (`r`: `traspaso_a_mano.resumen` de la fila, el mismo de
+    `_campos_del_pase_en_el_mes`): cuánto de sus retiros y aportes es el valor de los
+    títulos que pasaron, el puente que lleva su realizado y el gasto. Sólo lo distinto
+    de 0 (en 'global', con las dos patas vivas, todo se anula)."""
+    out = {}
+    for clave, valor in (("pase_salio_usd", r["wit_usd"]), ("pase_entro_usd", r["dep_usd"]),
+                         ("pase_puente_usd", r["puente_salida_usd"] - r["puente_entrada_usd"]),
+                         ("pase_gasto_usd", r["gasto_usd"])):
+        if valor and abs(valor) >= 0.005:
+            out[clave] = round(valor, 2)
+    return out
+
+
 def _campos_del_pase_en_el_mes(r: dict, es_global: bool) -> dict:
     """Los campos de una fila de /api/monthly que explican los pases entre brokers del
     usuario de ese mes (`r`: `traspaso_a_mano.resumen` de la fila). Sólo los distintos
@@ -21318,6 +21473,16 @@ def _campos_del_pase_en_el_mes(r: dict, es_global: bool) -> dict:
     _poner("puente_salida_usd", r["puente_salida_usd"])
     _poner("puente_entrada_usd", r["puente_entrada_usd"])
     _poner("gasto_pase_usd", r["gasto_usd"])
+    # Los mismos tres EN PESOS, para la pestaña en pesos de /mensual (E.7): el puente
+    # de las patas de lotes en pesos (V − C en pesos, el que `realized_ars` ya lleva) y
+    # los dólares que cubre; la parte de lotes en dólares la pasa la pantalla al dólar
+    # del mes, como el resto del realizado. El gasto pagado en pesos, con sus pesos.
+    _poner("puente_salida_ars", r["puente_salida_ars"], 2)
+    _poner("puente_salida_ars_usd", r["puente_salida_ars_usd"])
+    _poner("puente_entrada_ars", r["puente_entrada_ars"], 2)
+    _poner("puente_entrada_ars_usd", r["puente_entrada_ars_usd"])
+    _poner("gasto_pase_ars", r["gasto_ars"], 2)
+    _poner("gasto_pase_ars_usd", r["gasto_ars_usd"])
     if es_global:
         _poner("traspaso_neto_usd", r["neto_usd"])
         _poner("traspaso_neto_pesos", r["neto_pesos"])
@@ -26060,11 +26225,26 @@ def _devolver_al_lote(conn, uid: int, foto: dict, cantidad: float, inv, com: flo
     tiene que apuntar al id con que quedó —es por donde `_src_tx_for_position`, el
     revert del archivo y las guardas lo encuentran—.
 
+    EL LOTE VIVO TIENE QUE SER EL MISMO LOTE. Se le suma sólo si sigue siendo lo que
+    la foto retrata: el mismo broker, activo, moneda y marca de split. Si cambió (un
+    PUT le cambió el ticker, o se le ajustó un cambio de ratio después: 4 → 12 con la
+    marca del 01/08), sumarle los títulos de la foto los mezclaba —NVDA dentro de un
+    lote AAPL; 6 títulos de antes del ratio dentro de uno ya ajustado ×3, que el aviso
+    «Ajustar» ya no volvía a ofrecer: faltaban 12 para siempre—. Entonces vuelven en
+    un lote APARTE, con la foto (su marca de split vieja: el aviso ofrece el ajuste);
+    con `link`, el vínculo del lote vivo queda como estaba y se suma uno para el
+    nuevo. Los dos llamadores (borrar una venta a mano y deshacer un pase) pasan por
+    acá.
+
     Devuelve lo que necesita quien la llama para deshacerla:
     {"mode": "update", "id", "qty", "inv", "com"} o {"mode": "insert", "id"}."""
     live = conn.execute(
-        "SELECT id, quantity, invested, commissions FROM positions "
+        "SELECT id, quantity, invested, commissions, broker, asset, currency, "
+        "split_adjusted_through FROM positions "
         " WHERE id=? AND user_id=? AND is_cash=0", (foto.get("id"), uid)).fetchone()
+    otro_lote = live is not None and not _es_el_lote_de_la_foto(live, foto)
+    if otro_lote:
+        live = None
     if live:
         conn.execute(
             "UPDATE positions SET quantity=?, invested=?, commissions=? "
@@ -26098,7 +26278,14 @@ def _devolver_al_lote(conn, uid: int, foto: dict, cantidad: float, inv, com: flo
             f"INSERT INTO positions ({', '.join(_cols)}) VALUES ({', '.join('?' * len(_cols))})",
             tuple(_vals))
         out = {"mode": "insert", "id": cur_ins.lastrowid if _id_libre is None else _id_libre}
-    if link:
+    if link and otro_lote:
+        # El lote vivo (el que cambió) conserva su vínculo y su `created_position_id`;
+        # el que volvió aparte suma el suyo, así el revert del archivo y las guardas
+        # encuentran a los dos.
+        conn.execute(
+            "INSERT INTO import_op_links (batch_id, raw_row_id, position_id) VALUES (?,?,?)",
+            (link[0], link[1], out["id"]))
+    elif link:
         batch_id, raw_row_id = link
         if conn.execute(
                 "UPDATE import_op_links SET position_id=? "
@@ -26113,6 +26300,28 @@ def _devolver_al_lote(conn, uid: int, foto: dict, cantidad: float, inv, com: flo
             "UPDATE import_normalized_tx SET created_position_id=? WHERE batch_id=? AND raw_row_id=?",
             (out["id"], batch_id, raw_row_id))
     return out
+
+
+def _es_el_lote_de_la_foto(live, foto: dict) -> bool:
+    """¿El lote vivo `live` es todavía el que retrata `foto`? El mismo broker, activo
+    (sin distinguir mayúsculas), moneda (ARS u otra; una de las dos sin dato no
+    compara) y marca de split. Una foto vieja que no trae un dato no lo compara."""
+    def _txt(v):
+        return str(v or "").strip().upper()
+
+    if "broker" in foto and foto.get("broker") and live["broker"] != foto.get("broker"):
+        return False
+    if "asset" in foto and foto.get("asset") and _txt(live["asset"]) != _txt(foto.get("asset")):
+        return False
+    if "currency" in foto and foto.get("currency") and live["currency"]:
+        def _m(v):
+            return "ARS" if _txt(v) == "ARS" else "USD"
+        if _m(live["currency"]) != _m(foto.get("currency")):
+            return False
+    if "split_adjusted_through" in foto and \
+            str(live["split_adjusted_through"] or "")[:10] != str(foto.get("split_adjusted_through") or "")[:10]:
+        return False
+    return True
 
 
 def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
@@ -40064,35 +40273,27 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 _TRADE_DRAFT.pop(uid, None)
                 return {"error": "El monto es demasiado chico para convertir — revisá el número con el usuario."}
         elif action == "sell":
-            # FIFO currency-aware: replicar el predicado de sell_position_fifo
-            # (consume lotes de la MISMA moneda si existen). El SUM debe mirar
-            # los MISMOS lotes que el endpoint va a tocar.
-            # MISMO predicado de selección de lotes que sell_position_fifo:
-            # behavioral._native_ccy resuelve la moneda REAL del lote (cubre
-            # currency NULL legacy — el SUM por columna cruda sub-contaba esos
-            # lotes y rechazaba ventas legítimas, review M1). Filtramos en
-            # Python con la misma función que usa el endpoint.
-            from importing.persister import broker_pair
-            from behavioral import _native_ccy
-            _pair = broker_pair(conn, uid, broker)
-            _ph = ",".join("?" * len(_pair))
-            _lots = [dict(r) for r in conn.execute(
-                f"SELECT broker, asset, quantity, currency FROM positions "
-                f"WHERE user_id=? AND broker IN ({_ph}) AND asset=? "
-                f"AND is_cash=0 AND quantity>0",
-                (uid, *_pair, asset)).fetchall()]
+            # LA MISMA cola y los MISMOS frenos que la venta (`sell_position_fifo`):
+            # los lotes de la moneda de la venta (o todos, si no hay), sin los que
+            # llegaron por un pase después de la fecha (regla C4), y sin una venta
+            # anterior a un pase vivo de este activo (C.11). Antes esto repetía la
+            # selección a mano y armaba borradores que al confirmar rebotaban.
             _sell_ccy = "USD" if currency == "USD" else "ARS"
-            same_ccy = sum(float(l["quantity"] or 0) for l in _lots
-                           if _native_ccy(l) == _sell_ccy)
-            any_ccy = sum(float(l["quantity"] or 0) for l in _lots)
-            available = same_ccy if same_ccy > 0 else any_ccy
-            if quantity > available + 1e-9:
+            _cola = _cola_de_la_venta(conn, uid, broker, asset, _sell_ccy, date)
+            _freno = _por_que_no_se_vende(conn, uid, broker, broker, asset, _sell_ccy, date,
+                                          quantity, _cola)
+            if _freno and _freno[0] == 400:
                 _TRADE_DRAFT.pop(uid, None)
                 return {"error": (
-                    f"El usuario tiene {_fmt_qty(available)} {asset} vendibles en "
+                    f"El usuario tiene {_fmt_qty(_cola['total'])} {asset} vendibles en "
                     f"{broker} ({currency}) y quiere vender {_fmt_qty(quantity)}. "
                     "Avisale y preguntá si la cantidad o el broker son otros."
                 )}
+            if _freno:
+                _TRADE_DRAFT.pop(uid, None)
+                return {"error": (
+                    f"No se puede registrar esta venta: {_freno[1]} Explicale al usuario "
+                    "por qué y qué puede hacer.")}
             # FX para el P&L en USD de una venta en pesos (sin esto pnl_ars se
             # contaba como USD = ~1415× inflado). MEP de la FECHA de la operación:
             # el chat también registra ventas retroactivas, y ahí el dólar de hoy
@@ -41513,14 +41714,35 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
                   ORDER BY year DESC, month DESC""",
                 (uid, _cut_y, _cut_y, _cut_m),
             ).fetchall()
-        return {
-            "entries": [dict(r) for r in rows],
-            "_note": (
-                "Las filas con broker='global' son el AGREGADO cross-broker del "
+            # Los pases de títulos entre brokers del usuario de cada fila (la misma
+            # cuenta que /api/monthly): sin esto la IA leía «retiraste US$ V de A» y
+            # «A ganó US$ V − C realizados» en el mes de un pase.
+            _patas = _patas_de_traspaso_por_mes(conn, uid)
+        entries = []
+        hay_pases = False
+        for r in rows:
+            d = dict(r)
+            k = (d["broker"], f"{int(d['year']):04d}", f"{int(d['month']):02d}")
+            if k in _patas:
+                extra = _pase_para_la_ia(_patas[k], d["broker"] == "global")
+                if extra:
+                    d.update(extra)
+                    hay_pases = True
+            entries.append(d)
+        nota = ("Las filas con broker='global' son el AGREGADO cross-broker del "
                 "mes (en USD); las demás son el desglose por broker. NO sumes "
-                "'global' con las por-broker — duplicarías."
-            ),
-        }
+                "'global' con las por-broker — duplicarías.")
+        if hay_pases:
+            nota += (" Las filas con campos `pase_*` tienen un PASE de títulos entre dos "
+                     "brokers del usuario («Mover a otro broker»): no es plata que entró ni "
+                     "que salió, ni una venta. `withdrawals` del broker de origen incluye "
+                     "`pase_salio_usd` (lo que valían los títulos ese día) y `deposits` del "
+                     "de destino incluye `pase_entro_usd`. `pnl_realized` incluye "
+                     "`pase_puente_usd` (valor del día − costo; positivo en el origen, "
+                     "negativo en el destino), que NO es ganancia de una venta: no lo "
+                     "cuentes como resultado ni como rendimiento. `pase_gasto_usd` sí es un "
+                     "gasto real. En 'global' los dos lados se anulan.")
+        return {"entries": entries, "_note": nota}
 
     elif name == "get_realized_vs_unrealized":
         # Devuelve breakdown PRECISO de realized (trades cerrados, USD absoluto)

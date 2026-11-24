@@ -600,7 +600,14 @@ def persist_batch(
                 # Limpiar prefijos repetidos tipo "400: ..." de HTTPExceptions internas
                 if isinstance(msg, str) and msg.startswith("400: "):
                     msg = msg[5:]
-                skipped.append({"row_index": tx.row_index, "message": msg})
+                # `interno`: no es un texto pensado para la persona (ni un PersistError
+                # ni el HTTPException de un helper, que traen su motivo escrito), sino
+                # una excepción cualquiera —un error de la base, un KeyError— cuyo texto
+                # nombra tablas y columnas. El pase (`traspaso_a_mano.aplicar_plan`)
+                # no lo muestra: dice «un error inesperado».
+                interno = not (isinstance(inner_ex, PersistError)
+                               or getattr(inner_ex, "status_code", None) is not None)
+                skipped.append({"row_index": tx.row_index, "message": msg, "interno": interno})
 
         except Exception as savepoint_ex:
             # Si fallar el SAVEPOINT mismo, no podemos continuar — eso sí es fatal.
@@ -1635,7 +1642,7 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
         raise PersistError(0, _pases.MSG_REVERT_ES_PASE)
     _filas_del_lote = conn.execute(
         """SELECT raw_row_id, broker, asset_symbol, operation_type, date, fecha_compra,
-                  traspaso_id
+                  traspaso_id, currency
              FROM import_normalized_tx
             WHERE batch_id=? AND excluded_at IS NULL""", (batch_id,)).fetchall()
     _origenes = _pases.filas_origen_vivas(conn, uid)

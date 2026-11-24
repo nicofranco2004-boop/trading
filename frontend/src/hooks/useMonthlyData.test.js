@@ -865,6 +865,19 @@ describe('el puente de un pase en el % del mes de un broker', () => {
     expect(m.deltaPct).toBeCloseTo(0, 9)                       // el % no
   })
 
+  it('mes cerrado con otra actividad: el denominador lleva las patas al COSTO, como Reportes', () => {
+    // Revisión final (contable, D1). A (Cocos) pasa títulos con C = 300 que valían
+    // V = 400 y además gana 20: retira 400 (la pata) y su realizado es 20 + (400 − 300).
+    // Reportes (Dietz con las patas al costo, `flujos_al_costo`): 20 / (1000 + 0,5·(−300))
+    // = 2,35 %. Con el denominador al valor del día daba 20 / 800 = 2,50 %.
+    const a = { year: 2024, month: 3, broker: 'Cocos', capital_inicio: 1000, deposits: 0,
+      withdrawals: 400, pnl_realized: 120, puente_salida_usd: 100,
+      capital_final: 1000 - 400 + 120 }
+    const m = buildMonthlyReports([a], [], [], 'Cocos').years[0].months[0]
+    expect(m.deltaUsd).toBe(120)
+    expect(m.deltaPct).toBeCloseTo((20 / (1000 + 0.5 * (-400 + 100))) * 100, 9)   // 2,35 %
+  })
+
   it('mes en curso: el % cuenta lo mismo que el monto (hoy valen 310 → +10, no +210)', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-11-18T15:00:00Z'))

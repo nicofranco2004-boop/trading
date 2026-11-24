@@ -846,7 +846,12 @@ def _contable_publicable(conn, uid: int, desde=None, hasta=None):
             # None que se confunde con "esta cuenta no se puede medir".
             raise ValueError(f"ventana inválida: {valor!r} no es una fecha ISO")
         q += f" AND (year*100+month) {op} ?"; args.append(k)
-    return contable_de_filas(conn.execute(q + " ORDER BY year, month", args).fetchall())
+    # Los meses con un pase entre brokers, con sus patas al costo: con una sola pata
+    # viva (se borró un broker) el puente no es rendimiento (la misma regla que
+    # Reportes y /mensual, `traspaso_a_mano.filas_al_costo`).
+    from importing.traspaso_a_mano import filas_al_costo
+    return contable_de_filas(filas_al_costo(
+        conn, uid, conn.execute(q + " ORDER BY year, month", args).fetchall()))
 
 
 def contable_de_filas(filas):
@@ -971,6 +976,11 @@ def rendimientos_mensuales(conn, uid: int, desde=None, hasta=None, *,
         filas.append(r)
     if not filas:
         return []
+    # La rama contable (`mes_contable`) mide cada mes con las patas de un pase entre
+    # brokers AL COSTO (`traspaso_a_mano.filas_al_costo`): con una pata huérfana el
+    # puente no es rendimiento, igual que en Reportes y /mensual.
+    from importing.traspaso_a_mano import filas_al_costo
+    filas = filas_al_costo(conn, uid, filas)
 
     from datetime import date as _date, timedelta as _td
     _hoy = hoy or _hoy_art()

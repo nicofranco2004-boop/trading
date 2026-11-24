@@ -452,14 +452,20 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
     const _now = new Date()
     const enCurso = year === _now.getFullYear() && month === (_now.getMonth() + 1)
     const puente = entry && !enCurso ? puenteDelMes(entry) : 0
+    // Sin el puente en el numerador, el DENOMINADOR también va con las patas al costo:
+    // los flujos del mes traen las patas al valor del día (A retira V, B aporta V) y
+    // al costo son `flows + puente` (A retira C, B aporta C). Es la cuenta de Reportes
+    // (`traspaso_a_mano.flujos_al_costo`); con otra actividad en el mes el % daba
+    // distinto (capital 1.000, C 300, V 400 y +20: Reportes 2,35 %, acá 2,50 %).
+    const avgCapitalPct = (startUsd || 0) + 0.5 * (flows + puente)
     if (source === 'manual') {
       deltaUsd = endUsd - startUsd - flows
-      deltaPct = avgCapital > 0 ? ((deltaUsd - puente) / avgCapital) * 100 : 0
+      deltaPct = avgCapitalPct > 0 ? ((deltaUsd - puente) / avgCapitalPct) * 100 : 0
       ciUsd = startUsd; cfUsd = endUsd
     } else if (source === 'partial') {
       // Falta data — usamos pnl_realized + pnl_unrealized como proxy
       deltaUsd = pnlRealized + pnlUnrealized
-      deltaPct = avgCapital > 0 ? ((deltaUsd - puente) / avgCapital) * 100 : 0
+      deltaPct = avgCapitalPct > 0 ? ((deltaUsd - puente) / avgCapitalPct) * 100 : 0
     } else {
       // derived
       deltaUsd = pnlRealized

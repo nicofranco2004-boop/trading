@@ -261,7 +261,9 @@ def patas_del_registro(conn, uid: int, *, desde: Optional[str] = None,
                    COALESCE(SUM(n.valor_usd), 0) AS valor_usd,
                    COALESCE(SUM(n.costo_usd), 0) AS costo_usd,
                    COALESCE(SUM(n.valor_ars), 0) AS valor_ars,
-                   COALESCE(SUM(n.costo_nativo), 0) AS costo_nativo
+                   COALESCE(SUM(n.costo_nativo), 0) AS costo_nativo,
+                   COALESCE(SUM(CASE WHEN n.operation_type = 'FEE'
+                                     THEN ABS(n.gross_amount) END), 0) AS monto_nativo
               FROM {TX_VIVAS}
              WHERE {PATAS_Y_GASTOS_DONDE_SQL}{rango}
              GROUP BY n.traspaso_id, n.broker, substr(n.date, 1, 10), n.operation_type,
@@ -270,7 +272,9 @@ def patas_del_registro(conn, uid: int, *, desde: Optional[str] = None,
     return [{"traspaso_id": f["traspaso_id"], "broker": f["broker"], "fecha": f["fecha"],
              "op": f["op"], "moneda": f["moneda"], "valor_usd": _num(f["valor_usd"]),
              "costo_usd": _num(f["costo_usd"]), "valor_ars": _num(f["valor_ars"]),
-             "costo_nativo": _num(f["costo_nativo"])} for f in filas]
+             "costo_nativo": _num(f["costo_nativo"]),
+             # El gasto en su moneda (la FEE guarda el monto en `gross_amount`).
+             "monto_nativo": _num(f["monto_nativo"])} for f in filas]
 
 
 def mes_de(fila: Dict[str, Any]) -> Tuple[str, str]:
@@ -313,8 +317,14 @@ def resumen(filas: List[Dict[str, Any]], brokers=None) -> Dict[str, Any]:
       · usd_con_dia: las patas de lotes en DÓLARES con su día, {dep: [[fecha, V]], ret}.
       · puente_ars / puente_ars_usd: el puente de las patas en pesos, en pesos
         (V − C de los lotes) y en dólares: lo que suma al «realizado en pesos».
+      · puente_salida_ars / puente_entrada_ars (y sus `_ars_usd`): ese mismo puente
+        de las patas en pesos, por lado y neto por pase como los de dólares (la
+        pestaña en pesos de /mensual explica el puente en pesos: la parte de lotes
+        en dólares la pasa al dólar del mes, como el realizado).
+      · gasto_ars / gasto_ars_usd: el gasto pagado en pesos, en pesos y en dólares.
       · neto_usd / neto_pesos: entradas − salidas (V), con signo.
-    Los de pesos y los de día no se netean por pase: sólo se usan para UN broker."""
+    Los de pesos y los de día no se netean por pase: sólo se usan para UN broker
+    (salvo los `puente_*_ars`, que sí)."""
     S = None if brokers is None else set(brokers)
     out: Dict[str, Any] = {
         "dep_usd": 0.0, "wit_usd": 0.0,
@@ -324,6 +334,9 @@ def resumen(filas: List[Dict[str, Any]], brokers=None) -> Dict[str, Any]:
         "pesos_dep": 0.0, "pesos_dep_usd": 0.0, "pesos_ret": 0.0, "pesos_ret_usd": 0.0,
         "usd_con_dia": {"dep": [], "ret": []},
         "puente_ars": 0.0, "puente_ars_usd": 0.0,
+        "puente_salida_ars": 0.0, "puente_salida_ars_usd": 0.0,
+        "puente_entrada_ars": 0.0, "puente_entrada_ars_usd": 0.0,
+        "gasto_ars": 0.0, "gasto_ars_usd": 0.0,
         "neto_usd": 0.0, "neto_pesos": 0.0,
     }
     por_pase: Dict[Any, Dict[str, Any]] = {}
@@ -332,12 +345,16 @@ def resumen(filas: List[Dict[str, Any]], brokers=None) -> Dict[str, Any]:
             continue
         if f["op"] == "FEE":
             out["gasto_usd"] += f["valor_usd"]
+            if f["moneda"] == "ARS":
+                out["gasto_ars"] += f.get("monto_nativo") or 0.0
+                out["gasto_ars_usd"] += f["valor_usd"]
             continue
         entra = f["op"] == "TRASPASO_ENTRADA"
         lado = "ent" if entra else "sal"
         p = por_pase.setdefault(f["traspaso_id"], {
             "ent": False, "sal": False, "ent_v": 0.0, "ent_c": 0.0, "sal_v": 0.0,
-            "sal_c": 0.0, "ent_ars": 0.0, "sal_ars": 0.0})
+            "sal_c": 0.0, "ent_ars": 0.0, "sal_ars": 0.0,
+            "ent_pa": 0.0, "sal_pa": 0.0, "ent_pa_usd": 0.0, "sal_pa_usd": 0.0})
         p[lado] = True
         p[lado + "_v"] += f["valor_usd"]
         p[lado + "_c"] += f["costo_usd"]
@@ -352,6 +369,8 @@ def resumen(filas: List[Dict[str, Any]], brokers=None) -> Dict[str, Any]:
             signo = -1.0 if entra else 1.0
             out["puente_ars"] += signo * (f["valor_ars"] - f["costo_nativo"])
             out["puente_ars_usd"] += signo * (f["valor_usd"] - f["costo_usd"])
+            p[lado + "_pa"] += f["valor_ars"] - f["costo_nativo"]
+            p[lado + "_pa_usd"] += f["valor_usd"] - f["costo_usd"]
         elif f["valor_usd"]:
             out["usd_con_dia"]["dep" if entra else "ret"].append(
                 [f["fecha"], round(f["valor_usd"], 6)])
@@ -371,16 +390,22 @@ def resumen(filas: List[Dict[str, Any]], brokers=None) -> Dict[str, Any]:
         c = p[lado + "_c"] - p[otro + "_c"]
         if abs(v) < _CERO and abs(c) < _CERO:
             continue
+        pa = p[lado + "_pa"] - p[otro + "_pa"]
+        pa_usd = p[lado + "_pa_usd"] - p[otro + "_pa_usd"]
         if lado == "ent":
             out["dep_usd"] += v
             out["entrada_valor_usd"] += v
             out["entrada_costo_usd"] += c
             out["puente_entrada_usd"] += v - c
+            out["puente_entrada_ars"] += pa
+            out["puente_entrada_ars_usd"] += pa_usd
         else:
             out["wit_usd"] += v
             out["salida_valor_usd"] += v
             out["salida_costo_usd"] += c
             out["puente_salida_usd"] += v - c
+            out["puente_salida_ars"] += pa
+            out["puente_salida_ars_usd"] += pa_usd
     for k in ("neto_usd", "neto_pesos"):
         if abs(out[k]) < _CERO:
             out[k] = 0.0
@@ -409,6 +434,67 @@ def entradas_y_salidas_del_periodo(conn, uid: int, brokers, desde: str, hasta: s
     if por_mes:
         return {f"{y}-{m}": _corto(fs) for (y, m), fs in agrupar_por_mes(filas).items()}
     return _corto(filas)
+
+
+def flujos_al_costo(deposits: float, withdrawals: float, pases) -> Tuple[float, float]:
+    """(aportes, retiros) de un período con las patas de un pase AL COSTO, para medir
+    RENDIMIENTO sobre la cadena contable. LA cuenta: la usan Reportes
+    (`reporting.builder`) y la rama contable del motor (`twr`, vía `filas_al_costo`).
+
+    ⚠️ POR QUÉ. Un pase anota las patas al valor del día: B suma V a lo aportado y A
+    lo resta, y el resultado del mes de cada uno lleva el puente V − C para que su
+    capital cierre al costo (A baja C, B sube C). Con las dos puntas en la cadena al
+    costo, el Dietz de A daba `(−C) − (−V)` = V − C de «ganancia» y el de B lo mismo
+    con el signo al revés: con C = 1.000 y V = 1.200, A publicaba +50 % y B −33 % en un
+    mes en que no se vendió nada. Contando cada pata a su costo (`dep − (V−C)` del
+    lado que entró, `ret − (V−C)` del que salió) los dos dan 0. El gasto del pase no
+    se toca: es una pérdida de verdad. `pases`: `entradas_y_salidas_del_periodo`.
+
+    Sólo para la cadena al costo. Con las puntas a MERCADO (fotos, valor vivo) la
+    pata al valor V es lo correcto: lo que llegó vale V en la foto."""
+    if not pases:
+        return deposits, withdrawals
+    return (deposits - (pases["entrada_valor_usd"] - pases["entrada_costo_usd"]),
+            withdrawals - (pases["salida_valor_usd"] - pases["salida_costo_usd"]))
+
+
+def filas_al_costo(conn, uid: int, filas) -> List[Any]:
+    """Las filas 'global' de `monthly_entries` con sus aportes y retiros AL COSTO para
+    los meses con patas de un pase (`flujos_al_costo`), para la rama CONTABLE del motor
+    de rendimiento (`twr`: el Dashboard, Métricas, el Wrapped y la IA). En 'global'
+    las dos patas de un pase vivo se anulan y no cambia nada; con una sola viva (se
+    borró un broker con `force`) el puente de esa pata ya no se publica como
+    rendimiento: la misma regla que Reportes y /mensual (especificación 0.2: el
+    puente no entra en el % del mes). Quien nunca hizo un pase no paga la consulta;
+    una base sin las tablas devuelve las filas tal cual. Devuelve copias (dicts)."""
+    import dberrors
+    filas = list(filas or [])
+    if not filas:
+        return filas
+    try:
+        if conn.execute("SELECT 1 FROM traspasos_a_mano WHERE user_id = ? LIMIT 1",
+                        (uid,)).fetchone() is None:
+            return filas
+        por_mes = entradas_y_salidas_del_periodo(conn, uid, None, None, None, por_mes=True)
+    except dberrors.ERR_OPERACIONAL as ex:  # base recién creada, sin las tablas
+        log.warning("traspaso_a_mano.filas_al_costo: %s", ex)
+        return filas
+    if not por_mes:
+        return filas
+    out = []
+    for r in filas:
+        d = dict(r)
+        try:
+            k = f"{int(d['year']):04d}-{int(d['month']):02d}"
+        except (KeyError, TypeError, ValueError):
+            out.append(d)
+            continue
+        p = por_mes.get(k)
+        if p:
+            d["deposits"], d["withdrawals"] = flujos_al_costo(
+                float(d.get("deposits") or 0), float(d.get("withdrawals") or 0), p)
+        out.append(d)
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1629,9 +1715,9 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
         if salida:
             raise PaseInvalido(400, (
                 f"En {A} ya figura la salida de {asset} del {_ddmm(salida)} (vino en el archivo "
-                f"de {A}). En Movimientos, filtrá por {A} y borrá la «Venta» de {asset} del "
-                f"{_ddmm(salida)}. Después volvé y movelos desde acá: así llegan a {B} con lo "
-                "que pagaste."))
+                f"de {A}). En Movimientos, filtrá por {A} y tocá «Reabrir» en la «Venta» de "
+                f"{asset} del {_ddmm(salida)}. Después volvé y movelos desde acá: así llegan "
+                f"a {B} con lo que pagaste."))
         raise PaseInvalido(400, f"No tenés {asset} en {A} en {en_moneda} que estuvieran ahí el "
                                 f"{_ddmmaaaa(fecha)}.")
     # #18 — más de lo que había.
@@ -1791,9 +1877,25 @@ def armar_plan(conn, uid: int, pedido, *, hoy: str, helpers, para_confirmar: boo
 
     # #26 — el precio de ese día (C.4).
     moneda_clave = "ARS" if (clave.endswith(".BA") or cripto_en_pesos) else "USD"
-    precio, moneda_precio, fuente, fecha_precio, aviso_vela = _buscar_precio(
-        conn, c, lotes, pedido, hoy=hoy, clave=clave, moneda_precio=moneda_clave,
-        cripto_en_pesos=cripto_en_pesos, helpers=helpers)
+    try:
+        precio, moneda_precio, fuente, fecha_precio, aviso_vela = _buscar_precio(
+            conn, c, lotes, pedido, hoy=hoy, clave=clave, moneda_precio=moneda_clave,
+            cripto_en_pesos=cripto_en_pesos, helpers=helpers)
+    except PaseInvalido as ex:
+        # El confirmar valúa con el precio que la persona VIO (B.3): si entre la vista
+        # previa y el confirmar el servidor se quedó sin precio (pasó la medianoche y
+        # no hay vela de esos días, el último precio quedó viejo, no llegó el dólar
+        # cripto), se usa el de la valuación, como escrito a mano. Sin esto el 409
+        # «sin precio» (un objeto) llegaba al modal como JSON crudo. Una valuación en
+        # otra moneda no sirve: frena como siempre.
+        val = getattr(pedido, "valuacion", None)
+        if not (para_confirmar and isinstance(ex.detalle, dict)
+                and ex.detalle.get("codigo") == "sin_precio" and val is not None
+                and str(getattr(val, "moneda_precio", "")).upper() == moneda_clave
+                and float(getattr(val, "precio_unitario", 0) or 0) > 0):
+            raise
+        precio, moneda_precio = float(val.precio_unitario), moneda_clave
+        fuente, fecha_precio, aviso_vela = "precio_a_mano", c.fecha, None
     if aviso_vela:
         avisos.append(aviso_vela)
 
@@ -2003,7 +2105,11 @@ def aplicar_plan(conn, uid: int, plan: Plan, *, helpers) -> Dict[str, Any]:
             primera = r["skipped_rows"][0]
             log.error("traspaso_a_mano.aplicar_plan: uid=%s pase=%s fila salteada %s",
                       uid, tid, primera)
-            raise PaseInvalido(500, MSG_NO_SE_GUARDO.format(motivo=_motivo(primera.get("message"))))
+            # El texto de una excepción interna (un error de la base, con nombres de
+            # tablas y columnas) no se le muestra a la persona: queda en el log.
+            motivo = ("un error inesperado" if primera.get("interno")
+                      else _motivo(primera.get("message")))
+            raise PaseInvalido(500, MSG_NO_SE_GUARDO.format(motivo=motivo))
 
     # C.7.8 — el precio cargado a mano en A viaja a las patas de B que recibieron los
     # lotes que lo tenían, si no tenían uno (lo anotó el plan en la receta, con esas
@@ -2099,7 +2205,7 @@ MSG_DESHACE_EL_PASE = ("Esto es parte de un pase de títulos entre tus brokers. 
 MSG_REVERT_ES_PASE = ("Este lote es un pase de títulos entre tus brokers: no se revierte desde "
                       "acá. Deshacé el pase entero desde Movimientos (la fila «Pase» → Deshacer).")
 MSG_ORIGEN_DE_UN_PASE = ("Hay títulos de esta importación que pasaste a {B} el {fecha}. "
-                         "Deshacé ese pase antes de revertir el archivo.")
+                         f"Deshacé ese pase ({CAMINO_DESHACER}) antes de revertir el archivo.")
 MSG_COMPRA_PASADA = ("Parte de esta compra se pasó a {B} el {fecha}. Para borrarla, primero "
                      "deshacé ese pase.")
 MSG_LOTE_PASADO = ("Parte de este lote se pasó a otro broker. Para borrarlo, primero deshacé "
@@ -2119,6 +2225,17 @@ MSG_BORRAR_PATA_CON_PASE = ("«{nombre}» tiene títulos de un pase entre tus br
 MSG_PUT_OTRO_BROKER = ("Para pasar este lote a otro broker usá «Mover a otro broker» (en el "
                        "menú ⋯ de la fila). Si lo cargaste en el broker equivocado, borralo y "
                        "cargalo de nuevo en el correcto.")
+# El mismo freno con el interruptor apagado: la opción «Mover a otro broker» no se ve
+# (la pantalla la esconde), así que el texto no puede mandar ahí.
+MSG_PUT_OTRO_BROKER_SIN_MOVER = ("Un lote no se cambia de broker editándolo. Si lo cargaste en "
+                                 "el broker equivocado, borralo y cargalo de nuevo en el "
+                                 "correcto.")
+
+
+def msg_put_otro_broker(habilitado: bool) -> str:
+    """El 409 de cambiarle el broker a un lote editándolo (D.19): manda a «Mover a otro
+    broker» sólo si la opción existe (el interruptor prendido)."""
+    return MSG_PUT_OTRO_BROKER if habilitado else MSG_PUT_OTRO_BROKER_SIN_MOVER
 MOTIVO_ASESOR = "se pasó a otro broker: deshacé primero ese pase"
 # C.11, la regla única de lo que cambia la historia anterior a un pase.
 MSG_CAMBIA_UN_PASE = ("Esto cambia la historia de {asset} en {broker} antes de tu pase del "
@@ -2135,6 +2252,40 @@ MSG_IMPORT_CAMBIA_UN_PASE = ("Este archivo trae {que} de {asset} en {broker} del
 MSG_VENTA_ANTES_DE_LLEGAR = ("El {fecha} todavía no tenías en {broker} todos estos {asset}: "
                              "{q} llegaron desde otro broker tuyo el {llegada}. Elegí una fecha "
                              "del {llegada} en adelante o vendé hasta {disp}.")
+# Lo mismo cuando ese día no había NADA que vender: «vendé hasta 0» no se puede (la
+# cantidad tiene que ser mayor que cero).
+MSG_VENTA_ANTES_DE_LLEGAR_SIN_NADA = ("El {fecha} todavía no tenías {asset} en {broker}: "
+                                      "llegaron desde otro broker tuyo el {llegada}. Elegí una "
+                                      "fecha del {llegada} en adelante.")
+
+
+def texto_venta_antes_de_llegar(*, fecha: str, broker: str, asset: str, q: float,
+                                llegada: str, disp: float) -> str:
+    """El 409 de una venta a mano con fecha anterior a la llegada de un pase (regla C4).
+    Lo usan la venta (`sell_position_fifo`) y la vista previa de la venta del chat."""
+    if disp <= 1e-9:
+        return MSG_VENTA_ANTES_DE_LLEGAR_SIN_NADA.format(
+            fecha=_ddmmaaaa(fecha), broker=broker, asset=asset, llegada=_ddmmaaaa(llegada))
+    return MSG_VENTA_ANTES_DE_LLEGAR.format(
+        fecha=_ddmmaaaa(fecha), broker=broker, asset=asset, q=_cant(q),
+        llegada=_ddmmaaaa(llegada), disp=_cant(disp))
+
+
+# Deshacer un pase incompleto cuyo broker borrado se volvió a crear con el mismo nombre
+# y ya tiene ese activo (C.8): deshacer no sabe si lo que hay ahí es lo que el pase
+# movió (un archivo que se volvió a importar trae la llegada o la salida), y mover los
+# títulos los contaría dos veces o los haría desaparecer. Frena con las dos salidas.
+MSG_RECREADO_B = ("Borraste {B} después de este pase y lo volviste a crear, y ahora tiene "
+                  "{asset}. Si deshacemos el pase, los {q} {asset} volverían a {A} sin salir de "
+                  "{B} y quedarían contados dos veces. Si los {asset} ya están bien en {B} (por "
+                  "ejemplo, porque volviste a importar su archivo), no hace falta deshacer el "
+                  "pase. Para deshacerlo igual, primero sacá de {B} esos {asset} (si vinieron en "
+                  "un archivo: Importaciones → ese archivo → Revertir) y volvé a intentar.")
+MSG_RECREADO_A = ("Borraste {A} después de este pase y lo volviste a crear, y ahora tiene "
+                  "{asset}. Si deshacemos el pase, los {q} {asset} saldrían de {B} y no "
+                  "volverían a {A}. Si tu cartera ya está bien así, no hace falta deshacer el "
+                  "pase. Para deshacerlo igual, primero sacá de {A} esos {asset} (si vinieron en "
+                  "un archivo: Importaciones → ese archivo → Revertir) y volvé a intentar.")
 
 # Tolerancias: la cantidad de un lote se compara con 1e-6 (como la comprobación del
 # plan, `_coinciden`).
@@ -2291,13 +2442,17 @@ def _salida_de_a_despues(conn, uid: int, reg: Registro):
                 s["d"] == mejor["fecha"] and s["tid"] and not mejor["traspaso_id"]):
             mejor = {"fecha": s["d"], "traspaso_id": s["tid"]}
     ops_hasta = reg.receta.get("ops_hasta")
+    # Una 'Venta' a mano anotada DESPUÉS del pase cuenta aunque su fecha sea anterior
+    # (la venta a mano ya no deja anotarla —C.11 en `sell_position_fifo`—, pero si
+    # alguna puerta lo hiciera, deshacer la dejaría pagada con otros lotes).
     for o in conn.execute(
             f"""SELECT substr(o.date, 1, 10) AS d, o.id AS oid FROM operations o
                  WHERE o.user_id = ? AND o.broker IN ({_ph(reg.patas_a)})
                    AND UPPER(o.asset) = ? AND o.op_type = 'Venta'
-                   AND substr(o.date, 1, 10) >= ?
+                   AND (substr(o.date, 1, 10) >= ? OR o.id > ?)
                    AND NOT EXISTS (SELECT 1 FROM import_op_links k WHERE k.operation_id = o.id)""",
-            (uid, *reg.patas_a, _canon(reg.asset), reg.fecha)).fetchall():
+            (uid, *reg.patas_a, _canon(reg.asset), reg.fecha,
+             int(ops_hasta) if ops_hasta is not None else 2 ** 62)).fetchall():
         if o["d"] == reg.fecha and ops_hasta is not None and int(o["oid"]) <= int(ops_hasta):
             continue
         if mejor is None or o["d"] > mejor["fecha"]:
@@ -2340,19 +2495,56 @@ def _pase_posterior_desde_b(conn, uid: int, reg: Registro):
     return None
 
 
+def _lado_borrado_que_volvio(conn, uid: int, reg: Registro) -> Optional[str]:
+    """'destino' u 'origen' si el lado borrado de un pase incompleto se volvió a crear
+    (hoy hay un broker con su nombre) y ya tiene el activo: un lote suyo o una fila
+    viva del registro (una compra y su «Débito» dejan el lote en 0, pero están). Un
+    lado que se borró y no volvió, o volvió vacío de ese activo, no frena: deshacer
+    hace lo de siempre (C.8, pase incompleto). Sólo lee."""
+    from importing.persister import broker_pair
+    for vivo, raiz, lado in ((reg.b_vivo, reg.raiz_b, "destino"),
+                             (reg.a_vivo, reg.raiz_a, "origen")):
+        if vivo or not raiz:
+            continue
+        if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?",
+                            (uid, raiz)).fetchone():
+            continue
+        patas = broker_pair(conn, uid, raiz)
+        asset = _canon(reg.asset)
+        if conn.execute(
+                f"SELECT 1 FROM positions WHERE user_id=? AND broker IN ({_ph(patas)}) "
+                f"AND UPPER(asset)=? AND is_cash=0 AND quantity > 0 LIMIT 1",
+                (uid, *patas, asset)).fetchone() or conn.execute(
+                f"SELECT 1 FROM {TX_VIVAS} WHERE b.user_id=? AND n.broker IN ({_ph(patas)}) "
+                f"AND UPPER(n.asset_symbol)=? AND n.operation_type IN ('BUY', 'SELL') LIMIT 1",
+                (uid, *patas, asset)).fetchone():
+            return lado
+    return None
+
+
 def _por_que_no_se_deshace(conn, uid: int, reg: Registro) -> Optional[str]:
     """C.8, validaciones 2 a 4 (la 1 es `cargar_registro`). Devuelve el texto (409) o
     None si se puede deshacer. Sólo lee: la usan el deshacer y `GET /traspasos`."""
-    # 2 — filas de un archivo posterior que no entraron porque ya estaba este pase.
+    # 2 — filas de un archivo posterior que no entraron porque ya estaba este pase. La
+    # fecha es la que muestra Importaciones (`created_at`, en el día ARGENTINO): la
+    # marca se guarda en UTC y de 21 a 24 hs es otro día, y el texto manda a buscar
+    # ese archivo en la lista.
+    from fechas import dia_art_de_texto
     for o in reg.omitidas:
         b = conn.execute(
-            "SELECT broker, status, COALESCE(confirmed_at, created_at) AS cuando "
-            "FROM import_batches WHERE id=? AND user_id=?",
+            "SELECT broker, status, created_at FROM import_batches WHERE id=? AND user_id=?",
             (o.get("batch_id"), uid)).fetchone()
         if b and b["status"] == "confirmed":
             return MSG_OMITIDAS.format(
-                broker=b["broker"], fecha=_ddmmaaaa(b["cuando"]), asset=reg.asset,
+                broker=b["broker"],
+                fecha=_ddmmaaaa(dia_art_de_texto(b["created_at"]) or b["created_at"]),
+                asset=reg.asset,
                 cual="llegada" if o.get("lado") in ("entrada", "destino") else "salida")
+    # El broker borrado de un pase incompleto que se volvió a crear y ya tiene el activo.
+    recreado = _lado_borrado_que_volvio(conn, uid, reg)
+    if recreado:
+        return (MSG_RECREADO_B if recreado == "destino" else MSG_RECREADO_A).format(
+            A=reg.raiz_a, B=reg.raiz_b, asset=reg.asset, q=_cant(reg.cantidad))
     # 3 — A después del pase.
     if reg.a_vivo:
         s = _salida_de_a_despues(conn, uid, reg)
@@ -2572,6 +2764,19 @@ def lotes_en_pases_vivos(conn, uid: int) -> set:
     return out
 
 
+def lotes_de_pases_vivos(conn, uid: int) -> set:
+    """Los ids de `positions` que son parte de un pase vivo: los de A de su receta
+    (`lotes_en_pases_vivos`) y los que LLEGARON a B (el vínculo de cada COMPRA de su
+    lote de entrada, si sigue confirmado). Es la guarda del PUT de un lote que le
+    cambia el activo o la moneda (D.10.14 propagado)."""
+    out = set(lotes_en_pases_vivos(conn, uid))
+    for reg in _registros(conn, uid, vivos=True):
+        if reg.b_vivo:
+            out |= {ll["position_id"] for ll in _llegadas_de_b(conn, reg)
+                    if ll["position_id"] is not None}
+    return out
+
+
 def filas_origen_vivas(conn, uid: int) -> Dict[Tuple[str, Any], Tuple[str, str]]:
     """{(batch_id, raw_row_id) de la COMPRA importada de donde salieron títulos de un
     pase vivo: (cuenta de destino, fecha del pase)}."""
@@ -2618,8 +2823,73 @@ def pases_de_brokers(conn, uid: int, nombres) -> List[str]:
         "ORDER BY fecha, id", (uid,)).fetchall() if r["id"] in tocados]
 
 
+def pases_de_brokers_por_lado(conn, uid: int, nombres) -> Dict[str, List[str]]:
+    """Los pases vivos que tocan esos brokers (`pases_de_brokers`), separados por el
+    lado que esos brokers son en cada uno: 'salida' (los títulos salieron de acá) o
+    'entrada' (llegaron acá). El aviso de borrar un broker dice cosas distintas: lo
+    que salió se queda en el otro broker; lo que llegó se borra con éste y no vuelve
+    al de origen, salvo que se deshaga el pase."""
+    nombres = [n for n in (nombres or []) if n]
+    out: Dict[str, List[str]] = {"salida": [], "entrada": []}
+    ids = pases_de_brokers(conn, uid, nombres)
+    if not ids:
+        return out
+    lados = {}
+    for r in conn.execute(
+            f"""SELECT DISTINCT n.traspaso_id AS tid, n.batch_id AS bid FROM {TX_VIVAS}
+                 WHERE b.user_id = ? AND b.parser_format = ? AND n.traspaso_id IS NOT NULL
+                   AND (b.broker IN ({_ph(nombres)}) OR n.broker IN ({_ph(nombres)}))""",
+            (uid, FORMATO, *nombres, *nombres)).fetchall():
+        lados.setdefault(r["tid"], set()).add(r["bid"])
+    for t in conn.execute(
+            f"SELECT id, lote_salida, lote_entrada FROM traspasos_a_mano WHERE user_id = ? "
+            f"AND id IN ({_ph(ids)})", (uid, *ids)).fetchall():
+        bids = lados.get(t["id"], set())
+        if t["lote_salida"] in bids:
+            out["salida"].append(t["id"])
+        if t["lote_entrada"] in bids:
+            out["entrada"].append(t["id"])
+    return out
+
+
+def _moneda_de(valor) -> Optional[str]:
+    """'ARS', 'USD' (cualquier otra moneda de un título: USD, USDT…) o None si no se
+    sabe."""
+    v = str(valor or "").strip().upper()
+    return None if not v else ("ARS" if v == "ARS" else "USD")
+
+
+def _compra_que_no_toca_el_pase(conn, uid: int, reg: Registro, f: Dict[str, Any],
+                                cache: Dict[Any, bool]) -> bool:
+    """¿Una COMPRA del lado A en OTRA moneda que la del pase no puede cambiar lo que
+    el pase consumió? El persister y el rebuild consumen por moneda: el pase (que
+    nunca cruza de moneda) se lleva lotes de SU moneda. Una compra en la otra moneda
+    sólo los toca a través del «pool único» (`rebuild._replay_asset`): una VENTA en
+    esa otra moneda que no alcanza con sus lotes sigue con los de la moneda del pase
+    (o se los deja, si la compra aparece). Sin ventas en esa moneda hasta el día del
+    pase en las patas de A, no hay por dónde: la compra no cambia el pase. Con una,
+    se frena como siempre (ante la duda, frenar). Una fila sin moneda conocida
+    cuenta como de la moneda del pase."""
+    moneda = _moneda_de(f.get("currency"))
+    if moneda is None or moneda == _moneda_de(reg.moneda):
+        return False
+    clave = (reg.id, moneda)
+    if clave not in cache:
+        cache[clave] = conn.execute(
+            f"""SELECT 1 FROM {TX_VIVAS}
+                 WHERE b.user_id = ? AND n.broker IN ({_ph(reg.patas_a)})
+                   AND UPPER(n.asset_symbol) = ? AND n.operation_type = 'SELL'
+                   AND n.traspaso_id IS NULL AND substr(n.date, 1, 10) <= ?
+                   AND (CASE WHEN UPPER(COALESCE(n.currency, '')) = 'ARS' THEN 'ARS'
+                             ELSE 'USD' END) = ?
+                 LIMIT 1""",
+            (uid, *reg.patas_a, _canon(reg.asset), reg.fecha, moneda)).fetchone() is None
+    return cache[clave]
+
+
 def pase_que_cambia(conn, uid: int, filas, *, excluir=None,
-                    plantilla: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                    plantilla: Optional[str] = None, lados=("origen", "destino"),
+                    el_dia_del_pase: bool = True) -> Optional[Dict[str, Any]]:
     """C.11, la regla única. `filas`: dicts {broker, asset, op, date, fecha_compra,
     traspaso_id} que una puerta está por agregar, sacar o reescribir en el registro.
     Devuelve el primer pase vivo cuya historia anterior cambiaría —{traspaso_id, lado
@@ -2633,12 +2903,20 @@ def pase_que_cambia(conn, uid: int, filas, *, excluir=None,
         día del pase o antes.
       · Lado B (su lote sigue confirmado, la fila en una pata de B): una VENTA anterior
         al pase (el rearmado de B fabricaría un lote semilla y dejaría los movidos
-        enteros: títulos de más)."""
+        enteros: títulos de más).
+    Una COMPRA del lado A en otra moneda que la del pase no lo cambia si no hay por
+    dónde cruzar de moneda (`_compra_que_no_toca_el_pase`): sin eso, borrar o
+    importar una compra del mismo CEDEAR en dólares frenaba por un pase de los de
+    pesos. `filas` puede traer `currency` (si no, cuenta como de la moneda del pase).
+    `lados`: qué lados mirar; `el_dia_del_pase=False` deja afuera, del lado A, una
+    fila del MISMO día del pase (la venta a mano anotada después del pase: la cuenta
+    como posterior, igual que el deshacer, C.8 #3)."""
     filas = [f for f in (filas or [])
              if f and str(f.get("op") or "").upper() in ("BUY", "SELL")]
     if not filas:
         return None
     excluir = set(excluir or ())
+    cache: Dict[Any, bool] = {}
     for reg in _registros(conn, uid, vivos=True):
         if reg.id in excluir:
             continue
@@ -2650,11 +2928,20 @@ def pase_que_cambia(conn, uid: int, filas, *, excluir=None,
             d = _dia(f.get("date")) or ""
             fc = _dia(f.get("fecha_compra")) or d
             lado = None
-            if reg.a_vivo and f.get("broker") in reg.patas_a and d and d <= reg.fecha:
-                if op == "SELL" or (op == "BUY" and fc <= reg.compra_mas_nueva):
+            antes_del_pase = d and (d <= reg.fecha if el_dia_del_pase else d < reg.fecha)
+            if "origen" in lados and reg.a_vivo and f.get("broker") in reg.patas_a \
+                    and antes_del_pase:
+                # Una venta que sólo puede consumir lotes de SU moneda (la venta a
+                # mano, cuando hay lotes de esa moneda: no hace spill) y no es la del
+                # pase, no toca lo que el pase se llevó.
+                otra_moneda = (f.get("solo_su_moneda")
+                               and _moneda_de(f.get("currency")) not in (None, _moneda_de(reg.moneda)))
+                if (op == "SELL" and not otra_moneda) or (
+                        op == "BUY" and fc <= reg.compra_mas_nueva
+                        and not _compra_que_no_toca_el_pase(conn, uid, reg, f, cache)):
                     lado = "origen"
-            if lado is None and reg.b_vivo and f.get("broker") in reg.patas_b \
-                    and op == "SELL" and d and d < reg.fecha:
+            if lado is None and "destino" in lados and reg.b_vivo \
+                    and f.get("broker") in reg.patas_b and op == "SELL" and d and d < reg.fecha:
                 lado = "destino"
             if lado:
                 broker = reg.raiz_a if lado == "origen" else reg.raiz_b
@@ -2676,7 +2963,8 @@ def fila_del_registro(fila) -> Dict[str, Any]:
     d = dict(fila)
     return {"broker": d.get("broker"), "asset": d.get("asset_symbol"),
             "op": d.get("operation_type"), "date": d.get("date"),
-            "fecha_compra": d.get("fecha_compra"), "traspaso_id": d.get("traspaso_id")}
+            "fecha_compra": d.get("fecha_compra"), "traspaso_id": d.get("traspaso_id"),
+            "currency": d.get("currency")}
 
 
 def lotes_que_no_estaban(lotes, fecha: str):
@@ -2740,6 +3028,18 @@ AVISO_SALIDA_DE_MAS = ("Ojo: este archivo trae una salida de {q} {asset} de {A} 
                        "cerca de tu pase a {B} del {pase}, pero son más de los {n} que salieron "
                        "de tus archivos: la cargamos. Si incluye los del pase, deshacé el pase "
                        "antes de importar el archivo.")
+# Cabía en lo que el pase movió, pero otra fila del mismo archivo ya lo explicó (se
+# omitió esa): ésta entra.
+AVISO_ENTRADA_YA_EXPLICADA = ("Ojo: este archivo trae otra llegada de {q} {asset} a {B} el "
+                              "{fila}, cerca de tu pase desde {A} del {pase}, pero los {n} que "
+                              "pasaste ya los explica otra fila del archivo: la cargamos. Si es "
+                              "la misma llegada repetida, deshacé el pase antes de importar el "
+                              "archivo.")
+AVISO_SALIDA_YA_EXPLICADA = ("Ojo: este archivo trae otra salida de {q} {asset} de {A} el "
+                             "{fila}, cerca de tu pase a {B} del {pase}, pero los {n} que "
+                             "salieron de tus archivos ya los explica otra fila del archivo: la "
+                             "cargamos. Si es la misma salida repetida, deshacé el pase antes "
+                             "de importar el archivo.")
 
 
 @dataclass
@@ -2844,6 +3144,7 @@ def filas_ya_traspasadas(conn, uid: int, txs, *, already_skipped=()) -> YaTraspa
             presupuesto[(reg.id, "entrada")] = _presupuesto(conn, reg, "entrada")
         if reg.a_vivo:
             presupuesto[(reg.id, "salida")] = _presupuesto(conn, reg, "salida")
+    movido = dict(presupuesto)          # lo que el pase movió (no se descuenta)
     usados = set(skip)
     for t in candidatas:
         lado = _lado_de_la_fila(t)
@@ -2860,13 +3161,21 @@ def filas_ya_traspasadas(conn, uid: int, txs, *, already_skipped=()) -> YaTraspa
         datos = dict(asset=t.asset_symbol, q=_cant(q), fila=_ddmm(fila), A=None, B=None)
         if reg is None:
             # Más títulos de los que el pase movió en esa cuenta: no es seguro que sean
-            # los mismos (ante la duda se omite de menos). Entra, con un aviso.
+            # los mismos (ante la duda se omite de menos). Entra, con un aviso. El
+            # número del aviso es lo que el pase MOVIÓ en esa cuenta (el presupuesto de
+            # arriba se va descontando con cada fila omitida: decía «más de los 0»).
             cerca = suyos[0]
             if _dias_entre(fila, cerca.fecha) <= DIAS_TRASPASO_TARDIO:
+                total = movido[(cerca.id, lado)]
                 datos.update(A=cerca.raiz_a, B=cerca.raiz_b, pase=_ddmm(cerca.fecha),
-                             n=_cant(presupuesto[(cerca.id, lado)]))
-                out.avisos.append((AVISO_ENTRADA_DE_MAS if lado == "entrada"
-                                   else AVISO_SALIDA_DE_MAS).format(**datos))
+                             n=_cant(total))
+                if q <= total + _TOL_CANT:
+                    # Cabía en el pase, pero otra fila del archivo ya lo explicó.
+                    plantilla = (AVISO_ENTRADA_YA_EXPLICADA if lado == "entrada"
+                                 else AVISO_SALIDA_YA_EXPLICADA)
+                else:
+                    plantilla = AVISO_ENTRADA_DE_MAS if lado == "entrada" else AVISO_SALIDA_DE_MAS
+                out.avisos.append(plantilla.format(**datos))
             continue
         dias = _dias_entre(fila, reg.fecha)
         datos.update(A=reg.raiz_a, B=reg.raiz_b, pase=_ddmm(reg.fecha))
@@ -2905,7 +3214,8 @@ def fila_de_tx(t) -> Dict[str, Any]:
     return {"broker": getattr(t, "broker", None), "asset": getattr(t, "asset_symbol", None),
             "op": getattr(t, "operation_type", None), "date": getattr(t, "date", None),
             "fecha_compra": getattr(t, "fecha_compra", None),
-            "traspaso_id": getattr(t, "traspaso_id", None)}
+            "traspaso_id": getattr(t, "traspaso_id", None),
+            "currency": getattr(t, "currency", None)}
 
 
 def freno_del_import(conn, uid: int, txs, *, ya: YaTraspasadas, sin=()) -> Optional[Dict[str, Any]]:

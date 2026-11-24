@@ -209,3 +209,38 @@ describe('Editar la posición entera (EditGroupModal, compu y celular)', () => {
     expect(enviados[0].new_asset_type).toBe('CEDEAR')
   })
 })
+
+// Revisión final de «Mover a otro broker» (contrato #7 / seguridad #2): editar un
+// lote ya no cambia el broker. Con la opción apagada (o un activo que no se pasa)
+// el enlace «Mover a otro broker» no está, y el broker quedaba como texto fijo sin
+// ninguna pista de cómo corregirlo.
+describe('Editar un lote: el broker no se edita y dice cómo corregirlo', () => {
+  const PISTA = 'Para cambiarlo de broker, borralo y cargalo de nuevo en el correcto.'
+  const LOTE = {
+    id: 7, broker: 'IBKR', asset: 'IREN', is_cash: false, buy_price: '9,5', quantity: '10',
+    invested: '95', tc_compra: '', commissions: '', notes: '', price_override: '',
+    entry_date: '2026-10-01', asset_type: 'CEDEAR', currency: 'USD',
+  }
+  function montarCon(onMove) {
+    function Pantalla() {
+      const [form, setForm] = useState(LOTE)
+      return h(PositionFormModal, {
+        mode: 'edit', form, setForm, brokers: BROKERS, selectedBrokerCurrency: 'USD',
+        tcValuacion: 1400, onClose: () => {}, onSave: async () => {}, onMove,
+      })
+    }
+    return montar(h(Pantalla))
+  }
+
+  it('sin «Mover a otro broker» (interruptor apagado): la pista', async () => {
+    const { contenedor } = await montarCon(null)
+    expect(texto(contenedor)).toContain(PISTA)
+    expect(buscarBoton(contenedor, 'Mover a otro broker')).toBeFalsy()
+  })
+
+  it('con la opción: el enlace, sin la pista', async () => {
+    const { contenedor } = await montarCon(() => {})
+    expect(buscarBoton(contenedor, 'Mover a otro broker')).toBeTruthy()
+    expect(texto(contenedor)).not.toContain(PISTA)
+  })
+})

@@ -5,7 +5,7 @@ import Modal from './Modal'
 import Card from './Card'
 import EmptyState from './EmptyState'
 import ShareCardModal from './ShareCardModal'
-import { usd, ars, pct, pctSigned, colorClass, MONTHS, parseNum, numToInput, fmtUsd } from '../utils/format'
+import { usd, ars, pct, pctSigned, colorClass, MONTHS, parseNum, numToInput, fmtUsd, fmtArs } from '../utils/format'
 import { resultadoParaElPorcentaje, lineasDelPuente } from '../utils/resultadoDelMes'
 import { api } from '../utils/api'
 import { useEnVuelo } from '../hooks/useEnVuelo'
@@ -658,7 +658,12 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                 // siempre lo incluye y lo explica el renglón de abajo.
                 const retParaPct = snap(resultadoParaElPorcentaje(m, isCurrent))
                 const retPct = m.capital_inicio > 0 ? snap(retParaPct / m.capital_inicio) : 0
-                const delPuente = lineasDelPuente(m, (x) => (oculto ? OCULTO : fmtUsd(x)))
+                // En la moneda de la pestaña: en pesos, el puente de lotes en pesos va
+                // con sus pesos y el resto al dólar del mes (como el realizado).
+                const delPuente = tabIsARS
+                  ? lineasDelPuente(m, (x) => (oculto ? OCULTO : fmtArs(x)),
+                      { alDolarDelMes: (x) => valueAt(x, m.year, m.month) })
+                  : lineasDelPuente(m, (x) => (oculto ? OCULTO : fmtUsd(x)))
                 // Lo que se MUESTRA en la moneda de la pestaña (en pesos, con el realizado exacto).
                 const realVista = realizadoAt(m).monto
                 const retVista = tabIsARS

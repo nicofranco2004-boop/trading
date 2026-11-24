@@ -39,6 +39,24 @@ describe('avisoBorrarBroker', () => {
     expect(partesDelBorrado({ traspasos: 1 })[0]).toMatch(/^1 pase de títulos/)
   })
 
+  it('con el lado de cada pase: el broker de DESTINO no dice que «se quedan allá»', () => {
+    // Revisión final (contrato #1): borrar el broker al que LLEGARON los títulos los
+    // borra con él, y no vuelven al de origen salvo que se deshaga el pase. El texto
+    // de la salida era falso para ese lado.
+    const destino = partesDelBorrado({ positions: 1, traspasos: 1, traspasos_salida: 0, traspasos_entrada: 1 })
+    expect(destino).toEqual([
+      '1 posición',
+      '1 pase de títulos que llegaron desde otro broker tuyo (se borran con este broker y no vuelven al de origen; para que vuelvan, deshacé el pase en Movimientos → «Deshacer pase», antes o después de borrar)',
+    ])
+    expect(destino.join(' ')).not.toMatch(/se quedan allá/)
+    const origen = partesDelBorrado({ traspasos: 1, traspasos_salida: 1, traspasos_entrada: 0 })
+    expect(origen).toEqual([
+      '1 pase de títulos con otro broker tuyo (los títulos que llegaron al otro broker se quedan allá; si después reimportás este broker, van a aparecer en los dos lados)',
+    ])
+    // Un broker que es origen de un pase y destino de otro: las dos líneas.
+    expect(partesDelBorrado({ traspasos: 2, traspasos_salida: 1, traspasos_entrada: 1 })).toHaveLength(2)
+  })
+
   it('un resumen viejo (sin las claves nuevas) no rompe ni inventa líneas', () => {
     expect(partesDelBorrado({ positions: 1 })).toEqual(['1 posición'])
     expect(partesDelBorrado(undefined)).toEqual([])

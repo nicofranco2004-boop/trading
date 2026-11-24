@@ -341,6 +341,17 @@ export function repetidasPorHuella(preview) {
 }
 
 /**
+ * ¿Es el texto de un freno del servidor por un pase entre brokers vivo? Los tres que
+ * puede dar revertir un archivo («Este lote es un pase…», «Hay títulos de esta
+ * importación que pasaste…», «Esto cambia la historia… antes de tu pase…») piden
+ * deshacer el pase primero. El servidor los mira ANTES del modo forzado, así que
+ * Importaciones no tiene que ofrecer «Forzar revert» (devolvía el mismo error).
+ */
+export function esFrenoDeUnPase(msg) {
+  return /deshac[eé] (el|ese) pase/i.test(String(msg || ''))
+}
+
+/**
  * El bloque rojo del importador cuando el archivo cambiaría la historia anterior a
  * un pase (`preview.cambian_un_pase`). Si el servidor manda el texto armado
  * (`mensaje`), es ése; si manda los datos, se arma el `MSG_IMPORT_CAMBIA_UN_PASE`.

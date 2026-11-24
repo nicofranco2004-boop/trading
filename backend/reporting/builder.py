@@ -1616,23 +1616,13 @@ def _hizo_algun_pase(conn, uid: int) -> bool:
 
 def _flujos_al_costo(deposits: float, withdrawals: float, pases) -> Tuple[float, float]:
     """(aportes, retiros) del período con las patas de un pase AL COSTO, para medir
-    RENDIMIENTO sobre la cadena contable.
-
-    ⚠️ POR QUÉ. Un pase anota las patas al valor del día: B suma V a lo aportado y A
-    lo resta, y el resultado del mes de cada uno lleva el puente V − C para que su
-    capital cierre al costo (A baja C, B sube C). Con las dos puntas en la cadena al
-    costo, el Dietz de A daba `(−C) − (−V)` = V − C de «ganancia» y el de B lo mismo
-    con el signo al revés: con C = 1.000 y V = 1.200, A publicaba +50 % y B −33 % en un
-    mes en que no se vendió nada. Contando cada pata a su costo (`dep − (V−C)` del
-    lado que entró, `ret − (V−C)` del que salió) los dos dan 0. El gasto del pase no
-    se toca: es una pérdida de verdad. `pases`: `_patas_de_pase_del_periodo`.
-
-    Sólo para la cadena al costo. Con las puntas a MERCADO (fotos, valor vivo) la
-    pata al valor V es lo correcto: lo que llegó vale V en la foto."""
-    if not pases:
-        return deposits, withdrawals
-    return (deposits - (pases["entrada_valor_usd"] - pases["entrada_costo_usd"]),
-            withdrawals - (pases["salida_valor_usd"] - pases["salida_costo_usd"]))
+    RENDIMIENTO sobre la cadena contable. La cuenta vive en UN lugar,
+    `traspaso_a_mano.flujos_al_costo` (el porqué está ahí): la comparte con la rama
+    contable del motor (`twr`, vía `traspaso_a_mano.filas_al_costo`), que con una pata
+    huérfana publicaba el puente como rendimiento mientras Reportes no.
+    `pases`: `_patas_de_pase_del_periodo`."""
+    from importing.traspaso_a_mano import flujos_al_costo
+    return flujos_al_costo(deposits, withdrawals, pases)
 
 
 def _modified_dietz_pct(start_value: float, end_value: float, flows: float) -> Optional[float]:

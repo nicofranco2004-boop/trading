@@ -13,7 +13,7 @@ import ImportWizard from '../components/import/ImportWizard'
 import WallbitConnect from '../components/import/WallbitConnect'
 import TenenciaUpload from '../components/import/TenenciaUpload'
 import { api } from '../utils/api'
-import { tituloDeLotePase } from '../utils/moverDeBroker'
+import { tituloDeLotePase, esFrenoDeUnPase } from '../utils/moverDeBroker'
 import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
@@ -96,8 +96,11 @@ export default function Imports() {
       await load()
     } catch (ex) {
       const msg = ex.message || 'No se pudo revertir.'
-      // Errores terminales donde forzar tampoco ayuda → cerramos el modal.
-      const terminal = /no encontrado|confirmad/i.test(msg)
+      // Errores terminales donde forzar tampoco ayuda → cerramos el modal. Los
+      // frenos de un pase entre brokers también lo son: el servidor los mira antes
+      // del modo forzado, así que «Forzar revert» devuelve el mismo error
+      // (`esFrenoDeUnPase`).
+      const terminal = /no encontrado|confirmad/i.test(msg) || esFrenoDeUnPase(msg)
       if (force || terminal) {
         setError(msg)
         setConfirmRevert(null)

@@ -4435,10 +4435,17 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
                     </span>
                   )}
                 </div>
-                {onMove && puedeMoverse(form) && (
+                {onMove && puedeMoverse(form) ? (
                   <button type="button" onClick={onMove} className="mt-1 text-xs text-rendi-accent hover:underline">
                     Mover a otro broker
                   </button>
+                ) : (
+                  // Sin «Mover a otro broker» (la opción está apagada, o este activo
+                  // no se pasa: bonos, fondos, efectivo) el broker igual no se edita:
+                  // que diga cómo corregirlo, en vez de un campo fijo sin pista.
+                  <p className="mt-1 text-xs text-ink-3">
+                    Para cambiarlo de broker, borralo y cargalo de nuevo en el correcto.
+                  </p>
                 )}
               </div>
             )}

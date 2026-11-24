@@ -54,22 +54,45 @@ export function resultadoParaElPorcentaje(m, enCurso) {
 }
 
 /**
- * Los renglones que explican el puente debajo del realizado de la fila (uno por
- * concepto distinto de 0). `fmt(x)` formatea dólares (y tapa con el ojito).
+ * El puente de salida, el de entrada y el gasto de la fila en la moneda de la
+ * pestaña. En dólares (`alDolarDelMes` null) son los `*_usd` del servidor. En la
+ * pestaña EN PESOS (E.7), la misma regla que el realizado (utils/realizadoEnPesos):
+ * la parte de lotes en pesos va con sus pesos exactos (`puente_*_ars`, que
+ * `realized_ars` ya lleva adentro; `gasto_pase_ars`, el gasto pagado en pesos) y el
+ * resto —lotes en dólares, gasto en dólares— al dólar del mes (`alDolarDelMes`).
  */
-export function lineasDelPuente(m, fmt) {
-  const out = []
+export function montosDelPuente(m, alDolarDelMes = null) {
   const salida = n(m?.puente_salida_usd)
   const entrada = n(m?.puente_entrada_usd)
   const gasto = n(m?.gasto_pase_usd)
-  if (Math.abs(salida) >= 0.005) {
+  if (typeof alDolarDelMes !== 'function') return { salida, entrada, gasto }
+  const enPesos = (usd, ars, arsUsd) => n(ars) + n(alDolarDelMes(usd - n(arsUsd)))
+  return {
+    salida: enPesos(salida, m?.puente_salida_ars, m?.puente_salida_ars_usd),
+    entrada: enPesos(entrada, m?.puente_entrada_ars, m?.puente_entrada_ars_usd),
+    gasto: enPesos(gasto, m?.gasto_pase_ars, m?.gasto_pase_ars_usd),
+  }
+}
+
+/**
+ * Los renglones que explican el puente debajo del realizado de la fila (uno por
+ * concepto distinto de 0). `fmt(x)` formatea un monto en la moneda de la pestaña
+ * (y tapa con el ojito); `alDolarDelMes`, en la pestaña en pesos, pasa dólares a
+ * pesos con el dólar del mes de la fila (ver `montosDelPuente`).
+ */
+export function lineasDelPuente(m, fmt, { alDolarDelMes = null } = {}) {
+  const out = []
+  const { salida, entrada, gasto } = montosDelPuente(m, alDolarDelMes)
+  // Qué renglones van lo decide el monto en dólares del servidor (los centavos
+  // de redondeo no dibujan un renglón); el signo y el número, el de la pestaña.
+  if (Math.abs(n(m?.puente_salida_usd)) >= 0.005) {
     out.push(`Incluye una ${salida > 0 ? 'ganancia' : 'pérdida'} de ${fmt(Math.abs(salida))} de los títulos que pasaste a otro broker (no es una venta).`)
   }
-  if (Math.abs(entrada) >= 0.005) {
+  if (Math.abs(n(m?.puente_entrada_usd)) >= 0.005) {
     out.push(entrada > 0
       ? `Descuenta ${fmt(entrada)}: los títulos que llegaron desde otro broker ya traían esa ganancia (no es una pérdida).`
       : `Suma ${fmt(Math.abs(entrada))}: los títulos que llegaron desde otro broker ya traían esa pérdida.`)
   }
-  if (Math.abs(gasto) >= 0.005) out.push(`Incluye ${fmt(gasto)} del costo del pase.`)
+  if (Math.abs(n(m?.gasto_pase_usd)) >= 0.005) out.push(`Incluye ${fmt(gasto)} del costo del pase.`)
   return out
 }

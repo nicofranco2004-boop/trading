@@ -368,7 +368,10 @@ class PataDeLaMonedaTest(unittest.TestCase):
             "broker": "IBKR", "asset": "GGAL", "quantity": 10, "buy_price": 5000,
             "currency": "ARS", "entry_date": "2026-10-01"})
         self.assertEqual(r.status_code, 409, r.text)
-        self.assertEqual(r.json()["detail"], main._traspaso_a_mano.MSG_PUT_OTRO_BROKER)
+        # El texto depende del interruptor de «Mover a otro broker» (revisión final,
+        # seguridad #2: apagado, no manda a una opción que la pantalla no muestra).
+        self.assertEqual(r.json()["detail"], main._traspaso_a_mano.msg_put_otro_broker(
+            main.interruptor(main._traspaso_a_mano.INTERRUPTOR)))
         lote = self._q("SELECT broker, currency FROM positions WHERE id=?", pid)[0]
         self.assertEqual((lote["broker"], lote["currency"]), ("Cocos", "ARS"))
 

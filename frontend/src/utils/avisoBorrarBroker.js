@@ -25,11 +25,21 @@ export function partesDelBorrado(counts) {
   if (n('archived') > 0) {
     partes.push(`${plural(n('archived'), 'posición guardada', 'posiciones guardadas')} en "Posiciones eliminadas" (ya no se van a poder restaurar)`)
   }
-  // Pases con «Mover a otro broker» (2026-11): el borrado no los deshace. Lo que
-  // llegó al otro broker se queda allá; el pase queda «incompleto» y se puede
-  // deshacer lo que sobrevive desde Movimientos.
-  if (n('traspasos') > 0) {
-    partes.push(`${plural(n('traspasos'), 'pase', 'pases')} de títulos con otro broker tuyo (los títulos que llegaron al otro broker se quedan allá; si después reimportás este broker, van a aparecer en los dos lados)`)
+  // Pases con «Mover a otro broker» (2026-11): el borrado no los deshace; el pase
+  // queda «incompleto» y se puede deshacer lo que sobrevive desde Movimientos. Lo
+  // que dice depende del LADO que es este broker en el pase (el servidor manda
+  // `traspasos_salida` y `traspasos_entrada`):
+  //   · salieron de acá → lo que llegó al otro broker se queda allá;
+  //   · llegaron acá → se borran con este broker y NO vuelven al de origen, salvo
+  //     que se deshaga el pase (antes o después de borrar).
+  // Un servidor viejo que manda sólo `traspasos` usa el texto de la salida.
+  const salida = counts && 'traspasos_salida' in counts ? n('traspasos_salida') : n('traspasos')
+  const entrada = n('traspasos_entrada')
+  if (salida > 0) {
+    partes.push(`${plural(salida, 'pase', 'pases')} de títulos con otro broker tuyo (los títulos que llegaron al otro broker se quedan allá; si después reimportás este broker, van a aparecer en los dos lados)`)
+  }
+  if (entrada > 0) {
+    partes.push(`${plural(entrada, 'pase', 'pases')} de títulos que llegaron desde otro broker tuyo (se borran con este broker y no vuelven al de origen; para que vuelvan, deshacé el pase en Movimientos → «Deshacer pase», antes o después de borrar)`)
   }
   return partes
 }

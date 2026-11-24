@@ -237,3 +237,46 @@ Quedan, a propósito:
 - La vista previa de la FOTO de tenencia no trae `cambian_un_pase` ni `filas_de_pases`: el
   confirm frena igual (409 con texto) y el cartel cuenta todo como huella.
 - Sigue faltando el endpoint de admin para prender `mover_entre_brokers` (antes de la Publicación 2).
+
+## De la revisión final (cinco revisores adversariales sobre la función entera)
+Arreglado (cada uno con su prueba, roja sin el arreglo; detalle en el commit «arreglos de la
+revisión final» y en las clases #47–#56 de `test_mover_entre_brokers.py`):
+- **Venta a mano anterior a un pase** (contable H2): `sell_position_fifo` y la vista previa
+  de la venta del chat comparten `_cola_de_la_venta` / `_por_que_no_se_vende` (C4 + C.11 lado
+  A con `pase_que_cambia(lados=("origen",), el_dia_del_pase=False)`: la del mismo día cuenta
+  como posterior). El deshacer además ve una 'Venta' anotada después del pase aunque su fecha
+  sea anterior (`o.id > ops_hasta`).
+- **C.11 y la moneda** (pruebas E2, desvío de la spec): una COMPRA del lado A en otra moneda
+  que la del pase no lo frena si no hay VENTAS en esa moneda hasta el día del pase en las
+  patas de A (`_compra_que_no_toca_el_pase`: el «pool único» del rearmado sólo cruza de
+  moneda por una venta que no alcanza). Las ventas en otra moneda siguen frenando, salvo la
+  venta a mano que sólo consume lotes de su moneda (`solo_su_moneda`).
+- **Deshacer un incompleto cuyo broker borrado volvió** (tubería P1): 409 `MSG_RECREADO_B` /
+  `MSG_RECREADO_A` si hoy hay un broker con ese nombre que tiene el activo (un lote o una fila
+  viva del registro); vacío del activo, el deshacer de siempre. «Cerrar el pase sin mover
+  títulos» queda para el dueño (ver informe).
+- **El lote que vuelve tiene que ser el mismo** (tubería P2): `_devolver_al_lote` suma sólo si
+  el lote vivo tiene el mismo broker, activo, moneda y marca de split que la foto; si no,
+  vuelve APARTE (con `link`, un vínculo más). El PUT de un lote de un pase vivo (`lotes_de_
+  pases_vivos`: los de A de la receta y los que llegaron a B) no cambia activo ni moneda (409).
+- **Admin** (seguridad #1, el pendiente desde E5): `GET /api/admin/mover-entre-brokers`,
+  `POST …/interruptor` y `POST …/deshacer-pases` {user_id, aplicar} (lista o deshace del más
+  nuevo al más viejo, sin el muro de la cuenta en pausa). `_poner_interruptor` es la escritura
+  única de los interruptores del panel.
+- Texto del PUT con otro broker según el interruptor; pista en el modal de edición; el texto
+  crudo de una excepción interna no llega a la persona (`skipped_rows[].interno`); el confirmar
+  no sale a Yahoo con el turno tomado (`sin_red_para_splits`); el confirmar usa el precio de la
+  valuación si el servidor se quedó sin precio; `buildHttpError` lee `detail.mensaje`.
+- Contrato: `counts.traspasos_salida/_entrada` y el texto por lado; «Forzar revert» no se
+  ofrece ante un freno de un pase (`esFrenoDeUnPase`); la fecha de C.8 #2 en el día argentino;
+  «vendé hasta 0»; «tocá «Reabrir»» en #17; el puente en pesos por lado (`puente_*_ars`,
+  `gasto_pase_ars`) para la pestaña en pesos.
+- Contable: «Aportado neto» de Movimientos suma las patas (en la cuenta entera se anulan); la
+  rama contable de `twr` mide con las patas al costo (`traspaso_a_mano.filas_al_costo`, la
+  cuenta única `flujos_al_costo` que también usa Reportes); `get_monthly_detail` de la IA trae
+  `pase_*` y su nota; el denominador del % del mes en `useMonthlyData` con las patas al costo.
+Quedan, a propósito (decisiones del dueño o fuera de alcance; ver el informe):
+- El gasto del pase en el realizado del Dashboard y no en el de Movimientos (D.8.3).
+- La «A · USD» que creó un gasto en dólares queda vacía después del deshacer (como la «B · USD»).
+- El segundo envío de un pase total responde 400 («No tenés…») y no 409.
+- `test_mover_entre_brokers_contrato.py` sigue con la lista de claves de la pantalla escrita a mano.

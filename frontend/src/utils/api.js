@@ -595,7 +595,10 @@ async function buildHttpError(res, ctx = {}) {
     if (typeof detail === 'string') {
       message = detail
     } else if (detail && typeof detail === 'object') {
-      message = detail.error || detail.message || detail.detail || JSON.stringify(detail)
+      // `mensaje`: los errores con forma del servidor en castellano (el 409 «sin
+      // precio» de «Mover a otro broker», `{codigo, mensaje, moneda_precio}`). Sin
+      // esto el modal mostraba el JSON crudo.
+      message = detail.error || detail.message || detail.mensaje || detail.detail || JSON.stringify(detail)
     }
   } catch { /* body no es JSON — dejamos el HTTP {status} */ }
   avisarPlanRequerido(res, payload)

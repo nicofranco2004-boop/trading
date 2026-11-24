@@ -632,7 +632,10 @@ class NingunaPuertaEscribeEnUnBrokerQueNoExiste(_Base):
         p = self._bono("IEB")
         cuerpo = {"broker": "Inventado", "asset": "AL30", "quantity": 100,
                   "buy_price": 0.6, "invested": 60}
-        texto = main._traspaso_a_mano.MSG_PUT_OTRO_BROKER
+        # El texto manda a «Mover a otro broker» sólo con el interruptor prendido (con
+        # la opción apagada la pantalla no la muestra: revisión final, seguridad #2).
+        texto = main._traspaso_a_mano.msg_put_otro_broker(
+            main.interruptor(main._traspaso_a_mano.INTERRUPTOR))
         for otro in ("Inventado", "Balanz"):
             r = self.client.put(f"/api/positions/{p['id']}", headers=self.h,
                                 json={**cuerpo, "broker": otro})

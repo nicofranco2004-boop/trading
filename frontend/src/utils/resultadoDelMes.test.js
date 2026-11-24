@@ -1,7 +1,7 @@
 // El resultado del mes sin el puente de un pase entre brokers (spec E.7 / E.10).
 import { describe, it, expect } from 'vitest'
 import { resultadoSinPuente, puenteDelMes, lineasDelPuente, resultadoParaElPorcentaje } from './resultadoDelMes'
-import { fmtUsd } from './format'
+import { fmtUsd, fmtArs } from './format'
 
 describe('resultadoSinPuente', () => {
   it('broker de origen: el realizado trae +V−C del pase y el rendimiento no', () => {
@@ -78,5 +78,32 @@ describe('lineasDelPuente', () => {
     ])
     expect(lineasDelPuente({ puente_salida_usd: -5 }, fmtUsd)[0]).toMatch(/^Incluye una pérdida de USD 5,00/)
     expect(lineasDelPuente({ pnl_realized: 10 }, fmtUsd)).toEqual([])
+  })
+})
+
+describe('lineasDelPuente en la pestaña en pesos (E.7)', () => {
+  // Revisión final (contrato #6): en la pestaña en pesos los renglones salían en
+  // dólares. Ahora: lo de lotes en pesos con sus pesos exactos (`puente_*_ars`, los
+  // que `realized_ars` ya lleva) y el resto al dólar del mes; el gasto en pesos, con
+  // sus pesos.
+  const alDolar = (usd) => usd * 1200
+  it('lotes en pesos: el puente en pesos exacto, no dólares × el dólar del mes', () => {
+    const a = { puente_salida_usd: 21.5, puente_salida_ars: 148500, puente_salida_ars_usd: 21.5,
+      gasto_pase_usd: 4.62, gasto_pase_ars: 5000, gasto_pase_ars_usd: 4.62 }
+    expect(lineasDelPuente(a, fmtArs, { alDolarDelMes: alDolar })).toEqual([
+      'Incluye una ganancia de ARS 148.500 de los títulos que pasaste a otro broker (no es una venta).',
+      'Incluye ARS 5.000 del costo del pase.',
+    ])
+  })
+  it('lotes en dólares: al dólar del mes (no tienen pesos propios)', () => {
+    const b = { puente_entrada_usd: 10 }
+    expect(lineasDelPuente(b, fmtArs, { alDolarDelMes: alDolar })).toEqual([
+      'Descuenta ARS 12.000: los títulos que llegaron desde otro broker ya traían esa ganancia (no es una pérdida).',
+    ])
+  })
+  it('en dólares no cambia nada', () => {
+    const a = { puente_salida_usd: 21.5, puente_salida_ars: 148500, puente_salida_ars_usd: 21.5 }
+    expect(lineasDelPuente(a, fmtUsd)[0]).toBe(
+      'Incluye una ganancia de USD 21,50 de los títulos que pasaste a otro broker (no es una venta).')
   })
 })

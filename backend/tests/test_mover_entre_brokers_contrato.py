@@ -157,18 +157,23 @@ LEE_MENSUAL_A = {
     "pnl_realized",         # resultadoDelMes.js `resultadoSinPuente`
     "puente_salida_usd",    # resultadoDelMes.js `puenteDelMes`, `lineasDelPuente`
     "gasto_pase_usd",       # resultadoDelMes.js `lineasDelPuente` («Incluye … del costo del pase.»)
+    "puente_salida_ars",    # resultadoDelMes.js `montosDelPuente` (la pestaña en pesos, E.7)
+    "puente_salida_ars_usd",  # resultadoDelMes.js `montosDelPuente`
     "traspaso_pesos_ret",   # capitalAportado.js (la tabla de UN broker)
     "traspaso_pesos_ret_usd",  # capitalAportado.js
 }
 LEE_MENSUAL_B = {
     "pnl_realized",
     "puente_entrada_usd",   # resultadoDelMes.js `puenteDelMes`, `lineasDelPuente`
+    "puente_entrada_ars",   # resultadoDelMes.js `montosDelPuente` (la pestaña en pesos, E.7)
+    "puente_entrada_ars_usd",  # resultadoDelMes.js `montosDelPuente`
     "traspaso_pesos_dep",   # capitalAportado.js
     "traspaso_pesos_dep_usd",  # capitalAportado.js
 }
 # La fila global con las DOS patas vivas: el puente se anula y no viene (nota 5 de
 # notas_tanda2.md: si viniera crudo, /mensual dibujaba dos renglones que se anulan).
-NO_EN_GLOBAL_VIVO = {"puente_salida_usd", "puente_entrada_usd", "traspaso_neto_usd",
+NO_EN_GLOBAL_VIVO = {"puente_salida_usd", "puente_entrada_usd", "puente_salida_ars",
+                     "puente_entrada_ars", "traspaso_neto_usd",
                      "traspaso_neto_pesos", "traspaso_pesos_dep", "traspaso_pesos_ret",
                      "traspaso_usd_con_dia"}
 # Con una pata huérfana (se borró un broker): el neto, con signo (capitalAportado.js
@@ -195,7 +200,8 @@ LEE_CONFIRM_IMPORT = {"omitidas_por_pases", "auto_skipped_duplicates"}   # tanda
 # ── Otros lectores ────────────────────────────────────────────────────────────────
 LEE_BORRAR_BROKER = {"counts", "sibling"}   # BrokerManager.jsx / avisoBorrarBroker.js
 LEE_COUNTS = {"positions", "operations", "monthly_entries", "import_batches", "futures",
-              "archived", "traspasos"}       # avisoBorrarBroker.js `partesDelBorrado`
+              "archived", "traspasos",       # avisoBorrarBroker.js `partesDelBorrado`
+              "traspasos_salida", "traspasos_entrada"}   # el texto de cada lado (revisión final)
 # GET /api/positions: `en_broker_desde` (utils/dividendosPendientes.js). GET /api/brokers:
 # `is_exchange` (moverDeBroker.js `familiaDeCuenta`).
 
@@ -369,6 +375,9 @@ class PaseListadoYDeshecho(_Contrato):
         self._trae(r.json()["detail"], LEE_BORRAR_BROKER, None, "409 de DELETE /api/brokers")
         self._trae(r.json()["detail"]["counts"], LEE_COUNTS, None, "counts")
         self.assertEqual(r.json()["detail"]["counts"]["traspasos"], 1)
+        # Balanz es el DESTINO: el aviso tiene que decir que lo que llegó se borra con él.
+        self.assertEqual((r.json()["detail"]["counts"]["traspasos_salida"],
+                          r.json()["detail"]["counts"]["traspasos_entrada"]), (0, 1))
 
         # El porqué de «no se puede deshacer» (C.8 #4), con los costos con «$» adelante.
         llegados = sorted(llegados, key=lambda p: p["entry_date"])

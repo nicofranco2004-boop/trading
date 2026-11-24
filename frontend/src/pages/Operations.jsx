@@ -1821,7 +1821,10 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
 //     $X en deposits Y $X en withdrawals — el bruto infla 2× sin que cambie
 //     el capital aportado. El NETO refleja capital nuevo real.
 //   • Coincide exactamente con "Capital Aportado" del Dashboard, evitando
-//     que el user vea dos números distintos en pantallas distintas.
+//     que el user vea dos números distintos en pantallas distintas. Para eso
+//     suma también las patas de los pases entre brokers (TRASPASO_ENTRADA −
+//     TRASPASO_SALIDA), como /mensual: en la cuenta entera se anulan; con el
+//     filtro de un broker o con una pata sola (se borró el otro broker), no.
 // El bruto sigue accesible filtrando por DEPÓSITOS o RETIROS individualmente
 // (en esa vista mostramos bruto + promedio, que es lo que tiene sentido ahí).
 //
@@ -1878,9 +1881,24 @@ export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisiones
   // Vista "Todos" o por trade type — KPI principal es el NETO
   const dep = sumByType('DEPOSIT')
   const wit = sumByType('WITHDRAW')
-  const neto = dep - wit
+  // Las patas de un pase entre brokers («Mover a otro broker») mueven lo aportado de
+  // cada broker como /mensual y el Dashboard: B suma lo que valían los títulos ese día
+  // y A lo resta. En la vista de toda la cuenta las dos se anulan (el número no
+  // cambia); con el filtro de un broker, o si se borró uno de los dos brokers (queda
+  // una pata sola), sin ellas este «Aportado neto» difería del de /mensual en ese
+  // valor.
+  const entroPase = sumByType('TRASPASO_ENTRADA')
+  const salioPase = sumByType('TRASPASO_SALIDA')
+  const netoPases = entroPase - salioPase
+  const neto = dep - wit + netoPases
   const depCount = countByType('DEPOSIT')
   const witCount = countByType('WITHDRAW')
+  const pases = new Set(rows
+    .filter(r => r.type === 'TRASPASO_ENTRADA' || r.type === 'TRASPASO_SALIDA')
+    .map(r => r.traspaso_id)).size
+  const notaPases = Math.abs(netoPases) >= 0.005 && pases > 0
+    ? ` · incluye ${pases} ${pases === 1 ? 'pase' : 'pases'} entre tus brokers`
+    : ''
   const dividendos = cobrado.total
   const comisiones = comisionesTotal  // FEE explícitos + embebidas en trades (no solo los FEE sueltos)
   return [
@@ -1889,7 +1907,7 @@ export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisiones
       value: fmt(neto),
       num: neto,
       tone: neto > 0 ? 'pos' : neto < 0 ? 'neg' : null,
-      sub: `${depCount} depósitos · ${witCount} retiros`,
+      sub: `${depCount} depósitos · ${witCount} retiros${notaPases}`,
     },
     { label: 'Cobrado',    value: fmt(dividendos), num: dividendos, tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos, cupones e intereses' },
     { label: 'Comisiones', value: fmt(comisiones), num: comisiones, tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales (incl. embebidas)' },

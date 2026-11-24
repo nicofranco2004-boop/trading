@@ -335,7 +335,12 @@ function PersonalDashboard() {
   // igual que Movimientos. Multiplicar el total por el dólar de hoy re-expresa
   // ganancias viejas al tipo de cambio actual (las infla con la devaluación
   // posterior) y hacía que este KPI y el "P&L Realizado" de Movimientos —mismo
-  // nombre, misma plata— mostraran números distintos. En USD da idéntico.
+  // nombre, misma plata— mostraran números distintos. En USD da idéntico, salvo
+  // dos diferencias conocidas que vienen de `monthly_entries` y no de las ventas:
+  // el realizado cargado a mano en /mensual y el GASTO de un pase entre brokers
+  // («Mover a otro broker»), que por decisión de la especificación (D.8.3) es una
+  // pérdida en el realizado del broker que lo paga; Movimientos lo muestra como
+  // comisión, no como resultado de una venta.
   //
   // Y NO es "dólares × dólar del mes": las ventas en pesos aportan sus pesos de verdad
   // (cobrado − costo, la cuenta única de resultado_dual que también usan Movimientos y
