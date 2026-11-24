@@ -197,6 +197,27 @@ describe('Movimientos e Importaciones', () => {
     expect(avisoDeFilaDePase({ ...salida, estado: 'incompleto' })).toBe('Balanz ya no existe.')
   })
 
+  it('desfasado: el renglón es el del servidor (`aviso`), que nombra la cuenta cuya historia cambió', () => {
+    // El detector lo marcó por el lado de destino: el servidor nombra a Balanz (B).
+    // Armado en la pantalla decía siempre «Cocos» (A).
+    const aviso = 'Cambió la historia de Balanz y este pase quedó desactualizado: deshacelo y hacelo de nuevo.'
+    expect(avisoDeFilaDePase({ ...salida, estado: 'desfasado', aviso })).toBe(aviso)
+    expect(avisoDeFilaDePase({ ...entrada, estado: 'desfasado', aviso })).toBe(aviso)
+    // Vivo, con `aviso: null` (la forma real), no dibuja nada.
+    expect(avisoDeFilaDePase({ ...salida, aviso: null })).toBe(null)
+  })
+
+  it('el cartel «filas ya estaban importadas» cuenta las repetidas por huella, no las del pase', async () => {
+    const { repetidasPorHuella } = await import('./moverDeBroker')
+    // La forma real de POST /api/imports/preview: las filas del pase (la llegada y su
+    // depósito compensatorio) van en `duplicate_row_indices` y en `filas_de_pases`.
+    expect(repetidasPorHuella({ duplicate_row_indices: [2, 3, 7], filas_de_pases: [2, 3] })).toEqual([7])
+    expect(repetidasPorHuella({ duplicate_row_indices: [2, 3], filas_de_pases: [2, 3] })).toEqual([])
+    // Una respuesta sin `filas_de_pases` (la foto de tenencia): todas son por huella.
+    expect(repetidasPorHuella({ duplicate_row_indices: [4] })).toEqual([4])
+    expect(repetidasPorHuella({})).toEqual([])
+  })
+
   it('la pregunta de deshacer, según el estado y el lado que queda', () => {
     const t = { id: 't1', asset: 'NVDA', cantidad: 10, broker_origen: 'Cocos', broker_destino: 'Balanz', estado: 'vivo' }
     expect(preguntaDeDeshacer(t, salida)).toBe(
@@ -230,8 +251,10 @@ describe('Movimientos · el filtro «Pases», su número y qué filas tienen tac
     { id: 's', type: 'TRASPASO_SALIDA', traspaso_id: 'abc', borrable: false },
     { id: 'e', type: 'TRASPASO_ENTRADA', traspaso_id: 'abc', borrable: false },
     { id: 'g', type: 'FEE', traspaso_id: 'abc', borrable: false },          // el gasto del trámite
-    // La compra original de un lote cargado a mano que se pasó (D.9.2): sin traspaso_id.
-    { id: 'trp-abc-0', type: 'BUY', source: 'traspaso', borrable: false },
+    // La compra original de un lote cargado a mano que se pasó (D.9.2). El servidor
+    // le pone el `traspaso_id` del pase (la forma real: test_mover_entre_brokers_contrato.py),
+    // pero es una COMPRA: no cuenta en «Pases».
+    { id: 'trp-abc-0', type: 'BUY', source: 'traspaso', borrable: false, traspaso_id: 'abc' },
     { id: 1, type: 'DEPOSIT' },
     { id: 2, type: 'FEE' },
     { id: 3, type: 'BUY' },

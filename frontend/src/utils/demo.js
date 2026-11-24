@@ -3013,8 +3013,11 @@ export function handleDemoRequest(method, path, body) {
   // ── GET endpoints ──────────────────────────────────────────────────────────
   if (method === 'GET') {
     if (basePath === '/positions') {
-      // Fixture + posiciones agregadas por el user en demo
-      return [...POSITIONS, ...overlay.positions]
+      // Fixture + posiciones agregadas por el user en demo. `en_broker_desde`
+      // (desde qué día el lote está en ESE broker; null = desde su compra) viene en
+      // cada lote de GET /api/positions desde «Mover a otro broker»: la bandeja de
+      // dividendos lo lee (utils/dividendosPendientes.js). En el demo nada se movió.
+      return [...POSITIONS, ...overlay.positions].map(p => ({ en_broker_desde: null, ...p }))
     }
     if (basePath === '/brokers')     return BROKERS
     if (basePath === '/operations')  return OPERATIONS
@@ -3401,9 +3404,11 @@ export function handleDemoRequest(method, path, body) {
     // la venta), que es la que el servidor usa en una cuenta con historia (v1,
     // backend/fx.py `fx_version_lectura`).
     if (basePath === '/positions/regla-de-venta') return { cada_punta_a_su_dolar: false }
-    // «Mover a otro broker»: habilitado y sin pases. Los brokers del demo son de
-    // familias distintas, así que el menú muestra el aviso de «no tenés otro
-    // broker donde pasarlos» en vez de un formulario vacío; mover pide la cuenta.
+    // «Mover a otro broker»: habilitado y sin pases (la forma real de GET
+    // /api/positions/traspasos, B.5; la fija backend/tests/test_mover_entre_brokers_contrato.py).
+    // Los brokers del demo son de familias distintas, así que el menú muestra el
+    // aviso de «no tenés otro broker donde pasarlos» en vez de un formulario vacío;
+    // mover pide la cuenta.
     if (basePath === '/positions/traspasos') return { habilitado: true, traspasos: [] }
     // Activar los avisos al celular es de una cuenta (POST /push/subscribe lo
     // guarda en ella). hooks/usePushNotifications lo dice antes de pedirle

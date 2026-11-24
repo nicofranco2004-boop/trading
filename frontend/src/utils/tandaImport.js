@@ -14,7 +14,8 @@
 //      individual le preguntaría a la persona, acá termina en estado
 //      'revisar' con un motivo, y se cierra desde la cuenta del cliente.
 //      ⚠️ Eso obliga a LEER todo lo que el asistente muestra y la tanda no
-//      puede preguntar: traspasos entre brokers (`preview.traspasos`), filas
+//      puede preguntar: traspasos entre brokers (`preview.traspasos`), avisos
+//      de un pase hecho con «Mover a otro broker» (`preview.avisos_de_pases`), filas
 //      que el guardado no pudo escribir (`confirm.skipped_rows`), filas que
 //      exigen aprobación (`confirm.skipped_by_user`), caja negativa
 //      (`confirm.cash_health`) y pasos del post-proceso que fallaron
@@ -111,6 +112,16 @@ export function estadoFinal(preview, confirm) {
     const t = traspasos[0]
     motivos.push(`${plural(traspasos.length, 'título vino', 'títulos vinieron')} de otro broker suyo (${t.activo || ''} desde ${t.broker_origen || 'otro broker'}): falta aprobar el cierre en ${t.broker_origen || 'ese broker'} desde su cuenta, para no contarlo dos veces.`)
   }
+  // «Mover a otro broker»: una llegada o una salida que el archivo trae lejos de la
+  // fecha de un pase (o con más títulos de los que se pasaron) ENTRA igual y el
+  // servidor avisa que puede ser la misma (`preview.avisos_de_pases`). El
+  // asistente lo muestra antes de confirmar; la tanda no puede preguntar → si no se
+  // avisa, los títulos pueden quedar contados dos veces.
+  const avisosDePases = Array.isArray(preview?.avisos_de_pases) ? preview.avisos_de_pases : []
+  if (avisosDePases.length > 0) motivos.push(avisosDePases.join(' '))
+  // Lo que no entró porque ya lo había anotado un pase (`omitidas_por_pases`).
+  const omitidasPorPases = Number(confirm?.omitidas_por_pases || 0)
+  if (omitidasPorPases > 0) notas.push(plural(omitidasPorPases, 'fila ya cargada con «Mover a otro broker», omitida', 'filas ya cargadas con «Mover a otro broker», omitidas'))
   // Filas que el guardado no pudo escribir (el preview las dio por buenas).
   const skipped = Array.isArray(confirm?.skipped_rows) ? confirm.skipped_rows : []
   if (skipped.length > 0) {

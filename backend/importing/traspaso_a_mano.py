@@ -2527,16 +2527,26 @@ def deshacer(conn, uid: int, reg: Registro, *, helpers) -> Dict[str, Any]:
     return {"mensaje": mensaje, "patas_tocadas": list(dict.fromkeys(p for p in patas if p))}
 
 
+def aviso_del_pase(reg: "Registro") -> Optional[str]:
+    """El renglón de aviso de un pase desfasado (B.5), o None si no lo está. Nombra la
+    cuenta cuya historia cambió: la de destino si el detector lo marcó por ese lado
+    (`desfasado_motivo='destino'`), la de origen si no. UN solo texto para GET
+    /traspasos (`aviso`) y las patas de Movimientos (`aviso`, que la pantalla dibuja
+    debajo de la fila): antes Movimientos lo armaba en la pantalla y nombraba siempre
+    al origen, aunque lo que cambió fuera el destino."""
+    if not reg.desfasado_at:
+        return None
+    return MSG_DESFASADO.format(
+        broker=reg.raiz_b if reg.desfasado_motivo == "destino" else reg.raiz_a)
+
+
 def traspasos_vivos(conn, uid: int) -> List[Dict[str, Any]]:
     """B.5: los pases que no se deshicieron, con su estado y si se pueden deshacer
     (y si no, por qué: el mismo texto que daría el deshacer). Sólo lee."""
     out = []
     for reg in _registros(conn, uid, vivos=True):
         motivo = _por_que_no_se_deshace(conn, uid, reg)
-        aviso = None
-        if reg.desfasado_at:
-            aviso = MSG_DESFASADO.format(
-                broker=reg.raiz_b if reg.desfasado_motivo == "destino" else reg.raiz_a)
+        aviso = aviso_del_pase(reg)
         out.append({
             "id": reg.id, "fecha": reg.fecha, "asset": reg.asset, "cantidad": reg.cantidad,
             "moneda": reg.moneda, "broker_origen": reg.raiz_a, "broker_destino": reg.raiz_b,
@@ -2982,12 +2992,14 @@ def es_fila_interna_del_pase(op, traspaso_id) -> bool:
 
 
 def lados_de_los_pases(conn, uid: int) -> Dict[str, Dict[str, Any]]:
-    """{traspaso_id: {origen, destino, estado}} de los pases que no se deshicieron:
-    el nombre de HOY de cada cuenta (si un lado se borró, el de la receta) y cómo está
-    el pase (vivo, incompleto o desfasado: la misma regla que GET /traspasos). Lo usan
-    Movimientos y el CSV para decir hacia dónde fue cada pata. Una lectura por pedido,
-    no una por fila."""
-    return {reg.id: {"origen": reg.raiz_a, "destino": reg.raiz_b, "estado": reg.estado}
+    """{traspaso_id: {origen, destino, estado, aviso}} de los pases que no se
+    deshicieron: el nombre de HOY de cada cuenta (si un lado se borró, el de la
+    receta), cómo está el pase (vivo, incompleto o desfasado: la misma regla que GET
+    /traspasos) y, si está desfasado, el MISMO aviso que GET /traspasos
+    (`aviso_del_pase`). Lo usan Movimientos y el CSV para decir hacia dónde fue cada
+    pata. Una lectura por pedido, no una por fila."""
+    return {reg.id: {"origen": reg.raiz_a, "destino": reg.raiz_b, "estado": reg.estado,
+                     "aviso": aviso_del_pase(reg)}
             for reg in _registros(conn, uid, vivos=True)}
 
 

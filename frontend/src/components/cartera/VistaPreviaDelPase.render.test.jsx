@@ -2,7 +2,8 @@
 //
 // `VistaPreviaDelPase` es pura a propósito: `renderToStaticMarkup` no corre
 // efectos, así que todo lo que se ve tiene que salir de sus props. Se arma con la
-// forma de la respuesta de POST /api/positions/traspaso/vista-previa (B.2).
+// forma de la respuesta de POST /api/positions/traspaso/vista-previa (B.2), la
+// que fija backend/tests/test_mover_entre_brokers_contrato.py.
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import VistaPreviaDelPase, { SelectorDeDestino, CREAR_BROKER } from './VistaPreviaDelPase'
@@ -20,7 +21,9 @@ const PLAN = {
   valuacion: { precio_unitario: 25000, moneda_precio: 'ARS', fuente: 'cierre_del_dia', fecha_precio: '2026-11-20', dolar: 1400 },
   valor_nativo: 250000, valor_ars: 250000, valor_usd: 178.57, costo_usd: 92.3, puente_usd: 86.27,
   gasto: null,
-  avisos: ['Con el gasto, la caja de Cocos queda en $ -5.000.'],
+  // El texto real del servidor (`_monto`, money_fmt.fmt_money): el signo y la moneda
+  // ADELANTE del número, así `taparMontos` lo tapa con el ojito.
+  avisos: ['Con el gasto, la caja de Cocos queda en −$5.000.'],
   firma: '9f2c0011aabbccdd',
 }
 
@@ -60,7 +63,7 @@ describe('VistaPreviaDelPase', () => {
 
   it('los avisos van uno por renglón, en el color de aviso', () => {
     const html = dibujar({ plan: PLAN })
-    expect(html).toMatch(/class="text-rendi-warn tabular"[^>]*>Con el gasto, la caja de Cocos queda en \$ -5\.000\./)
+    expect(html).toMatch(/class="text-rendi-warn tabular"[^>]*>Con el gasto, la caja de Cocos queda en −\$5\.000\./)
   })
 
   it('el error se ve, en rojo, aunque no haya vista previa', () => {

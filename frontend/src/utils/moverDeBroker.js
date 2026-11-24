@@ -280,11 +280,17 @@ export function lineaDeFilaDePase(m) {
 /**
  * El aviso debajo de una fila de pase según su `estado`. La fila que se ve es de un
  * lado que sigue vivo, así que en un pase «incompleto» el que no existe es la
- * contraparte. La cuenta A del texto de «desfasado» es la de origen del pase.
+ * contraparte.
+ *
+ * «Desfasado»: el texto es el del SERVIDOR (`m.aviso`, el mismo de GET
+ * /api/positions/traspasos), que nombra la cuenta cuya historia cambió —la de
+ * destino si el detector lo marcó por ese lado—. Armado acá nombraba siempre la de
+ * origen. Si la fila no lo trae (una respuesta vieja), se arma con la de origen.
  */
 export function avisoDeFilaDePase(m) {
   if (!esFilaDePase(m)) return null
   if (m.estado === 'desfasado') {
+    if (typeof m.aviso === 'string' && m.aviso.trim()) return m.aviso
     const A = m.type === 'TRASPASO_SALIDA' ? (m.broker || '') : (m.contraparte || '')
     return `Cambió la historia de ${A} y este pase quedó desactualizado: deshacelo y hacelo de nuevo.`
   }
@@ -318,6 +324,20 @@ export function tituloDeLotePase(traspaso) {
   if (!traspaso) return ''
   const hacia = traspaso.lado === 'entrada' ? 'desde' : 'a'
   return `Pase de ${cantidadDeTitulos(traspaso.cantidad)} ${traspaso.asset || ''} ${hacia} ${traspaso.contraparte || 'otro broker tuyo'}`
+}
+
+/**
+ * Las filas que el cartel «filas ya estaban importadas» del importador cuenta: las
+ * repetidas por HUELLA (misma fecha + broker + tipo + activo + cantidad + precio),
+ * que es lo que ese cartel explica. El servidor manda en `duplicate_row_indices`
+ * también las que omite POR UN PASE (`filas_de_pases`: la llegada o la salida y su
+ * depósito compensatorio, D.2.3); ésas ya las dice el bloque «Ya las cargaste con
+ * «Mover a otro broker»», y con otro motivo.
+ */
+export function repetidasPorHuella(preview) {
+  const dePases = new Set(Array.isArray(preview?.filas_de_pases) ? preview.filas_de_pases : [])
+  const todas = Array.isArray(preview?.duplicate_row_indices) ? preview.duplicate_row_indices : []
+  return todas.filter((i) => !dePases.has(i))
 }
 
 /**

@@ -167,6 +167,20 @@ describe('estadoFinal — lo que el asistente pregunta y la tanda no puede', () 
     expect(r.estado).toBe(ESTADO.REVISAR)
     expect(r.detalle).toMatch(/GGAL.*Bull Market/)
   })
+  it('un aviso de un pase entre brokers (avisos_de_pases) → REVISAR con el texto del servidor', () => {
+    // La forma real de POST /api/imports/preview (backend/tests/test_mover_entre_brokers_contrato.py).
+    const AVISO = 'Ojo: este archivo trae una llegada de 4 VIST a Balanz el 14/09, lejos de tu pase ' +
+      'desde Bull Market del 16/06: la cargamos como otra llegada. Si es la misma, deshacé el pase antes de importar el archivo.'
+    const r = estadoFinal({ errors: [], avisos_de_pases: [AVISO] }, okConfirm)
+    expect(r.estado).toBe(ESTADO.REVISAR)
+    expect(r.detalle).toContain(AVISO)
+    expect(estadoFinal({ errors: [], avisos_de_pases: [] }, okConfirm).estado).toBe(ESTADO.COMPLETO)
+  })
+  it('lo que ya había anotado un pase (omitidas_por_pases) queda como nota, sin pedir revisión', () => {
+    const r = estadoFinal({ errors: [] }, { ...okConfirm, omitidas_por_pases: 2 })
+    expect(r.estado).toBe(ESTADO.COMPLETO)
+    expect(r.notas).toContain('2 filas ya cargadas con «Mover a otro broker», omitidas')
+  })
   it('filas que el guardado no pudo escribir (skipped_rows) → REVISAR con el motivo', () => {
     const r = estadoFinal({ errors: [] }, { ...okConfirm, skipped_rows: [{ row_index: 3, message: 'Broker no encontrado' }] })
     expect(r.estado).toBe(ESTADO.REVISAR)

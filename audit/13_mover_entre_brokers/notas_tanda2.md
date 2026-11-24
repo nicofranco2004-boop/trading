@@ -212,3 +212,28 @@ Pendientes que deja:
   usa B para costear esos lotes, así que la identidad de B se cumple. Una edición
   posterior del dólar de compra de los lotes de B (o de A) es una edición como
   cualquier otra (tampoco la identidad de una compra común la resiste).
+
+## De la integración (pantalla ⇄ servidor)
+Hecho: el contrato vive en `backend/tests/test_mover_entre_brokers_contrato.py` (por HTTP real:
+vista previa, confirmar, GET /traspasos, Movimientos, /mensual, Importaciones, Cartera, Brokers,
+el 409 de borrar el broker, el deshacer, el import posterior), con la lista literal de las claves
+que lee la pantalla y, para las respuestas nuevas, la forma exacta. Los textos con montos se
+prueban contra la expresión del «ojito» leída de `frontend/src/utils/ocultarSaldos.js`.
+Reconciliado:
+- **Desfasado**: el texto lo decide el servidor (`traspaso_a_mano.aviso_del_pase`), el mismo en
+  GET /traspasos (`aviso`) y en las patas de Movimientos (`aviso`, campo nuevo); la pantalla lo
+  dibuja (`avisoDeFilaDePase`). Antes la pantalla lo armaba y nombraba siempre al origen.
+- **`trp-…` con `traspaso_id`** (se queda en el servidor): el filtro «Pases» cuenta las dos
+  patas y el gasto (`esDeUnPase` por tipo), no la compra original, que es una COMPRA.
+- **Importador**: `filas_de_pases` (clave nueva de la vista previa, ⊆ `duplicate_row_indices`)
+  → el cartel «filas ya estaban importadas» cuenta sólo las repetidas por huella
+  (`repetidasPorHuella`); `avisos_de_pases` se dibuja («Revisá esto antes de confirmar») y la
+  tanda del asesor lo manda a «Revisar»; `omitidas_por_pases` es una nota de la tanda.
+- Demo: GET /positions trae `en_broker_desde: null`; GET /positions/traspasos ya tenía la forma real.
+Quedan, a propósito:
+- `traspaso_neto_pesos` de 'global' suma `valor_ars` también de patas de lotes en dólares (sólo
+  con una pata huérfana): la tabla global en pesos usa el dólar del día del servidor para esa
+  pata, la de un broker el dólar elegido. Diferencia chica y rara; no se agregó otro campo.
+- La vista previa de la FOTO de tenencia no trae `cambian_un_pase` ni `filas_de_pases`: el
+  confirm frena igual (409 con texto) y el cartel cuenta todo como huella.
+- Sigue faltando el endpoint de admin para prender `mover_entre_brokers` (antes de la Publicación 2).

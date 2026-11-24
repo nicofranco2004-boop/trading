@@ -81,7 +81,7 @@ const STEP_RECONCILE = 'reconcile'
 import { TrialCta, TrialFinePrint, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS } from '../plan/TrialCta'
 import { usePlanFeatures as _usePlanFeaturesTrial } from '../../hooks/usePlanFeatures'
 import { parseNum, parseNumOrNull, numACampo } from '../../utils/format'
-import { textoDeImportCambiaUnPase } from '../../utils/moverDeBroker'
+import { textoDeImportCambiaUnPase, repetidasPorHuella } from '../../utils/moverDeBroker'
 
 const STEP_DONE = 'done'
 
@@ -2394,7 +2394,7 @@ function RecFila({ tk, detalle, mono = true }) {
   )
 }
 
-function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
+export function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
                         skippedRowIndices = new Set(), onToggleSkipRow, onSeedClick,
                         redoBanner = null, faltaTenencia = null,
                         traspasosOk = new Set(), setTraspasosOk = () => {} }) {
@@ -2405,6 +2405,9 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
   const isMulti = preview.is_multi_broker
   const seedSug = preview.seed_suggestions
   const seedHasAssets = (seedSug?.brokers || []).some(b => (b.assets || []).length > 0)
+  // El cartel «filas ya estaban importadas» cuenta las repetidas por huella: las
+  // que se omiten por un pase entre brokers las dice su propio bloque.
+  const repetidas = repetidasPorHuella(preview)
 
   return (
     <div className="space-y-4">
@@ -2647,17 +2650,28 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
         </Section>
       )}
 
-      {(preview.duplicate_row_indices || []).length > 0 && (
+      {/* Lo que entra igual pero puede ser lo mismo que un pase (una llegada o una
+          salida lejos de la fecha del pase, o con más títulos de los que pasaste):
+          el servidor no lo omite y avisa. `avisos_de_pases`, un renglón cada uno. */}
+      {(preview.avisos_de_pases || []).length > 0 && (
+        <Section title="Revisá esto antes de confirmar" variant="warning">
+          <ul className="text-xs text-rendi-warn space-y-1 leading-relaxed">
+            {preview.avisos_de_pases.map((a, i) => <li key={i}>{a}</li>)}
+          </ul>
+        </Section>
+      )}
+
+      {repetidas.length > 0 && (
         <div className="px-3 py-2 rounded-md bg-blue-500/10 border border-blue-500/30 text-xs">
           <div className="font-medium text-ink-1 mb-1">
-            {preview.duplicate_row_indices.length} {preview.duplicate_row_indices.length === 1 ? 'fila ya estaba importada' : 'filas ya estaban importadas'} — se {preview.duplicate_row_indices.length === 1 ? 'omite' : 'omiten'} automáticamente
+            {repetidas.length} {repetidas.length === 1 ? 'fila ya estaba importada' : 'filas ya estaban importadas'} — se {repetidas.length === 1 ? 'omite' : 'omiten'} automáticamente
           </div>
           <p className="text-ink-2">
             Coinciden con operaciones de imports anteriores (misma fecha + broker + tipo + activo + cantidad + precio).
             Al confirmar las omitimos para no duplicar — solo se importan las filas <b>nuevas</b>, sin tocar tu historial cargado. Filas omitidas: {' '}
             <span className="font-mono text-ink-1">
-              {preview.duplicate_row_indices.slice(0, 30).join(', ')}
-              {preview.duplicate_row_indices.length > 30 && '…'}
+              {repetidas.slice(0, 30).join(', ')}
+              {repetidas.length > 30 && '…'}
             </span>
           </p>
         </div>

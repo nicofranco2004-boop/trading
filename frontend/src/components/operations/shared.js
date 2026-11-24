@@ -83,18 +83,28 @@ export const DELETABLE_MOVEMENT_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INT
 //
 // Y lo que el servidor marca `borrable: false` tampoco, aunque su tipo esté en
 // la lista. Pasa con la compra original de un lote cargado a mano que se pasó a
-// otro broker (id `trp-…`, `type 'BUY'`, sin `traspaso_id`): por tipo mostraba
-// el tacho, se confirmaba «¿Borrar compra…?» y el DELETE llegaba a una fila que
-// el servidor no reconoce. Hoy el único otro `borrable` que manda el servidor
-// es el de las conversiones (FX_*), que no están en la lista: no cambia nada.
+// otro broker (id `trp-…`, `type 'BUY'`; el servidor le pone también el
+// `traspaso_id` del pase que se la llevó): por tipo mostraba el tacho, se
+// confirmaba «¿Borrar compra…?» y el DELETE respondía 409. Hoy el único otro
+// `borrable` que manda el servidor es el de las conversiones (FX_*), que no
+// están en la lista: no cambia nada.
 export function puedeBorrarMovimiento(m) {
   if (m?.traspaso_id || m?.borrable === false) return false
   return DELETABLE_MOVEMENT_TYPES.includes(m?.type) || m?.borrable === true
 }
 
-/** ¿La fila es parte de un pase entre brokers? (las dos patas y el gasto del trámite) */
+/**
+ * ¿La fila es parte de un pase entre brokers? Las dos patas (TRASPASO_*) y el
+ * gasto del trámite (la comisión con `traspaso_id`): lo que junta el filtro
+ * «Pases». La compra original de un lote cargado a mano que se pasó (`trp-…`)
+ * también trae `traspaso_id` (el servidor dice de qué pase salió), pero es una
+ * COMPRA de otra fecha, no una fila del pase: va en «Compras», no en «Pases».
+ * Antes la regla era «cualquier fila con `traspaso_id`», escrita cuando la
+ * `trp-…` venía sin él: con la respuesta real la contaba en «Pases».
+ */
 export function esDeUnPase(m) {
-  return !!m?.traspaso_id || m?.type === 'TRASPASO_SALIDA' || m?.type === 'TRASPASO_ENTRADA'
+  if (m?.type === 'TRASPASO_SALIDA' || m?.type === 'TRASPASO_ENTRADA') return true
+  return !!m?.traspaso_id && m?.type === 'FEE'
 }
 
 /** El filtro de tipo de Movimientos. «Pases» junta las dos patas y el gasto del trámite. */

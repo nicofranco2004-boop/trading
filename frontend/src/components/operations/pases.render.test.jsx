@@ -5,8 +5,8 @@
 //      `m.type === 'PASE'`, daba 0 y la pantalla lo escondía: el filtro de la
 //      sección 0 punto 5 de la spec no se podía usar);
 //   3. la compra original de un lote cargado a mano que se pasó (`trp-…`, que el
-//      servidor manda `borrable: false` y sin `traspaso_id`) no ofrece el tacho:
-//      el DELETE iba a una fila que el servidor no reconoce;
+//      servidor manda `borrable: false` y con el `traspaso_id` del pase) no ofrece
+//      el tacho (el DELETE responde 409) ni cuenta en «Pases» (es una COMPRA);
 //   6. con el ojito prendido, el porqué de «no se puede deshacer» que manda el
 //      servidor no muestra montos (el texto de C.8 #4 dice «({n} a {costo})»).
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
@@ -33,27 +33,40 @@ vi.mock('../../components/Toast', () => ({
 
 // Un pase de 10 NVDA de Cocos a Balanz (las dos patas y el gasto del trámite),
 // la compra original de un lote cargado a mano que salió con el pase, y un
-// depósito común. Montos raros a propósito, para reconocerlos.
+// depósito común. Montos raros a propósito, para reconocerlos. Las filas tienen la
+// forma REAL de GET /api/movements (backend `_movimiento_de_pata_de_pase`,
+// `_movimiento_de_compra_pasada` y la FEE del gasto; la fija
+// backend/tests/test_mover_entre_brokers_contrato.py).
+const PATA = { kind: 'movement', date: '2026-11-20', asset: 'NVDA', quantity: 10, unit_price: 25000, amount_usd: 178.57,
+  currency: 'ARS', fx_to_usd: 1400, fees_usd: 0, source: 'traspaso', transfer_out: false, traspaso_id: 'abc',
+  borrable: false, estado: 'vivo', aviso: null, cobro: null }
 const MOVS = [
-  { id: 'trx-s', type: 'TRASPASO_SALIDA', asset: 'NVDA', broker: 'Cocos', date: '2026-11-20', amount_usd: 178.57, fx_to_usd: 1400,
-    currency: 'ARS', quantity: 10, traspaso_id: 'abc', borrable: false, contraparte: 'Balanz', estado: 'vivo' },
-  { id: 'trx-e', type: 'TRASPASO_ENTRADA', asset: 'NVDA', broker: 'Balanz', date: '2026-11-20', amount_usd: 178.57, fx_to_usd: 1400,
-    currency: 'ARS', quantity: 10, traspaso_id: 'abc', borrable: false, contraparte: 'Cocos', estado: 'vivo' },
-  { id: 'imp-9', type: 'FEE', asset: 'NVDA', broker: 'Cocos', date: '2026-11-20', amount_usd: 3.57, fx_to_usd: 1400,
-    currency: 'ARS', traspaso_id: 'abc', borrable: false },
-  { id: 'trp-abc-0', type: 'BUY', asset: 'NVDA', broker: 'Cocos', date: '2024-03-10', amount_usd: 911.11, fees_usd: 2,
-    currency: 'USD', fx_to_usd: 1, quantity: 6, source: 'traspaso', borrable: false },
-  { id: 1, type: 'DEPOSIT', asset: null, broker: 'Schwab', date: '2025-01-05', amount_usd: 4321, amount: 4321, currency: 'USD', fx_to_usd: 1 },
+  { ...PATA, id: 'tx-176', ref_id: 176, type: 'TRASPASO_SALIDA', broker: 'Cocos', contraparte: 'Balanz',
+    notes: 'Salieron 10 NVDA a otro broker tuyo (valor del día)' },
+  { ...PATA, id: 'tx-180', ref_id: 180, type: 'TRASPASO_ENTRADA', broker: 'Balanz', contraparte: 'Cocos',
+    notes: 'Entraron 10 NVDA desde otro broker tuyo (valor del día)' },
+  { id: 'tx-177', ref_id: 177, kind: 'movement', type: 'FEE', asset: '', broker: 'Cocos', date: '2026-11-20', quantity: null,
+    unit_price: null, amount_usd: 3.57, fx_to_usd: 1400, fees_usd: 0, currency: 'ARS', source: 'import', transfer_out: false,
+    notes: 'Costo del pase de NVDA a otro broker tuyo', traspaso_id: 'abc', borrable: false, cobro: null },
+  { id: 'trp-abc-0', ref_id: null, kind: 'movement', type: 'BUY', asset: 'NVDA', broker: 'Cocos', date: '2024-03-10',
+    quantity: 6, unit_price: 151.85, amount_usd: 911.11, fees_usd: 2, currency: 'USD', source: 'traspaso',
+    notes: 'La pasaste a Balanz el 20/11/2026', traspaso_id: 'abc', borrable: false, cobro: null },
+  { id: 'tx-1', ref_id: 1, kind: 'movement', type: 'DEPOSIT', asset: '', broker: 'Schwab', date: '2025-01-05', quantity: null,
+    unit_price: null, amount_usd: 4321, currency: 'USD', fx_to_usd: 1, fees_usd: 0, source: 'import', transfer_out: false,
+    notes: 'dep', cobro: null },
 ]
+// El texto real de C.8 #4 (`MSG_B_EDITADO`): el costo con la moneda adelante.
 const MOTIVO = 'Los NVDA que llegaron a Balanz ya no están como llegaron: los editaste. ' +
-  'Volvé a dejarlos como llegaron (10 a US$ 1.234,56) para poder deshacer el pase.'
+  'Volvé a dejarlos como llegaron (10 a $1.234.560) para poder deshacer el pase.'
 const RESPUESTAS = {
   '/brokers': () => [{ id: 1, name: 'Cocos', currency: 'ARS' }, { id: 2, name: 'Balanz', currency: 'ARS' }, { id: 3, name: 'Schwab', currency: 'USD' }],
   '/dolar': () => ({ mep: { venta: 1555, compra: 1550 } }),
   '/operations': () => [],
   '/movements': () => MOVS,
+  // La forma real de GET /api/positions/traspasos (B.5).
   '/positions/traspasos': () => ({ habilitado: true, traspasos: [{ id: 'abc', fecha: '2026-11-20', asset: 'NVDA', cantidad: 10,
-    broker_origen: 'Cocos', broker_destino: 'Balanz', estado: 'vivo', puede_deshacer: false, motivo: MOTIVO }] }),
+    moneda: 'ARS', broker_origen: 'Cocos', broker_destino: 'Balanz', valor_usd: 178.57, costo_usd: 92.3,
+    estado: 'vivo', puede_deshacer: false, motivo: MOTIVO, aviso: null }] }),
 }
 vi.mock('../../utils/api', async (orig) => ({
   ...(await orig()),
@@ -137,6 +150,6 @@ describe('Movimientos con un pase entre brokers', () => {
     for (let i = 0; i < 4; i++) await montado.redibujar(p.el())
     const dicho = avisos.map(a => a.t).join(' | ')
     expect(dicho).toContain('Volvé a dejarlos como llegaron (10 a ••••••)')
-    expect(dicho).not.toContain('1.234,56')
+    expect(dicho).not.toContain('1.234.560')
   })
 })

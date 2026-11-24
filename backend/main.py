@@ -22099,8 +22099,10 @@ def _movimiento_de_pata_de_pase(d: dict, lado) -> dict:
     muestra los pesos de la pata, no V al dólar del día. No tiene comisión (no se
     contó nada dos veces) ni se borra suelta: se deshace el pase entero
     (`borrable: False`; el botón «Deshacer pase» usa `traspaso_id`). `contraparte` es
-    la otra cuenta (el nombre de hoy) y `estado`, cómo está el pase (vivo, incompleto
-    o desfasado), de `traspaso_a_mano.lados_de_los_pases`."""
+    la otra cuenta (el nombre de hoy), `estado`, cómo está el pase (vivo, incompleto
+    o desfasado), y `aviso`, el renglón de un desfasado (el MISMO texto que GET
+    /traspasos, que nombra la cuenta cuya historia cambió; None si no lo está), de
+    `traspaso_a_mano.lados_de_los_pases`."""
     op = (d.get("operation_type") or "").upper()
     m = _traspaso_a_mano.monto_de_la_pata(d)
     return {
@@ -22124,6 +22126,7 @@ def _movimiento_de_pata_de_pase(d: dict, lado) -> dict:
         "borrable": False,
         "contraparte": _traspaso_a_mano.contraparte_de_la_pata(lado, op),
         "estado": (lado or {}).get("estado"),
+        "aviso": (lado or {}).get("aviso"),
     }
 
 

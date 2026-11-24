@@ -1540,6 +1540,13 @@ def _run_preview_una_vez(
     preview_payload["ya_traspasados"] = [
         {k: d[k] for k in ("fecha", "activo", "cantidad", "broker", "lado")}
         for d in _ya_traspasadas.detalle]
+    # Los `row_index` que se omiten POR UN PASE (la llegada o la salida y el depósito
+    # compensatorio de cada llegada). Van también en `duplicate_row_indices` (D.2.3: la
+    # vista previa anticipa exactamente lo que el confirm omite), y el asistente los
+    # resta del cartel «filas ya estaban importadas»: ése explica la huella («misma
+    # fecha + broker + tipo…»), que no es por qué se omiten éstas (ya las dice
+    # «Ya las cargaste con «Mover a otro broker»»).
+    preview_payload["filas_de_pases"] = sorted(_ya_traspasadas.indices)
     preview_payload["avisos_de_pases"] = list(_ya_traspasadas.avisos)
     _sin_aprobar = {t.row_index for t in valid_txs
                     if _requiere_aprobacion_notas(getattr(t, "notes", None))}
