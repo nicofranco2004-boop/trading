@@ -1273,10 +1273,19 @@ _TABLAS_CON_BROKER_QUE_NO_SE_RENOMBRAN = {
 
 class CadaColumnaDeBrokerSeRenombra(unittest.TestCase):
     def test_toda_tabla_con_columna_de_broker_esta_en_la_lista(self):
-        # Las columnas que dicen "broker" sin guardar un nombre (el id del padre, la
-        # fecha `en_broker_desde`) salen de la MISMA lista con que el renombre decide
-        # qué clave de un JSON es de broker: no son dos listas que se desincronicen.
+        # Las columnas que dicen "broker" sin guardar un nombre: el id del padre de una
+        # «· USD» y la fecha `en_broker_desde` («Mover a otro broker»). La lista vive
+        # ACÁ, escrita a mano, y se compara con la de producción
+        # (`renombre_broker.NO_SON_UN_BROKER`, la misma con que el renombre decide qué
+        # clave de un JSON es de broker): si alguien suma ahí una columna que SÍ guarda
+        # un nombre, este test deja de verla y lo tiene que decir en voz alta. Tomarla
+        # de producción la apagaba en silencio.
         import renombre_broker
+        no_son_un_broker = {"parent_broker_id", "en_broker_desde"}
+        self.assertEqual(set(renombre_broker.NO_SON_UN_BROKER), no_son_un_broker,
+                         "Cambió la lista de nombres con «broker» que NO son un broker: "
+                         "revisá que la columna nueva no guarde el nombre de un broker y "
+                         "sumala acá también.")
         conn = main.get_db()
         try:
             tablas = [r[0] for r in conn.execute(
@@ -1284,8 +1293,7 @@ class CadaColumnaDeBrokerSeRenombra(unittest.TestCase):
             con_broker = {}
             for t in tablas:
                 cols = [r[1] for r in conn.execute(f"PRAGMA table_info({t})")
-                        if "broker" in r[1].lower()
-                        and r[1] not in renombre_broker.NO_SON_UN_BROKER]
+                        if "broker" in r[1].lower() and r[1] not in no_son_un_broker]
                 if cols:
                     con_broker[t] = cols
         finally:

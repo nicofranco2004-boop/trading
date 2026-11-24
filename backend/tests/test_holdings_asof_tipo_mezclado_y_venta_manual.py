@@ -76,6 +76,9 @@ def _meses(desde_anio=2025, hasta_anio=2030):
 PRECIOS = {
     "AAPL": {ym: 200.0 + 10 * n for n, ym in enumerate(_meses())},
     "MSFT": {ym: 300.0 + 5 * n for n, ym in enumerate(_meses())},
+    # Una obligación negociable cuyo cierre llega por cada 100 nominales: 1,0 cuando
+    # cada nominal costó 100 (el 1 %). La banda de renta fija lo descarta; la general no.
+    "ZZON": {ym: 1.0 for ym in _meses()},
 }
 
 
@@ -266,6 +269,97 @@ class TipoMezcladoEnElMismoBroker(_Cuenta):
             self.assertAlmostEqual(fotos[ym], 8000.0 + 10 * PRECIOS["AAPL"][ym], places=2, msg=ym)
         for ym in ("2025-06", "2025-07", "2025-12", "2026-06"):
             self.assertAlmostEqual(fotos[ym], 8920.0 + 6 * PRECIOS["AAPL"][ym], places=2, msg=ym)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+class ElTipoLoDiceLaCompraMasNueva(_Cuenta):
+    """Con el tipo que no parte el grupo, ¿cuál se usa si las compras dicen tipos
+    distintos? `MAX` compara texto y OTHER le ganaba a ON, BOND, LETRA y CEDEAR.
+
+    El caso real: dos compras de una ON que el lector dejó en OTHER, la primera ya
+    vendida, y el usuario corrige el tipo del lote que le queda («Editar posición» →
+    ON). La corrección llega sólo a la compra del lote abierto (`_cambiar_tipo_del_lote`);
+    la vendida sigue en OTHER."""
+
+    def setUp(self):
+        super().setUp()
+        self._confirmar("IBKR", [
+            _fila(0, "2025-03-03", "IBKR", OP_DEPOSIT, monto=10000.0),
+            _fila(1, "2025-03-04", "IBKR", OP_BUY, "ZZON", 10.0, 100.0, 1000.0, tipo="OTHER"),
+            _fila(2, "2025-04-04", "IBKR", OP_BUY, "ZZON", 10.0, 100.0, 1000.0, tipo="OTHER"),
+            _fila(3, "2025-05-05", "IBKR", OP_SELL, "ZZON", 10.0, 100.0, 1000.0, tipo="OTHER"),
+        ])
+        lote = dict(self.conn.execute(
+            "SELECT * FROM positions WHERE user_id=? AND asset='ZZON' AND is_cash=0",
+            (self.uid,)).fetchone())
+        self.assertEqual((lote["quantity"], lote["entry_date"]), (10.0, "2025-04-04"))
+        self._ok(self.http.put(f"/api/positions/{lote['id']}", headers=self.h, json={
+            "broker": "IBKR", "asset": "ZZON", "buy_price": 100.0, "quantity": 10,
+            "invested": 1000.0, "commissions": 0, "entry_date": "2025-04-04",
+            "currency": "USD", "asset_type": "ON"}))
+
+    def test_control_la_correccion_llego_solo_a_la_compra_abierta(self):
+        tipos = [r["asset_type"] for r in self.conn.execute(
+            "SELECT n.asset_type FROM import_normalized_tx n JOIN import_batches b "
+            "ON b.id=n.batch_id WHERE b.user_id=? AND n.operation_type='BUY' ORDER BY n.date",
+            (self.uid,)).fetchall()]
+        self.assertEqual(tipos, ["OTHER", "ON"])
+
+    def test_la_tenencia_es_una_on(self):
+        h = bf._holdings_asof(self.conn, self.uid, "2025-06-30")
+        self.assertEqual([(x["asset"], x["asset_type"], round(x["quantity"], 6)) for x in h],
+                         [("ZZON", "ON", 10.0)])
+
+    def test_y_el_precio_por_100_nominales_no_se_confia(self):
+        """El cierre llega por 100 nominales (1 % del valor). Con la banda de renta fija
+        se descarta y la ON vale su costo; tomada por OTHER se confiaba y la foto
+        mostraba una caída del 99 % que nunca existió."""
+        self._reconstruir()
+        fotos = self._fotos()
+        for ym in ("2025-06", "2025-12", "2026-06"):
+            self.assertAlmostEqual(fotos[ym], 9000.0 + 1000.0, places=2, msg=ym)
+
+    def test_entre_dos_tipos_que_dicen_algo_gana_la_compra_mas_nueva(self):
+        """La compra más nueva es la del lote que sigue abierto (el FIFO vende primero
+        la vieja). STOCK vendida y CEDEAR abierta: CEDEAR (MAX decía STOCK)."""
+        self._confirmar("IBKR", [
+            _fila(0, "2025-03-10", "IBKR", OP_BUY, "MSFT", 2.0, 300.0, 600.0, tipo="STOCK"),
+            _fila(1, "2025-04-10", "IBKR", OP_BUY, "MSFT", 2.0, 300.0, 600.0, tipo="CEDEAR"),
+            _fila(2, "2025-05-10", "IBKR", OP_SELL, "MSFT", 2.0, 320.0, 640.0, tipo="STOCK"),
+        ])
+        tipos = {x["asset"]: x["asset_type"]
+                 for x in bf._holdings_asof(self.conn, self.uid, "2025-06-30")}
+        self.assertEqual(tipos["MSFT"], "CEDEAR")
+        # Antes de la segunda compra, el único tipo es el de la primera.
+        tipos = {x["asset"]: x["asset_type"]
+                 for x in bf._holdings_asof(self.conn, self.uid, "2025-03-31")}
+        self.assertEqual(tipos["MSFT"], "STOCK")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+class VentaAManoDeDosLotesConCostosDistintos(_Cuenta):
+    """IBKR compró 10 AAPL a 100 y 10 a 300. La venta a mano consume los de 100 (FIFO):
+    lo que queda tiene que llevar el costo de SUS lotes, no el promedio (200)."""
+
+    def setUp(self):
+        super().setUp()
+        self._confirmar("IBKR", [
+            _fila(0, "2025-03-03", "IBKR", OP_DEPOSIT, monto=10000.0),
+            _fila(1, "2025-03-04", "IBKR", OP_BUY, "AAPL", 10.0, 100.0, 1000.0),
+            _fila(2, "2025-04-04", "IBKR", OP_BUY, "AAPL", 10.0, 300.0, 3000.0),
+        ])
+
+    def test_vende_4_del_primer_lote(self):
+        self._vender_a_mano("IBKR", "AAPL", 4.0, 230.0, "2025-06-10")
+        self.assertEqual(self._tenencia("2025-06-09"), {("IBKR", "AAPL"): (20.0, 4000.0)})
+        # 6 a 100 + 10 a 300 = 3.600 (restado al promedio daría 3.200)
+        self.assertEqual(self._tenencia("2025-06-30"), {("IBKR", "AAPL"): (16.0, 3600.0)})
+
+    def test_vende_12_y_cruza_al_segundo_lote(self):
+        """La venta a mano deja una 'Venta' por lote consumido, cada una con su foto."""
+        self._vender_a_mano("IBKR", "AAPL", 12.0, 230.0, "2025-06-10")
+        # quedan 8 a 300
+        self.assertEqual(self._tenencia("2025-06-30"), {("IBKR", "AAPL"): (8.0, 2400.0)})
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -540,6 +634,19 @@ class LaHuellaVeLosPases(_Cuenta):
             self.conn.execute("UPDATE traspasos_a_mano SET deshecho_at=datetime('now') "
                               "WHERE id=?", (pid,))
         self.assertNotEqual(self._huella(), con_pase)
+
+    def test_adoptar_una_cuenta_como_hija_cambia_la_huella(self):
+        """De qué cuenta es cada pata decide si una «· USD» se valúa por su .BA
+        (`_broker_name_sets`) y a qué cuenta raíz llega un pase (`raices_de_brokers`).
+        Cambiarlo sin tocar el nombre ni la moneda también tiene que rehacer la historia."""
+        antes = self._huella()
+        with self.conn:
+            n = self.conn.execute(
+                "UPDATE brokers SET parent_broker_id=(SELECT id FROM brokers p WHERE "
+                "p.user_id=brokers.user_id AND p.name='IBKR') WHERE user_id=? AND name='Schwab'",
+                (self.uid,)).rowcount
+        self.assertEqual(n, 1)
+        self.assertNotEqual(self._huella(), antes)
 
     def test_cada_dato_nuevo_que_lee_entra_en_la_huella(self):
         self._importado = self._confirmar("IBKR", [

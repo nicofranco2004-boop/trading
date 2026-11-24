@@ -175,6 +175,24 @@ class CobroYaAnotado(PersistError):
         self.op_id = op_id
 
 
+def _fila_de_pase_sin_plata(tx) -> bool:
+    """¿Es una fila de un pase entre brokers que no mete ni saca plata de la cuenta?
+
+    Las patas `TRASPASO_SALIDA`/`TRASPASO_ENTRADA` (no mueven nada: las lee el
+    recálculo) y la salida de títulos (una VENTA `transfer_out` a precio 0 y monto 0).
+    Llevan la moneda de los LOTES, no la de la cuenta: un lote en pesos que vive en
+    «Cocos · USD» sale con filas en pesos de esa pata, y el freno de «pesos a una
+    cuenta en dólares» (que existe para que no entre efectivo en pesos a la caja en
+    dólares) lo tomaba por un depósito. El gasto (FEE) sí es plata y la compra de
+    llegada abre un lote en esa cuenta: esas dos siguen pasando por el freno."""
+    if not getattr(tx, "traspaso_id", None):
+        return False
+    if tx.operation_type in OPERATION_TYPES_INTERNOS:
+        return True
+    return (tx.operation_type == OP_SELL and bool(getattr(tx, "transfer_out", False))
+            and not float(tx.unit_price or 0) and not float(tx.gross_amount or 0))
+
+
 def persist_batch(
     conn,
     *,
@@ -437,6 +455,8 @@ def persist_batch(
     for tx in sorted_txs:
         if ((tx.currency or "").upper() != "ARS"
                 or tx.operation_type in ("FX_ARS_TO_USD", "FX_USD_TO_ARS")):
+            continue
+        if _fila_de_pase_sin_plata(tx):
             continue
         if tx.broker in _patas_usd:
             raise PersistError(None, (
@@ -833,7 +853,11 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         # persister). Acá NO hacemos spill para no destruir tenencias dual-currency
         # genuinas en el estado transitorio (audit 2026-06-26).
         same = [p for p in rows if _nccy(dict(p)) == currency]
-        return same if same else rows
+        # La salida de un pase NO cae a la otra moneda: mueve lotes de la moneda de su
+        # fila, elegidos con este mismo criterio (`_native_ccy`). Si no queda ninguno,
+        # algo cambió desde la vista previa y lo frena el «No alcanzan» de abajo (el
+        # rebuild tampoco cruza: ver `rebuild._replay_asset`).
+        return same if (same or es_pase) else rows
 
     # NETEO CROSS-BROKER del par padre↔'· USD': el MISMO activo comprado vía
     # dólar-MEP (pata USD ruteada al sibling) y vendido en pesos (pata ARS en el

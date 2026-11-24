@@ -174,19 +174,36 @@ def _cancel_conduit_pairs(events: List[Dict[str, Any]], *,
     # Si las compras same-currency cubren las ventas same-currency, esa venta es
     # tenencia genuina (o un round-trip same-currency), NO un conducto → no cancelar.
     # Esto evita destruir una tenencia dual-currency genuina de igual nominal.
+    #
+    # LAS FILAS DE UN PASE ENTRAN EN ESTA CUENTA SÓLO DESDE QUE OCURREN. El total de
+    # las filas comunes mira TODO el historial, futuro incluido (es como fue siempre y
+    # no se toca: cambiarlo movería números de cuentas sin pases). Un pase, en cambio,
+    # no puede reescribir la historia de antes del pase (C.11): la llegada a B de 10
+    # en dólares el 20/11/2026 dejaba de hacer «corta» la moneda de un conducto de
+    # 2024 en B, el conducto ya no se cancelaba y el rebuild de B fabricaba 10
+    # fantasmas de 2024 (y una 'Venta' de más). Lo mismo, al revés, con la salida en
+    # A. Por eso cada fila del pase cuenta sólo para las ventas que el replay procesa
+    # DESPUÉS de ella: la llegada sigue cubriendo las ventas posteriores en B.
     buys_by_ccy: Dict[Optional[str], float] = {}
     sells_by_ccy: Dict[Optional[str], float] = {}
+    filas_de_pases = []
     for e in events:
+        if e["operation_type"] not in (OP_BUY, OP_SELL):
+            continue
+        if e.get("traspaso_id"):
+            filas_de_pases.append(e)
+            continue
         c = _norm_cur(e["currency"])
         q = _num(e["quantity"])
         if e["operation_type"] == OP_BUY:
             buys_by_ccy[c] = buys_by_ccy.get(c, 0.0) + q
-        elif e["operation_type"] == OP_SELL:
+        else:
             sells_by_ccy[c] = sells_by_ccy.get(c, 0.0) + q
 
     # Orden de llegada al replay: los eventos vienen ya ordenados por
     # (fecha, BUY-first, id). Para los NO-bonos hace falta saber si la venta cae
-    # ANTES que la compra — ver el `s_idx < b_idx` de más abajo.
+    # ANTES que la compra — ver el `s_idx < b_idx` de más abajo. Lo usan también las
+    # filas de un pase (arriba): cuentan para una venta sólo si llegan antes que ella.
     _pos = {id(e): i for i, e in enumerate(events)}
 
     for s in sells:
@@ -194,8 +211,17 @@ def _cancel_conduit_pairs(events: List[Dict[str, Any]], *,
         s_qty = _num(s["quantity"])
         if s_qty <= _EPS:
             continue
+        compras_ccy = buys_by_ccy.get(s_ccy, 0.0)
+        ventas_ccy = sells_by_ccy.get(s_ccy, 0.0)
+        for p in filas_de_pases:
+            if _norm_cur(p["currency"]) != s_ccy or _pos[id(p)] >= _pos[id(s)]:
+                continue
+            if p["operation_type"] == OP_BUY:
+                compras_ccy += _num(p["quantity"])
+            else:
+                ventas_ccy += _num(p["quantity"])
         # Moneda no corta (compras ≥ ventas) → la venta se cubre sola → no conducto.
-        if buys_by_ccy.get(s_ccy, 0.0) >= sells_by_ccy.get(s_ccy, 0.0) - _EPS:
+        if compras_ccy >= ventas_ccy - _EPS:
             continue
         best = None  # (días, evento_compra)
         for b in buys:
@@ -430,6 +456,19 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
         # AMPLÍA la superficie, porque ahora el empate también decide qué moneda
         # paga, y con ella un costo convertido por FX. Ver test_orden_filas_pool.py.
         spill_qty = min(max(0.0, oversell_same), _other_total)
+        # LA SALIDA DE UN PASE NUNCA CRUZA DE MONEDA. El pase mueve lotes de UNA moneda
+        # (la de su fila, A.6 de la especificación), elegidos de `positions`; el
+        # persister los consume igual y, si no alcanzan, frena (`_persist_sell_fifo`).
+        # Acá no se puede frenar, y comerse lotes de la otra moneda le sacaría al
+        # broker de origen títulos que el usuario no movió: si `positions` decía 12 en
+        # pesos (un PUT o `/adjust-ratio` sólo tocan `positions`) y el registro 10 en
+        # pesos + 5 en dólares, el primer rebuild dejaba 3 en dólares en vez de 5 y la
+        # tenencia total bajaba 2. El faltante va a un lote semilla (precio 0 → costo 0)
+        # que el pase se lleva entero: los lotes de la otra moneda quedan intactos y el
+        # faltante queda a la vista en `traspasos` (un tramo sin `batch_id`), donde lo
+        # ve la comprobación del pase y el detector de desfase.
+        if ev.get("traspaso_id"):
+            spill_qty = 0.0
 
         # Same-currency primero; la pata cruzada se capa a spill_qty DENTRO del loop.
         _consume_from = list(_same)

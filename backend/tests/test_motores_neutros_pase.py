@@ -31,6 +31,7 @@ import sys
 import time
 import unittest
 import uuid
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BACKEND = os.path.dirname(HERE)
@@ -117,6 +118,16 @@ class _Base(unittest.TestCase):
             self.conn.commit()
         finally:
             self.conn.close()
+
+    def _pata_usd(self, padre):
+        """La cuenta en dólares de `padre` («Cocos · USD»), hija de la de pesos."""
+        nombre = f"{padre} · USD"
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES "
+                "(?,?, 'USD', (SELECT id FROM brokers WHERE user_id=? AND name=?))",
+                (self.uid, nombre, self.uid, padre))
+        return nombre
 
     # ── el camino del confirm ──
     def _confirmar(self, broker, txs, formato="rendi_generic"):
@@ -302,6 +313,24 @@ class LaSalidaDelOrigen(_Base):
         # Y la venta a $0 del pase no es un evento societario: los splits no la ven.
         self.assertNotIn(("Cocos", "NVDA"), main._corporate_zero_dates(self.conn, self.uid))
 
+    def test_no_suma_al_resultado_del_mes(self):
+        """D.3.3(c): la salida no llama a `_update_monthly_pnl_realized`. Mirar el
+        resultado del mes no alcanza para saberlo (la salida da 0 y sumar 0 no crea
+        fila): se mira si la llamada ocurre. Control: una venta común la hace."""
+        self._compra_previa_en_a()
+        real = main._import_helpers._update_monthly_pnl_realized
+        with mock.patch.object(main._import_helpers, "_update_monthly_pnl_realized",
+                               wraps=real) as espia:
+            _, r = self._salida_de_a(4.0)
+            self.assertEqual(r["skipped_rows"], [], r)
+            self.assertEqual(espia.call_count, 0, espia.call_args_list)
+            self._confirmar_sin_saltear("Cocos", [
+                _fila(0, "2024-06-11", "Cocos", OP_SELL, "NVDA", 1.0, 40000.0, 40000.0, 0.0,
+                      "ARS")])
+            self.assertEqual(sorted(c.args[2] for c in espia.call_args_list),
+                             ["Cocos", "global"],
+                             "el control no llama: el test no estaría midiendo nada")
+
     def test_el_rebuild_hace_lo_mismo_y_dice_que_se_llevo(self):
         compra = self._compra_previa_en_a()
         sid, _ = self._salida_de_a(4.0)
@@ -359,6 +388,172 @@ class LaCajaReconstruida(_Base):
         # Y coincide con la caja que dejó el persister.
         self.assertEqual(self._caja("Balanz"), -10000.0)
         self.assertEqual(self._caja("Cocos"), -306500.0)
+
+
+class LaVentaEnLaOtraMonedaTambienVaPorFechaDeCompra(_Base):
+    """H2 del lado de la OTRA moneda: «Balanz · USD» tiene 10 KO comprados el 01/03/2024
+    a US$ 10; por un pase llegan 5 KO comprados el 15/01/2023 a US$ 5, y después se
+    venden 3 en pesos desde «Balanz», que no tiene lotes en pesos (un CEDEAR comprado
+    con dólares y vendido en pesos). Los dos motores tienen que consumir el de 2023."""
+
+    def test_el_persister_y_el_rebuild_eligen_el_lote_mas_viejo(self):
+        usd = self._pata_usd("Balanz")
+        self._confirmar_sin_saltear("Balanz", [
+            _fila(0, "2024-03-01", usd, OP_BUY, "KO", 10.0, 10.0, 100.0, 0.0, "USD")])
+        self._confirmar_sin_saltear("Balanz", [
+            _fila(-49999, "2024-05-01", usd, OP_BUY, "KO", 5.0, 5.0, 25.0, 0.0, "USD",
+                  traspaso_id=PASE, fecha_compra="2023-01-15", notes=NOTA_LLEGADA),
+            _fila(-49998, "2024-05-01", usd, OP_TRASPASO_ENTRADA, "KO", 5.0, 9.0, None,
+                  0.0, "USD", traspaso_id=PASE, valor_usd=45.0, valor_ars=49500.0,
+                  costo_usd=25.0, costo_nativo=25.0),
+        ], formato="traspaso_a_mano")
+        sid = self._confirmar_sin_saltear("Balanz", [
+            _fila(0, "2024-06-01", "Balanz", OP_SELL, "KO", 3.0, 20000.0, 60000.0, 0.0, "ARS")])
+        lotes_persister = self._lotes(usd, "KO")
+        ventas_persister = [(d, q, p) for _, d, q, p in self._ventas("KO")]
+        self.assertEqual([(d, q) for d, q, _ in ventas_persister], [("2023-01-15", 3.0)])
+
+        res = self._rebuild_del_lote(sid)
+        self.assertEqual((res["errors"], res["skipped_manual"], len(res["rebuilt"])), ([], [], 1), res)
+        # El broker de la 'Venta' no se compara: en una venta que cruza el par el
+        # persister la anota en el del lote y el rebuild en el de la venta (ya era así,
+        # congelado en #37).
+        self.assertEqual([(d, q, p) for _, d, q, p in self._ventas("KO")], ventas_persister)
+        self.assertEqual(self._lotes(usd, "KO"), lotes_persister)
+        self.assertEqual([(d, e, q, i) for d, e, q, i, _, _ in lotes_persister], [
+            ("2023-01-15", "2024-05-01", 2.0, 10.0),
+            ("2024-03-01", None, 10.0, 100.0),
+        ])
+
+
+class LaSalidaNoCruzaDeMonedaEnLosDosMotores(_Base):
+    """El registro de Cocos tiene 10 GGAL en pesos y 5 en dólares, pero en `positions`
+    el lote en pesos dice 12: el usuario lo editó con «Editar posición», que cambia sólo
+    `positions` (C.2.6). Un pase de 12 en pesos: el persister mueve los 12 del lote que
+    el usuario ve, y el rebuild no puede completar los 2 que le faltan al registro con
+    los dólares —eso le sacaría a Cocos 2 títulos que el usuario no movió—."""
+
+    def setUp(self):
+        super().setUp()
+        self.usd = self._pata_usd("Cocos")
+        self._confirmar_sin_saltear("Cocos", [
+            _fila(0, "2024-01-10", "Cocos", OP_BUY, "GGAL", 10.0, 1000.0, 10000.0, 0.0, "ARS",
+                  tipo="STOCK"),
+            _fila(1, "2024-03-01", self.usd, OP_BUY, "GGAL", 5.0, 1.0, 5.0, 0.0, "USD",
+                  tipo="STOCK"),
+        ])
+
+    def _editar_el_lote_en_pesos(self):
+        lote = dict(self.conn.execute(
+            "SELECT * FROM positions WHERE user_id=? AND broker='Cocos' AND asset='GGAL'",
+            (self.uid,)).fetchone())
+        http = TestClient(main.app)
+        h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+        r = http.put(f"/api/positions/{lote['id']}", headers=h, json={
+            "broker": "Cocos", "asset": "GGAL", "buy_price": 1000.0, "quantity": 12,
+            "invested": 12000.0, "commissions": 0, "entry_date": "2024-01-10",
+            "currency": "ARS", "asset_type": "STOCK", "tc_compra": lote["tc_compra"]})
+        self.assertEqual(r.status_code, 200, r.text)
+        limite = time.time() + 60
+        while time.time() < limite:
+            with main._MTM_RUNNING_LOCK:
+                if self.uid not in main._MTM_RUNNING:
+                    break
+            time.sleep(0.02)
+
+    def _cantidades(self):
+        return {b: q for b, q in self.conn.execute(
+            "SELECT broker, SUM(quantity) FROM positions WHERE user_id=? AND asset='GGAL' "
+            "AND is_cash=0 GROUP BY broker", (self.uid,)).fetchall()}
+
+    def test_los_dolares_quedan_en_cocos(self):
+        self._editar_el_lote_en_pesos()
+        self.assertEqual(self._cantidades(), {"Cocos": 12.0, self.usd: 5.0})
+        _, r = self._confirmar("Cocos", [
+            _fila(-49999, "2024-06-10", "Cocos", OP_SELL, "GGAL", 12.0, 0.0, 0.0, 0.0, "ARS",
+                  tipo="STOCK", transfer_out=True, traspaso_id=PASE, costo_nativo=12000.0,
+                  notes=NOTA_SALIDA),
+            _fila(-49998, "2024-06-10", "Cocos", OP_TRASPASO_SALIDA, "GGAL", 12.0, 1500.0, None,
+                  0.0, "ARS", tipo="STOCK", traspaso_id=PASE, valor_usd=14.29,
+                  valor_ars=18000.0, costo_usd=9.6, costo_nativo=12000.0),
+        ], formato="traspaso_a_mano")
+        self.assertEqual(r["skipped_rows"], [], r)
+        self.assertEqual(self._cantidades(), {self.usd: 5.0}, "el persister mueve los 12 en pesos")
+
+        with self.conn:
+            out = rb.rebuild_pair_asset(self.conn, self.uid, "Cocos", "GGAL", tc_blue=TC_BLUE)
+        self.assertEqual(self._cantidades(), {self.usd: 5.0},
+                         "el rebuild se llevó dólares que el usuario no movió")
+        # Lo que el registro no tenía queda a la vista: un tramo sin origen, a costo 0.
+        self.assertEqual([(t["currency"], t["qty"], t["invested"], t["batch_id"] is None)
+                          for t in out["traspasos"][PASE]],
+                         [("ARS", 10.0, 10000.0, False), ("ARS", 2.0, 0.0, True)])
+        self.assertEqual(self._ventas("GGAL"), [])
+
+    def test_y_el_persister_frena_si_no_queda_ninguno_de_esa_moneda(self):
+        """La salida en pesos sin lotes en pesos (algo cambió desde la vista previa) no
+        se completa con los dólares: frena, como cuando no alcanzan."""
+        with self.conn:
+            self.conn.execute("DELETE FROM positions WHERE user_id=? AND broker='Cocos'",
+                              (self.uid,))
+        _, r = self._confirmar("Cocos", [
+            _fila(-49999, "2024-06-10", "Cocos", OP_SELL, "GGAL", 2.0, 0.0, 0.0, 0.0, "ARS",
+                  tipo="STOCK", transfer_out=True, traspaso_id=PASE, costo_nativo=2000.0,
+                  notes=NOTA_SALIDA)], formato="traspaso_a_mano")
+        self.assertEqual([s["message"] for s in r["skipped_rows"]],
+                         ["No alcanzan los títulos para el pase."])
+        self.assertEqual(self._cantidades(), {self.usd: 5.0})
+
+
+class ElFrenoDePesosYLasPatasDelPase(_Base):
+    """El freno de «pesos a una cuenta en dólares» existe para que no entre efectivo en
+    pesos a la caja en dólares. Las filas de un pase llevan la moneda del LOTE: un lote
+    en pesos que vive en «Cocos · USD» (dato viejo: hoy ni el import ni el alta lo dejan
+    entrar, por eso se planta directo) sale con una venta a $0 y una pata en pesos de
+    esa cuenta, sin plata. Ésas no se frenan; el gasto en pesos, que sí es plata, sí."""
+
+    def setUp(self):
+        super().setUp()
+        self.usd = self._pata_usd("Cocos")
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO positions (user_id, broker, asset, quantity, invested, buy_price, "
+                "commissions, entry_date, is_cash, currency, asset_type) "
+                "VALUES (?,?, 'GGAL', 4, 4000, 1000, 0, '2024-01-10', 0, 'ARS', 'STOCK')",
+                (self.uid, self.usd))
+
+    def _salida(self, *, con_pase=True):
+        extra = {"traspaso_id": PASE} if con_pase else {}
+        return _fila(-49999, "2024-06-10", self.usd, OP_SELL, "GGAL", 4.0, 0.0, 0.0, 0.0, "ARS",
+                     tipo="STOCK", transfer_out=True, costo_nativo=4000.0, notes=NOTA_SALIDA,
+                     **extra)
+
+    def test_la_salida_y_su_pata_pasan(self):
+        _, r = self._confirmar("Cocos", [
+            self._salida(),
+            _fila(-49998, "2024-06-10", self.usd, OP_TRASPASO_SALIDA, "GGAL", 4.0, 1500.0, None,
+                  0.0, "ARS", tipo="STOCK", traspaso_id=PASE, valor_usd=4.76,
+                  valor_ars=6000.0, costo_usd=3.2, costo_nativo=4000.0),
+        ], formato="traspaso_a_mano")
+        self.assertEqual(r["skipped_rows"], [], r)
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM positions WHERE user_id=? AND asset='GGAL' AND is_cash=0",
+            (self.uid,)).fetchone(), "el lote salió")
+        self.assertEqual(self._caja(self.usd), 0.0, "sin plata en ninguna caja")
+
+    def test_la_misma_fila_sin_pase_se_frena(self):
+        with self.assertRaises(ps.PersistError) as ctx:
+            self._confirmar("Cocos", [self._salida(con_pase=False)], formato="traspaso_a_mano")
+        self.assertIn("es la cuenta en dólares", ctx.exception.message)
+
+    def test_el_gasto_en_pesos_del_pase_se_frena(self):
+        with self.assertRaises(ps.PersistError) as ctx:
+            self._confirmar("Cocos", [
+                _fila(-49997, "2024-06-10", self.usd, OP_FEE, None, None, None, 500.0, 0.0,
+                      "ARS", tipo=None, traspaso_id=PASE, valor_usd=0.4,
+                      notes="Costo del pase de GGAL a otro broker tuyo")],
+                formato="traspaso_a_mano")
+        self.assertIn("es la cuenta en dólares", ctx.exception.message)
 
 
 class LaVentaAManoGuardaLoQueVuelve(unittest.TestCase):

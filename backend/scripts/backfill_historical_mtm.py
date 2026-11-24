@@ -415,6 +415,11 @@ def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
     # Qué día llegó a su broker actual cada lote que vino por un pase: una venta
     # posterior guarda la fecha de compra ORIGINAL, y antes de la llegada ese lote
     # estaba en el otro broker (contado allá).
+    # ⚠️ La clave es (cuenta, activo, fecha de compra): una venta de un lote PROPIO de
+    # esa cuenta comprado el mismo día que el que llegó también se corre a la llegada.
+    # Sólo mueve la cobertura de esos meses (este bucle no entra en el valor de la
+    # foto) y distinguirlos exige saber qué lote consumió cada venta, que `operations`
+    # no guarda. Se acepta.
     try:
         from importing import traspaso_a_mano as _tam
         raiz = _tam.raices_de_brokers(conn, uid)
@@ -581,7 +586,8 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
         cantidad negativa y se descartaba, así que la tenencia NO bajaba. Pasa de
         verdad: Bull Market, PPI e IEB dejan el tipo en OTHER y Cocos o Balanz
         mandan CEDEAR o STOCK, y un pase lleva el tipo de la compra original. El
-        tipo se toma de las COMPRAS, como la moneda (ver el comentario de abajo).
+        tipo se toma de las COMPRAS (`_tipo_de_las_compras`): el de la compra más
+        nueva que dice algo más que OTHER.
       · (b) LA SALIDA DE UN PASE ENTRE BROKERS (una venta con `traspaso_id`) se
         lleva SU costo (`costo_nativo`: la inversión de los lotes que se fueron, en
         la misma unidad que el monto de una compra), no el promedio. Sin esto, lo
@@ -594,7 +600,6 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
     from importing.schema import TX_VIVAS
     rows = conn.execute(
         f"""SELECT n.broker AS broker, n.asset_symbol AS asset,
-                  MAX(CASE WHEN n.operation_type='BUY' THEN n.asset_type END) AS asset_type,
                   MAX(CASE WHEN n.operation_type='BUY' AND COALESCE(n.currency,'') <> ''
                            THEN UPPER(n.currency) END) AS currency,
                   SUM(CASE n.operation_type WHEN 'BUY'  THEN COALESCE(n.quantity,0)
@@ -619,10 +624,11 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
             GROUP BY n.broker, n.asset_symbol""",
         (uid, date_iso),
     ).fetchall()
+    tipos = _tipo_de_las_compras(conn, uid, date_iso)
     grupos = {}
     for r in rows:
         grupos[(r["broker"], r["asset"])] = {
-            "asset_type": r["asset_type"], "currency": r["currency"],
+            "asset_type": tipos.get((r["broker"], r["asset"])), "currency": r["currency"],
             "qty": float(r["qty"] or 0), "buy_amt": float(r["buy_amt"] or 0),
             "buy_qty": float(r["buy_qty"] or 0)}
     # (c) Lo que la persona vendió a mano de esos lotes, hasta esta fecha. Igual que
@@ -647,12 +653,53 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
         # parcial / reducción de capital / canje) llega con moneda vacía→'ARS' y, si
         # particionáramos, caería en otro bucket y NO restaría la cantidad (qty inflada).
         # MAX prioriza 'USD' si alguna compra fue en dólares (el caso "costo en dólares").
-        # El tipo, por la misma razón y de la misma forma (a).
+        # El tipo, por la misma razón, también sale de las compras (a).
         out.append({
             "broker": broker, "asset": asset, "asset_type": g["asset_type"],
             "currency": (g["currency"] or None), "quantity": qty, "invested": avg_cost * qty,
         })
     return out
+
+
+# Tipos que no dicen qué es el papel: el lector no lo sabía (Bull Market, PPI e IEB
+# dejan OTHER) o la fila no lo trae.
+_TIPOS_QUE_NO_DICEN_NADA = frozenset({"", "OTHER"})
+
+
+def _tipo_de_las_compras(conn, uid: int, date_iso: str) -> dict:
+    """{(broker, activo): tipo} con el que se valúa la tenencia de `_holdings_asof`.
+
+    El de la compra MÁS NUEVA que dice qué es el papel; si ninguna lo dice, el de la
+    más nueva que tenga alguno. «Más nueva» por fecha de COMPRA (la llegada de un pase
+    entra el día del pase con la compra de 2023: el FIFO la vende antes que una propia
+    de 2024) y, a igual fecha, por orden de llegada: el mismo orden del FIFO.
+
+    POR QUÉ NO `MAX(asset_type)`. MAX compara texto, y OTHER le gana a BOND, CEDEAR,
+    LETRA y ON: una compra que quedó OTHER le quitaba al grupo el tipo que el usuario
+    corrigió en otra (`_cambiar_tipo_del_lote` reescribe sólo la compra de los lotes
+    ABIERTOS; las de los ya vendidos conservan el OTHER del lector). Un bono perdía la
+    banda angosta de renta fija y un precio por 100 nominales (1 % del valor) pasaba a
+    confiarse; en un broker en dólares, un CEDEAR corregido se valuaba por el ticker de
+    EE.UU. Hasta MOTOR_VERSION 3 cada tipo era su propio grupo y el lote abierto
+    conservaba su tipo: la compra más nueva es la del lote que sigue abierto (el FIFO
+    vende primero las viejas) y la que el usuario corrigió por última vez."""
+    from importing.schema import TX_VIVAS
+    ultimo_que_dice: dict = {}
+    ultimo: dict = {}
+    for r in conn.execute(
+            f"""SELECT n.broker AS broker, n.asset_symbol AS asset, n.asset_type AS tipo
+                  FROM {TX_VIVAS}
+                 WHERE b.user_id = ?
+                   AND n.asset_symbol IS NOT NULL AND n.asset_symbol != ''
+                   AND n.operation_type = 'BUY' AND n.asset_type IS NOT NULL
+                   AND n.date <= ?
+                 ORDER BY COALESCE(n.fecha_compra, n.date), n.id""",
+            (uid, date_iso)).fetchall():
+        clave = (r["broker"], r["asset"])
+        ultimo[clave] = r["tipo"]
+        if (r["tipo"] or "").strip().upper() not in _TIPOS_QUE_NO_DICEN_NADA:
+            ultimo_que_dice[clave] = r["tipo"]
+    return {clave: ultimo_que_dice.get(clave, tipo) for clave, tipo in ultimo.items()}
 
 
 def _ventas_a_mano_de_lotes_del_registro(conn, uid: int, date_iso: str) -> list:
@@ -966,7 +1013,12 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
     # un solo lugar: lo que mira la reconstrucción entra entero.
     _agregado(("id", "broker", "asset", "quantity", "entry_price", "fx_to_usd", "currency",
                "entry_date", "date"), "operations WHERE user_id=?", "id", uid)
-    _agregado(("name", "currency"), "brokers WHERE user_id=?", "name", uid)
+    # De qué cuenta es cada pata: `snapshots_job._broker_name_sets` decide por el padre
+    # si una «· USD» es argentina (se valúa por su .BA) y `raices_de_brokers` junta las
+    # llegadas de un pase por la cuenta raíz. Adoptar una pata como hija (o soltarla)
+    # sin cambiar su nombre ni su moneda también cambia la historia.
+    _agregado(("name", "currency", "id", "parent_broker_id"), "brokers WHERE user_id=?",
+              "name", uid)
     # La caja de cada broker (`_cajas_explicadas`): los
     # movimientos que la mueven —de cualquier fecha: la prueba se hace contra la
     # caja de HOY—, la caja anotada y la contabilidad por broker que se descuenta.
