@@ -456,6 +456,86 @@ class FlujosImportadosPorMes(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_con_las_patas_de_un_pase_entre_brokers(self):
+        """Las patas de un pase entre brokers del usuario («Mover a otro broker»: B
+        deposita V, A retira V) también son flujos importados, y las dos formas de
+        preguntar tienen que verlas igual: un pase con las dos patas, uno en dólares y
+        uno del que sólo quedó la llegada (el lote de salida revertido, como queda
+        al borrar el broker de origen). Las filas entran por `store_preview_txs` →
+        `persist_batch` (el camino del pase, C.7) y el mes lo arma el recálculo real."""
+        from importing import pipeline as pl
+        from importing import persister as ps
+        from importing.schema import NormalizedTx
+
+        conn = main.get_db()
+        uid = conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified) "
+            "VALUES (?, 'x', 1, 1)", (f"flujos-pase-{uuid.uuid4().hex[:10]}@rendi.test",),
+        ).lastrowid
+        for b in ("Cocos", "Balanz", "IOL"):
+            conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,'ARS')",
+                         (uid, b))
+        for b in ("Cocos", "Balanz"):
+            conn.execute(
+                "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES "
+                "(?, ?, 'USDT', (SELECT id FROM brokers WHERE user_id=? AND name=?))",
+                (uid, f"{b} · USD", uid, b))
+        conn.commit()
+
+        def pata(tid, fecha, broker, op, v, c, moneda="ARS"):
+            return NormalizedTx(row_index=-49998, date=fecha, broker=broker, operation_type=op,
+                                asset_symbol="NVDA", asset_type="CEDEAR", quantity=10.0,
+                                unit_price=1.0, gross_amount=None, fees=0.0, currency=moneda,
+                                traspaso_id=tid, valor_usd=v, valor_ars=v * 1100,
+                                costo_usd=c, costo_nativo=c * 1000)
+
+        def lote(raiz, filas):
+            with conn:
+                sid = pl.store_preview_txs(conn, uid, broker=raiz, parser_format="traspaso_a_mano",
+                                           file_name="Pase entre brokers", txs=filas)
+                txs, raw = pl.load_session_for_confirm(conn, uid=uid, session_id=sid)
+                r = ps.persist_batch(conn, uid=uid, batch_id=sid, txs=txs,
+                                     raw_row_ids_by_index=raw, helpers=main._import_helpers)
+            self.assertEqual(r["skipped_rows"], [], r)
+            return sid
+
+        try:
+            lote("Cocos", [pata("p1", "2024-05-10", "Cocos", "TRASPASO_SALIDA", 400.0, 300.0)])
+            lote("Balanz", [pata("p1", "2024-05-10", "Balanz", "TRASPASO_ENTRADA", 400.0, 300.0)])
+            lote("Cocos", [pata("p2", "2024-06-03", "Cocos · USD", "TRASPASO_SALIDA", 90.0, 120.0, "USD")])
+            lote("Balanz", [pata("p2", "2024-06-03", "Balanz · USD", "TRASPASO_ENTRADA", 90.0, 120.0, "USD")])
+            salida_huerfana = lote("IOL", [pata("p3", "2024-06-20", "IOL", "TRASPASO_SALIDA", 50.0, 40.0)])
+            lote("Balanz", [pata("p3", "2024-06-20", "Balanz", "TRASPASO_ENTRADA", 50.0, 40.0)])
+            with conn:
+                conn.execute("UPDATE import_batches SET status='reverted' WHERE id=?",
+                             (salida_huerfana,))
+                main._recalc_pnl_realized_from_ops(conn, uid)
+
+            tc = main._user_tc_blue(conn, uid)
+            todos = main._import_flows_por_mes(conn, uid, tc)
+            self.assertEqual(todos[("Cocos", "2024", "05")], (0.0, 400.0))
+            self.assertEqual(todos[("Balanz", "2024", "05")], (400.0, 0.0))
+            self.assertEqual(todos[("Balanz · USD", "2024", "06")], (90.0, 0.0))
+            self.assertNotIn(("IOL", "2024", "06"), todos)
+            claves = set(todos) | {
+                (r["broker"], f"{int(r['year']):04d}", f"{int(r['month']):02d}")
+                for r in conn.execute(
+                    "SELECT broker, year, month FROM monthly_entries "
+                    "WHERE user_id=? AND broker<>'global'", (uid,)).fetchall()}
+            for broker, y, m in sorted(claves):
+                uno = main._import_flows_for_period(conn, uid, broker, y, m, tc)
+                agrupado = todos.get((broker, y, m), (0.0, 0.0))
+                for a, b in zip(uno, agrupado):
+                    self.assertAlmostEqual(a, b, places=6,
+                                           msg=f"{broker} {y}-{m}: mes a mes {uno} ≠ agrupado {agrupado}")
+            # 'global': las patas de p1 y p2 se anulan; de p3 queda la llegada.
+            self.assertEqual(main._import_flows_for_period(conn, uid, "global", "2024", "05", tc),
+                             (0.0, 0.0))
+            self.assertEqual(main._import_flows_for_period(conn, uid, "global", "2024", "06", tc),
+                             (50.0, 0.0))
+        finally:
+            conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

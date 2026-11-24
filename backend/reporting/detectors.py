@@ -121,7 +121,9 @@ def detect_deposits_vs_gains(report: PeriodReport) -> Optional[Insight]:
     # mercado" pegado a un headline que dice que no se puede medir.
     if getattr(report.metrics, "basis_incomparable", False):
         return None
-    deps = report.metrics.deposits
+    # Sin los títulos que llegaron desde otro broker del usuario: `deposits` los trae
+    # al valor del día, pero no son plata nueva (la cartera no «creció por aportes»).
+    deps = report.metrics.deposits - (getattr(report.metrics, "traspaso_entrada_usd", 0) or 0)
     delta = report.metrics.delta_usd
     if deps < 500:
         return None

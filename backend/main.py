@@ -16,6 +16,11 @@ from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 # `init_db()` corre al importar este módulo y su migración de flujos manuales ya
 # las lee, mucho antes del bloque de imports de `importing` más abajo.
 from importing.schema import TX_VIVAS, tx_vivas, estado_inicial
+# Las patas de capital y el puente de un pase entre brokers del usuario («Mover a
+# otro broker»): una sola lectura del registro, que comparten el recálculo del mes,
+# /api/monthly, Movimientos y los reportes. Va arriba por lo mismo que TX_VIVAS:
+# `init_db()` corre al importar y su migración de flujos manuales ya la usa.
+from importing import traspaso_a_mano as _traspaso_a_mano
 # CÓMO escribe Rendi — fuente ÚNICA del tono, compartida con ai/prompts.py.
 # Import top-level (no lazy como el resto de `ai`) porque los prompts de chat
 # se arman a nivel de módulo. `ai/voz.py` no importa nada, así que no hay
@@ -850,6 +855,10 @@ def _table_cols(conn, table: str) -> set:
 #     (lo que llaman Movimientos y transactions.csv para separar lo manual).
 # Si cambia qué cuenta, cambia acá y vale para las dos. `test_conversion_en_
 # movimientos.py::FlujosImportadosPorMes` compara una contra la otra.
+# La tercera fuente, las patas de un pase entre brokers del usuario (TRASPASO_*),
+# no tiene fragmento acá: su lectura y su cuenta viven en `importing/traspaso_a_mano`
+# (`patas_del_registro` + `resumen`), porque también las leen los reportes. Las dos
+# formas de preguntar las suman con `_traspaso_legs_for_period`.
 # Qué filas cuentan (import confirmado y sin lápida) NO va en estos WHERE: lo pone
 # el `FROM {TX_VIVAS}` de cada consulta, el mismo fragmento que el resto de los
 # lectores (importing/schema.py; lo vigila tests/test_tx_vivas.py).
@@ -940,8 +949,73 @@ def _fx_transfer_legs_for_period(conn, uid: int, broker: str, year_str: str,
     return float(cobra["s"] or 0), float(paga["s"] or 0)
 
 
+def _patas_de_pase(conn, uid: int, year_str: Optional[str] = None,
+                   month_str: Optional[str] = None) -> list:
+    """Las patas y los gastos de los pases vivos del usuario (todas, o las de UN mes),
+    como las lee `traspaso_a_mano.patas_del_registro`. [] si las tablas de import
+    todavía no existen (base recién creada), igual que el resto de estos lectores."""
+    desde = hasta = None
+    if year_str and month_str:
+        # '-31' como tope de texto vale para cualquier mes: '2025-02-28' <= '2025-02-31'.
+        desde, hasta = f"{year_str}-{month_str}-01", f"{year_str}-{month_str}-31"
+    try:
+        return _traspaso_a_mano.patas_del_registro(conn, uid, desde=desde, hasta=hasta)
+    except ERR_OPERACIONAL:
+        return []
+
+
+def _traspaso_legs_for_period(conn, uid: int, broker: str, year_str: str,
+                              month_str: str, *, patas: Optional[list] = None):
+    """(dep_usd, wit_usd) que aportan al capital aportado de `broker` las patas de
+    los pases entre brokers del usuario («Mover a otro broker») en el período.
+
+    Un pase no es plata que entra ni sale de Rendi: los títulos cambian de broker.
+    Como una conversión de moneda (`_fx_transfer_legs_for_period`), se anota como una
+    transferencia interna: B suma V (lo que valían ese día) y A resta lo mismo. En
+    'global' las dos patas de un pase se anulan; si se borró uno de los dos brokers,
+    cuenta la que sigue viva (el pase quedó «incompleto»). La cuenta es
+    `traspaso_a_mano.resumen`, la misma que usan /api/monthly y los reportes.
+
+    `patas`: las del mes, si el llamador ya las leyó (el recálculo las lee UNA vez
+    para todos los meses en vez de una consulta por fila)."""
+    if patas is None:
+        patas = _patas_de_pase(conn, uid, year_str, month_str)
+    if not patas:
+        return 0.0, 0.0
+    r = _traspaso_a_mano.resumen(patas, None if broker == "global" else (broker,))
+    return r["dep_usd"], r["wit_usd"]
+
+
+def _resultado_de_traspasos_for_period(conn, uid: int, broker: str, year_str: str,
+                                       month_str: str, *, patas: Optional[list] = None) -> dict:
+    """Lo que los pases entre brokers del usuario suman al RESULTADO del mes de
+    `broker`: {puente_salida, puente_entrada, gasto} en dólares.
+
+    El «puente» es V − C: lo que valían los títulos el día del pase menos lo que
+    costaron. A lo gana y B lo pierde, así el capital de cada uno cierra al costo
+    (`capital_final = inicio + aportes − retiros + realizado`): A queda con
+    C − V + (V − C) = 0 por esos títulos y B con V − (V − C) = C, su costo. No es
+    una venta: no hay fila en `operations`. Al resultado entra
+    `puente_salida − puente_entrada − gasto`.
+
+    El gasto del pase es una pérdida del broker que lo pagó: la FEE baja su caja, y
+    sin esto la identidad «capital = costo + caja» de A quedaba corrida en el gasto
+    (el recálculo cuenta sólo DEPOSIT/WITHDRAW como flujos).
+
+    En 'global' las dos patas de un pase se anulan (queda el neto de las vivas) y el
+    gasto cuenta entero."""
+    if patas is None:
+        patas = _patas_de_pase(conn, uid, year_str, month_str)
+    if not patas:
+        return {"puente_salida": 0.0, "puente_entrada": 0.0, "gasto": 0.0}
+    r = _traspaso_a_mano.resumen(patas, None if broker == "global" else (broker,))
+    return {"puente_salida": r["puente_salida_usd"], "puente_entrada": r["puente_entrada_usd"],
+            "gasto": r["gasto_usd"]}
+
+
 def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
-                             month_str: str, tc_blue: float):
+                             month_str: str, tc_blue: float, *,
+                             patas: Optional[list] = None):
     """(imp_deposits_usd, imp_withdrawals_usd) — suma de DEPOSIT/WITHDRAW de batches
     CONFIRMED para (uid, broker, período). broker='global' = cross-broker. Prefiere
     gross_amount_usd stamped al write-time; fallback a conversión ARS con tc_blue.
@@ -976,19 +1050,24 @@ def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
     # los flujos de conversión no fueran "imports" para ellos, el form /mensual los
     # re-clasificaría como manuales y el recalc los sumaría DOS veces.
     fx_dep, fx_wit = _fx_transfer_legs_for_period(conn, uid, broker, year_str, month_str)
-    return dep + fx_dep, wit + fx_wit
+    # Las patas de un pase entre brokers, por lo mismo: si no fueran "imports" para
+    # el form /mensual (`_derive_manual_flows`), un PUT del mes las volvía manuales.
+    t_dep, t_wit = _traspaso_legs_for_period(conn, uid, broker, year_str, month_str,
+                                             patas=patas)
+    return dep + fx_dep + t_dep, wit + fx_wit + t_wit
 
 
 def _import_flows_por_mes(conn, uid: int, tc_blue: float) -> dict:
     """`_import_flows_for_period` de TODOS los brokers y meses de un usuario, en
-    tres queries: {(broker, 'AAAA', 'MM'): (dep_usd, wit_usd)}. Sin 'global'.
+    cuatro queries: {(broker, 'AAAA', 'MM'): (dep_usd, wit_usd)}. Sin 'global'.
 
     Existe por velocidad, no por criterio: Movimientos y transactions.csv
     necesitan el número de cada fila mensual, y llamar al helper por fila son
     tres recorridos del historial importado POR MES (medido sobre el backup de
     prod: la cuenta más pesada pasaba de 0,07 s a 0,31 s). Las queries son las
-    mismas —mismos fragmentos `_FLUJO_IMPORT_*` / `_FX_PATA_*`—, agrupadas en
-    vez de filtradas por período."""
+    mismas —mismos fragmentos `_FLUJO_IMPORT_*` / `_FX_PATA_*`, y la misma cuenta
+    de las patas de un pase (`traspaso_a_mano.resumen`)—, agrupadas en vez de
+    filtradas por período."""
     out: dict = {}
 
     def _sumar(broker, y, m, i, v):
@@ -1024,7 +1103,28 @@ def _import_flows_por_mes(conn, uid: int, tc_blue: float) -> dict:
             _sumar(r["broker"], r["y"], r["m"], 0, r["s"])
     except ERR_OPERACIONAL:
         return {}           # tablas de import aún no existen (DB fresca)
+    # Patas de los pases entre brokers: B deposita V, A retira V. La misma cuenta que
+    # `_traspaso_legs_for_period` (una lectura para todos los meses).
+    for (broker, y, m), r in _patas_de_traspaso_por_mes(conn, uid).items():
+        if broker != "global":
+            _sumar(broker, y, m, 0, r["dep_usd"])
+            _sumar(broker, y, m, 1, r["wit_usd"])
     return {k: (v[0], v[1]) for k, v in out.items()}
+
+
+def _patas_de_traspaso_por_mes(conn, uid: int) -> dict:
+    """Las patas de los pases entre brokers de cada fila mensual:
+    {(broker, 'AAAA', 'MM'): `traspaso_a_mano.resumen`}, con 'global' (el neto de las
+    patas vivas, por pase). Una lectura del registro para todos los meses.
+
+    Lo usan /api/monthly (capital aportado en pesos, el puente de cada fila y el
+    realizado en pesos), el CSV mensual y `_import_flows_por_mes`."""
+    out: dict = {}
+    for (y, m), filas in _traspaso_a_mano.agrupar_por_mes(_patas_de_pase(conn, uid)).items():
+        for broker in {f["broker"] for f in filas if f["broker"]}:
+            out[(broker, y, m)] = _traspaso_a_mano.resumen(filas, (broker,))
+        out[("global", y, m)] = _traspaso_a_mano.resumen(filas, None)
+    return out
 
 
 
@@ -1067,6 +1167,10 @@ def _aportes_en_pesos_por_mes(conn, uid: int, tc_blue: float) -> dict:
         (`gross_amount`), también en la pata en dólares. Así una conversión suma
         cero pesos al aportado, igual que suma cero dólares; con la pata en
         dólares al dólar del mes aparecía la brecha blue/MEP como aporte.
+    Las patas de un pase entre brokers («Mover a otro broker») NO van acá: viajan
+    aparte, en `traspaso_pesos_*` / `traspaso_usd_con_dia` (`_patas_de_traspaso_por_mes`).
+    La pantalla le resta a la fila 'global' los dólares de cada broker que tienen
+    pesos: con las patas adentro, el resto daba negativo (en 'global' se anulan).
     Los pesos de lo importado mandan aunque sus dólares estén mal: en la copia de
     prod hay depósitos de 2020 y 2023 sellados con el dólar de HOY (cociente 4× y
     18× el blue de su mes) y con los pesos bien. Lo cargado a mano NO va acá: sus
@@ -17110,9 +17214,11 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
 
     Self-healing de drift acumulado por cycles import/revert/reimport con
     cálculos cambiantes entre versiones. Cada fila queda con:
-      pnl_realized = SUM(operations.pnl_usd)
+      pnl_realized = SUM(operations.pnl_usd) + puente de los pases − su gasto
       deposits     = SUM(imports DEPOSIT en USD) + MANUAL RESIDUAL
       withdrawals  = SUM(imports WITHDRAW en USD) + MANUAL RESIDUAL
+    (los imports incluyen las patas de las conversiones y de los pases entre
+    brokers del usuario: `_import_flows_for_period`).
 
     Para broker='global', suma cross-broker.
 
@@ -17200,6 +17306,17 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
                 _seed.add(("global", r["y"], r["m"]))
     except ERR_OPERACIONAL:
         pass          # tablas de import aún no existen (DB fresca)
+    # Los meses de los PASES entre brokers del usuario, para cada pata (A y B) y para
+    # la cuenta que pagó el gasto: un broker que recibe títulos un mes sin otra
+    # actividad no tendría fila, y el aporte de V y su puente se perderían igual que
+    # el depósito del receptor de una conversión. Se leen UNA vez: el bucle de abajo
+    # usa las del mes de cada fila (`_patas_por_mes`).
+    _patas_por_mes = _traspaso_a_mano.agrupar_por_mes(_patas_de_pase(conn, uid))
+    for (_py, _pm), _fs in _patas_por_mes.items():
+        for _f in _fs:
+            if _f["broker"]:
+                _seed.add((_f["broker"], int(_py), int(_pm)))
+                _seed.add(("global", int(_py), int(_pm)))
     for _b, _y, _m in _seed:
         conn.execute(
             """INSERT INTO monthly_entries (user_id, year, month, broker, deposits,
@@ -17253,12 +17370,21 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
                   {broker_filter_sql}""",
             (uid, year_str, month_str, *broker_filter_args),
         ).fetchone()
-        new_pnl = round(float(pnl_row["s"] or 0), 4)
+        # 1b) El puente de los pases entre brokers del usuario (V − C: A lo gana y B
+        #     lo pierde, así el capital de cada uno cierra al costo) y el gasto del
+        #     pase, como pérdida del que lo pagó. No es una venta: no está en
+        #     `operations`. Ver `_resultado_de_traspasos_for_period`.
+        _patas_mes = _patas_por_mes.get((year_str, month_str), [])
+        _r = _resultado_de_traspasos_for_period(conn, uid, broker, year_str, month_str,
+                                                patas=_patas_mes)
+        new_pnl = round(float(pnl_row["s"] or 0) + _r["puente_salida"]
+                        - _r["puente_entrada"] - _r["gasto"], 4)
 
         # 2) deposits + withdrawals desde imports CONFIRMED (helper compartido
-        #    con el backfill — prefiere gross_amount_usd stamped).
+        #    con el backfill — prefiere gross_amount_usd stamped). Incluye las patas
+        #    de los pases (B deposita V, A retira V).
         imp_deposits, imp_withdrawals = _import_flows_for_period(
-            conn, uid, broker, year_str, month_str, tc_blue,
+            conn, uid, broker, year_str, month_str, tc_blue, patas=_patas_mes,
         )
 
         # 3) Cash flows MANUALES: ahora viven en columnas propias (manual_*),
@@ -20810,10 +20936,18 @@ def insights_mtm_audit(uid: int = Depends(get_effective_user)):
     }
 
 
-def _realizado_en_pesos_por_mes_de(conn, uid: int):
+def _realizado_en_pesos_por_mes_de(conn, uid: int, patas: Optional[dict] = None):
     """`{(broker, 'AAAA-MM'): (pesos, usd_cubierto, hay_valuado)}` de todas las operaciones del
     usuario con resultado (ventas y cobros), con la cuenta única de `resultado_dual`. Lo leen
-    /api/monthly y el CSV mensual: el mes tiene UNA suma en pesos, no una por pantalla."""
+    /api/monthly y el CSV mensual: el mes tiene UNA suma en pesos, no una por pantalla.
+
+    Más el PUENTE de los pases entre brokers en pesos (`patas`: `_patas_de_traspaso_por_mes`;
+    si no viene, se lee). `pnl_realized` lo incluye (V − C, ver
+    `_resultado_de_traspasos_for_period`) y sin esto la pantalla en pesos pasaba ese
+    resto al dólar del mes con un cartel: para las patas de lotes en PESOS se suma
+    V − C en pesos (el costo de los lotes, `costo_nativo`) y los dólares que cubre;
+    en 'global', el neto de las patas vivas. Las de lotes en dólares no tienen pesos
+    propios: siguen yendo al dólar del mes, como un dividendo en dólares."""
     ops = [dict(o) for o in conn.execute(
         """SELECT broker, date, op_type, currency, fx_to_usd, pnl_usd, cobrado_ars, costo_ars,
                   costo_moneda, pnl_sin_dato
@@ -20821,7 +20955,16 @@ def _realizado_en_pesos_por_mes_de(conn, uid: int):
             WHERE user_id=? AND pnl_usd IS NOT NULL
               AND op_type IN ('Venta','Cupón','Amortización','Interés PF')""", (uid,)
     ).fetchall()]
-    return _resultado_dual.realizado_en_pesos_por_mes(ops)
+    out = _resultado_dual.realizado_en_pesos_por_mes(ops)
+    if patas is None:
+        patas = _patas_de_traspaso_por_mes(conn, uid)
+    for (broker, y, m), r in patas.items():
+        if abs(r["puente_ars"]) < 0.005 and abs(r["puente_ars_usd"]) < 0.005:
+            continue
+        k = (broker, f"{y}-{m}")
+        pesos, usd, valuado = out.get(k, (0.0, 0.0, False))
+        out[k] = (round(pesos + r["puente_ars"], 2), round(usd + r["puente_ars_usd"], 6), valuado)
+    return out
 
 
 @app.get("/api/monthly")
@@ -20854,23 +20997,65 @@ def get_monthly(uid: int = Depends(get_effective_user)):
         # de Operaciones y de Reportes). Se pide en operaciones, no en monthly_entries: lo que
         # no tiene pesos (dividendos en dólares, lo cargado a mano en /mensual) lo resuelve la
         # pantalla con `pnl_realized − realized_ars_cubre_usd` al dólar del mes.
-        _pesos_mes = _realizado_en_pesos_por_mes_de(conn, uid)
+        # Las patas de los pases entre brokers del usuario, por fila (con 'global').
+        _patas = _patas_de_traspaso_por_mes(conn, uid)
+        _pesos_mes = _realizado_en_pesos_por_mes_de(conn, uid, patas=_patas)
         out = []
         for r in rows:
             d = dict(r)
             _p = _pesos_mes.get((d["broker"], f"{int(d['year']):04d}-{int(d['month']):02d}"))
             d["realized_ars"], d["realized_ars_cubre_usd"], d["realized_ars_valuado"] = _p or (0.0, 0.0, False)
+            k = (d["broker"], f"{int(d['year']):04d}", f"{int(d['month']):02d}")
             if d["broker"] != "global":
-                k = (d["broker"], f"{int(d['year']):04d}", f"{int(d['month']):02d}")
                 v = importados.get(k, (0.0, 0.0, 0.0, 0.0))
                 (d["pesos_importados_dep"], d["pesos_importados_dep_usd"],
                  d["pesos_importados_ret"], d["pesos_importados_ret_usd"]) = (round(x, 6) for x in v)
                 if k in con_dia:
                     d["usd_con_dia"] = con_dia[k]
+            if k in _patas:
+                d.update(_campos_del_pase_en_el_mes(_patas[k], d["broker"] == "global"))
             out.append(d)
         return out
     finally:
         conn.close()
+
+
+def _campos_del_pase_en_el_mes(r: dict, es_global: bool) -> dict:
+    """Los campos de una fila de /api/monthly que explican los pases entre brokers del
+    usuario de ese mes (`r`: `traspaso_a_mano.resumen` de la fila). Sólo los distintos
+    de 0, para no ensuciar las filas de quien nunca hizo un pase.
+
+    · `puente_salida_usd` / `puente_entrada_usd`: V − C de lo que salió y de lo que
+      entró, con signo. Ya están adentro de `pnl_realized`; la pantalla los saca del %
+      del mes y los explica en un renglón (`resultadoDelMes.js`). En 'global' es el
+      NETO por pase de las patas vivas: 0 cuando viven las dos, así /mensual global
+      no dibuja dos renglones que se anulan.
+    · `gasto_pase_usd`: el gasto del pase, también adentro de `pnl_realized`.
+    · Filas de un broker, para «Capital aportado» en pesos (`capitalAportado.js`): las
+      patas de lotes en pesos con sus pesos (`traspaso_pesos_dep`/`_ret` y los dólares
+      que cubren, `_dep_usd`/`_ret_usd`) y las de lotes en dólares con su día
+      (`traspaso_usd_con_dia`). Van aparte de `pesos_importados_*` a propósito.
+    · Fila 'global': `traspaso_neto_usd` (+ entró, − salió) y `traspaso_neto_pesos`, el
+      neto de las patas vivas (0 si viven las dos)."""
+    out: dict = {}
+
+    def _poner(clave, valor, nd=6):
+        if valor and abs(valor) >= 0.005:
+            out[clave] = round(valor, nd)
+    _poner("puente_salida_usd", r["puente_salida_usd"])
+    _poner("puente_entrada_usd", r["puente_entrada_usd"])
+    _poner("gasto_pase_usd", r["gasto_usd"])
+    if es_global:
+        _poner("traspaso_neto_usd", r["neto_usd"])
+        _poner("traspaso_neto_pesos", r["neto_pesos"])
+    else:
+        _poner("traspaso_pesos_dep", r["pesos_dep"])
+        _poner("traspaso_pesos_dep_usd", r["pesos_dep_usd"])
+        _poner("traspaso_pesos_ret", r["pesos_ret"])
+        _poner("traspaso_pesos_ret_usd", r["pesos_ret_usd"])
+        if r["usd_con_dia"]["dep"] or r["usd_con_dia"]["ret"]:
+            out["traspaso_usd_con_dia"] = r["usd_con_dia"]
+    return out
 
 
 @app.post("/api/monthly")
@@ -46960,6 +47145,12 @@ _import_helpers._ensure_usd_sibling = _ensure_usd_sibling
 _import_helpers._recalc_pnl_realized_from_ops = _recalc_pnl_realized_from_ops
 _import_helpers._cobro_bono_confirmado_a_mano = _cobro_bono_confirmado_a_mano
 _import_helpers._restaurar_cobros_reemplazados = _restaurar_cobros_reemplazados
+# Los que necesita «Mover a otro broker» (importing/traspaso_a_mano.py, D.8.9): el dólar
+# del gasto del pase, la pata de la cuenta en la moneda de cada lote (creando «· USD» si
+# hace falta) y devolver un lote al deshacer.
+_import_helpers._manual_flow_rate = _manual_flow_rate
+_import_helpers._pata_de_la_moneda = _pata_de_la_moneda
+_import_helpers._devolver_al_lote = _devolver_al_lote
 
 
 @app.get("/api/imports/template")

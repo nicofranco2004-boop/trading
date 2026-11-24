@@ -24,6 +24,9 @@ Shape (~900 bytes):
                                   # de monthly_entries del año) — SOLO trades
                                   # cerrados, NO mark-to-market
   "pnl_year_usd": float,          # ALIAS de realized_pnl_year_usd (back-compat)
+  "traspasos_puente_year_usd": float,  # V − C de los títulos pasados entre brokers
+                                  # del usuario en el año (neto de las patas vivas);
+                                  # NO está en realized_pnl_year_usd
   "trades_year": int,             # # de operaciones cerradas en el año
   "best_month": { "month": str, "delta_pct": float } | null,
   "worst_month": { "month": str, "delta_pct": float } | null,
@@ -39,6 +42,20 @@ from typing import Dict, Any, List, Optional
 from datetime import date
 import twr as _twr
 from realized_pnl import closed_filter_sql
+
+
+def _puente_del_anio(conn, user_id: int, year: int) -> float:
+    """El puente (V − C) de los pases entre brokers del usuario en el año, en la
+    cuenta entera ('global': el neto de las patas vivas). La misma cuenta que el
+    recálculo del mes (`traspaso_a_mano.entradas_y_salidas_del_periodo`)."""
+    import dberrors
+    from importing.traspaso_a_mano import entradas_y_salidas_del_periodo
+    try:
+        r = entradas_y_salidas_del_periodo(conn, user_id, None, f"{year:04d}-01-01",
+                                           f"{year:04d}-12-31")
+    except dberrors.ERR_OPERACIONAL:
+        return 0.0
+    return float(r["puente_usd"] or 0)
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
@@ -92,9 +109,15 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         conn, user_id, desde=f"{year:04d}-01-01", hasta=f"{year:04d}-12-31")
     twr_year_pct: Optional[float] = _rend["pct"]
     winrate_monthly = round((positive / used) * 100, 1) if used > 0 else 0.0
+    # El realizado del año SIN el puente de los pases de títulos entre brokers del
+    # usuario: `pnl_realized` lo trae adentro (V − C, para que el capital de cada
+    # broker cierre al costo), pero no es un trade cerrado. En 'global' es el neto de
+    # las patas vivas: 0 si viven las dos, y sólo queda algo si se borró uno de los
+    # dos brokers. El gasto del pase sí queda: es una pérdida de verdad.
+    puente_year_usd = _puente_del_anio(conn, user_id, year)
     pnl_year_usd = round(sum(
         float(e.get("pnl_realized") or 0) for e in entries
-    ), 2)
+    ) - puente_year_usd, 2)
     # trades del año via operations (más confiable que monthly_entries)
     trades_year_row = conn.execute(
         f"""SELECT COUNT(*) AS c FROM operations
@@ -154,7 +177,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "twr_year_pct": "Rendimiento del año. Sale del motor canónico; mirá SIEMPRE `twr_year_base` antes de hablar de él.",
             "twr_year_base": "De dónde sale `twr_year_pct`. 'mercado' = medido contra fotos reales de la cartera, es el bueno. 'contable' = de la cadena de monthly_entries, que no sabe nada del mercado: al hablarlo decilo (\"según tu contabilidad cargada\"). null = no se pudo medir y NO hay que publicar ningún número; el motivo está en `twr_year_motivo_texto`.",
             "twr_year_motivo_texto": "Por qué no se pudo medir a mercado, ya escrito en castellano para el usuario. Si `twr_year_pct` es null, esto es lo que hay que contestar EN LUGAR de un número — no inventes uno de otra parte del packet.",
-            "realized_pnl_year_usd": "USD ABSOLUTO de P&L REALIZADO del año (suma pnl_realized de monthly_entries). Solo trades cerrados.",
+            "realized_pnl_year_usd": "USD ABSOLUTO de P&L REALIZADO del año (suma pnl_realized de monthly_entries, sin `traspasos_puente_year_usd`). Solo trades cerrados.",
+            "traspasos_puente_year_usd": "Diferencia entre el valor y el costo de los títulos pasados entre brokers del usuario. No es un trade cerrado.",
             "pnl_year_usd": "Alias back-compat de realized_pnl_year_usd. Mismo valor.",
             "trades_year": "Cantidad de operaciones CERRADAS en el año.",
             "winrate_monthly": "% de meses con delta positivo (TWRR > 0).",
@@ -174,6 +198,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         # alias para back-compat (mismo valor) hasta migrar consumers.
         "realized_pnl_year_usd": pnl_year_usd,
         "pnl_year_usd": pnl_year_usd,
+        "traspasos_puente_year_usd": round(puente_year_usd, 2),
         "trades_year": trades_year,
         "best_month": best,
         "worst_month": worst,

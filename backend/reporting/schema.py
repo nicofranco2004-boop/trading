@@ -196,6 +196,18 @@ class PeriodMetrics:
     parcial_retorno_ars_pct: Optional[float] = None
     parcial_vs_inflation_pct: Optional[float] = None
     parcial_vs_inflation_motivo: Optional[str] = None
+    # ── Los pases de títulos entre brokers del usuario («Mover a otro broker») ──
+    # `deposits` / `withdrawals` los traen ADENTRO al valor del día (V): el broker que
+    # recibe suma V a lo aportado y el que entrega lo resta. Esos brutos no se tocan.
+    # Acá viajan aparte, V y lo que costaron (C), del lado que entró y del que salió,
+    # para que nadie los lea como plata nueva: el rendimiento se mide con las patas
+    # AL COSTO (`compute_metrics_for_period`), la narrativa los dice en su propia
+    # frase y no como «Aportaste», y `detect_deposits_vs_gains` los descuenta. En
+    # 'global' es el neto de las patas vivas (0 si viven las dos). Sólo mes y año.
+    traspaso_entrada_usd: float = 0.0
+    traspaso_entrada_costo_usd: float = 0.0
+    traspaso_salida_usd: float = 0.0
+    traspaso_salida_costo_usd: float = 0.0
 
 
 @dataclass

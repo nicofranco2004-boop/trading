@@ -1575,6 +1575,66 @@ def tramo_parcial(metrics) -> Dict[str, Any]:
 
 # ─── Métricas core del período ───────────────────────────────────────────────
 
+def _patas_de_pase_del_periodo(conn, uid: int, broker_filter: str, desde: str, hasta: str, *,
+                               por_mes: bool = False):
+    """V y C de las patas de los pases entre brokers del usuario («Mover a otro
+    broker») en el período, para el filtro del reporte: `traspaso_a_mano.
+    entradas_y_salidas_del_periodo`, la misma cuenta que el recálculo del mes y
+    /api/monthly. 'global' = el neto de las patas vivas (0 si viven las dos).
+    Base recién creada, sin tablas de import: sin patas."""
+    import dberrors
+    from importing.traspaso_a_mano import entradas_y_salidas_del_periodo
+    vacio = {} if por_mes else None
+    try:
+        if not _hizo_algun_pase(conn, uid):
+            return vacio
+        brokers = (None if broker_filter == "global"
+                   else brokers_del_filtro(conn, uid, broker_filter))
+        out = entradas_y_salidas_del_periodo(conn, uid, brokers, desde, hasta, por_mes=por_mes)
+    except dberrors.ERR_OPERACIONAL:
+        return vacio
+    if not por_mes and not any(abs(v) >= 0.005 for v in out.values()):
+        return None
+    return out
+
+
+def _hizo_algun_pase(conn, uid: int) -> bool:
+    """¿El usuario hizo alguna vez un pase entre brokers? Casi nadie: con esto los
+    reportes de los demás no hacen la consulta de las patas. Se memoiza dentro de
+    `pair_cache()` (el timeline arma decenas de períodos por pedido), igual que el
+    par de cada broker."""
+    _c = getattr(_PAIR_CACHE, "d", None)
+    clave = ("hizo_algun_pase", uid)
+    if _c is not None and clave in _c:
+        return _c[clave]
+    hizo = conn.execute("SELECT 1 FROM traspasos_a_mano WHERE user_id = ? LIMIT 1",
+                        (uid,)).fetchone() is not None
+    if _c is not None:
+        _c[clave] = hizo
+    return hizo
+
+
+def _flujos_al_costo(deposits: float, withdrawals: float, pases) -> Tuple[float, float]:
+    """(aportes, retiros) del período con las patas de un pase AL COSTO, para medir
+    RENDIMIENTO sobre la cadena contable.
+
+    ⚠️ POR QUÉ. Un pase anota las patas al valor del día: B suma V a lo aportado y A
+    lo resta, y el resultado del mes de cada uno lleva el puente V − C para que su
+    capital cierre al costo (A baja C, B sube C). Con las dos puntas en la cadena al
+    costo, el Dietz de A daba `(−C) − (−V)` = V − C de «ganancia» y el de B lo mismo
+    con el signo al revés: con C = 1.000 y V = 1.200, A publicaba +50 % y B −33 % en un
+    mes en que no se vendió nada. Contando cada pata a su costo (`dep − (V−C)` del
+    lado que entró, `ret − (V−C)` del que salió) los dos dan 0. El gasto del pase no
+    se toca: es una pérdida de verdad. `pases`: `_patas_de_pase_del_periodo`.
+
+    Sólo para la cadena al costo. Con las puntas a MERCADO (fotos, valor vivo) la
+    pata al valor V es lo correcto: lo que llegó vale V en la foto."""
+    if not pases:
+        return deposits, withdrawals
+    return (deposits - (pases["entrada_valor_usd"] - pases["entrada_costo_usd"]),
+            withdrawals - (pases["salida_valor_usd"] - pases["salida_costo_usd"]))
+
+
 def _modified_dietz_pct(start_value: float, end_value: float, flows: float) -> Optional[float]:
     """Period return Modified Dietz.
 
@@ -1708,6 +1768,13 @@ def compute_metrics_for_period(
     _tramo_motor = None
     _hoy_p = today.isoformat() if today else _hoy_iso()
     _live_month_unmeasured = False  # (año) el mes vivo no tiene borde medido
+    # Los pases de títulos entre brokers del usuario del período (mes y año: sus
+    # flujos salen de `monthly_entries`, que trae las patas al valor del día). Ver
+    # `_flujos_al_costo`. `_fin_vivo`: el cierre es el valor de HOY (mercado), y
+    # entonces la pata al valor V es la que corresponde.
+    _pases = (_patas_de_pase_del_periodo(conn, uid, broker_filter, period_start, period_end)
+              if period_type in ("month", "year") else None)
+    _fin_vivo = False
 
     if period_type == "month":
         y, m = (int(x) for x in period_start[:7].split("-"))
@@ -1740,6 +1807,7 @@ def compute_metrics_for_period(
         month_is_current = _period_is_current and live_value is not None
         if month_is_current:
             end_value = float(live_value)
+            _fin_vivo = True
             # AUDIT C-3: sin fila del mes (el rollover lazy solo corre al visitar
             # /mensual) start quedaba 0 → "P&L del mes" = la cartera ENTERA sobre
             # "capital inicial de US$ 0". Heredamos el cierre del mes anterior.
@@ -1997,6 +2065,7 @@ def compute_metrics_for_period(
             period_type, period_start, period_end, today=today)
         if year_is_current:
             end_value = float(live_value)
+            _fin_vivo = True
             # AUDIT C-2 (patch pre-C1): end MtM (live) vs capital_inicio A COSTO
             # fabricaba el unrealized histórico como "P&L del año". Start desde el
             # snapshot MtM del cierre del año pasado (solo global).
@@ -2187,6 +2256,11 @@ def compute_metrics_for_period(
         if rows and not _hay_agujero and _cubre_el_periodo:
             comp = 1.0
             have_comp = False
+            # Las patas de los pases de cada mes, para medir con ellas al costo
+            # (`_flujos_al_costo`): un solo viaje a la base para todo el año.
+            _pases_mes = (_patas_de_pase_del_periodo(conn, uid, broker_filter, period_start,
+                                                     period_end, por_mes=True)
+                          if _pases else {})
             for i, r in enumerate(rows):
                 # Los STOCKS del mes se recomponen por pata, igual que en las
                 # puntas del año (arriba). El GROUP BY suma sólo las filas que
@@ -2243,7 +2317,13 @@ def compute_metrics_for_period(
                     # producto entero igual que cualquier otro mes dudoso.
                     _mes_dudoso = True
                     _mes_negativo = True
-                _flujo_mes = float(r["deposits"] or 0) - float(r["withdrawals"] or 0)
+                _dep_m, _wit_m = float(r["deposits"] or 0), float(r["withdrawals"] or 0)
+                # Las dos puntas del mes en la cadena al costo (todas, salvo el mes
+                # vivo, que cierra con el valor de hoy): las patas de un pase, al costo.
+                if not (i == len(rows) - 1 and year_is_current):
+                    _dep_m, _wit_m = _flujos_al_costo(
+                        _dep_m, _wit_m, _pases_mes.get(f"{y:04d}-{_m:02d}"))
+                _flujo_mes = _dep_m - _wit_m
                 # ⚠️ LA COMPOSICIÓN CONTABLE HEREDA LA COTA DE CORDURA DEL MOTOR.
                 #
                 # Este bucle multiplica los Dietz mensuales de `monthly_entries` sin
@@ -2606,7 +2686,13 @@ def compute_metrics_for_period(
                         basis_incomparable, start_value, end_value,
                         str(snap_end["date"])[:10])
 
-    flows = deposits - withdrawals
+    # Con las dos puntas en la cadena al costo, las patas de un pase entre brokers
+    # cuentan a su costo para el rendimiento (`_flujos_al_costo`); `deposits` y
+    # `withdrawals` (lo que se publica) no cambian.
+    _dep_rend, _wit_rend = deposits, withdrawals
+    if _pases and _basis != "mercado" and not _start_is_mtm and not _fin_vivo:
+        _dep_rend, _wit_rend = _flujos_al_costo(deposits, withdrawals, _pases)
+    flows = _dep_rend - _wit_rend
     delta_usd = end_value - start_value - flows
     delta_pct_val = _modified_dietz_pct(start_value, end_value, flows)
     delta_pct = round(delta_pct_val, 2) if delta_pct_val is not None else None
@@ -2643,7 +2729,7 @@ def compute_metrics_for_period(
         if _d0c:
             _pct_puntas_ars = _pct_en_pesos(
                 conn, _d0c, _d1c, start_value, end_value,
-                deposits, withdrawals)
+                _dep_rend, _wit_rend)
     # El punta-a-punta en pesos. Va ACÁ y no más abajo a propósito: si el motor o
     # la composición tienen un número mejor, ésos pisan igual — ya vienen en la
     # moneda pedida.
@@ -3007,6 +3093,10 @@ def compute_metrics_for_period(
         unrealized_pnl=round(unrealized, 2),
         deposits=round(deposits, 2),
         withdrawals=round(withdrawals, 2),
+        traspaso_entrada_usd=round((_pases or {}).get("entrada_valor_usd", 0.0), 2),
+        traspaso_entrada_costo_usd=round((_pases or {}).get("entrada_costo_usd", 0.0), 2),
+        traspaso_salida_usd=round((_pases or {}).get("salida_valor_usd", 0.0), 2),
+        traspaso_salida_costo_usd=round((_pases or {}).get("salida_costo_usd", 0.0), 2),
         trades_count=len(trade_ops),
         win_count=len(wins),
         loss_count=len(losses),
@@ -3278,6 +3368,30 @@ def generate_headline(metrics: PeriodMetrics, drivers: List[AssetContribution],
 
 # ─── Narrativa larga (qué pasó en el período) ────────────────────────────────
 
+def _flujo_sin_pases(metrics) -> float:
+    """Aportes − retiros del período SIN las patas de un pase entre brokers del
+    usuario: `deposits`/`withdrawals` las traen al valor del día (V), y una frase
+    «Aportaste US$ 1.200» por títulos que sólo cambiaron de broker sería falsa."""
+    return (((metrics.deposits or 0) - (getattr(metrics, "traspaso_entrada_usd", 0) or 0))
+            - ((metrics.withdrawals or 0) - (getattr(metrics, "traspaso_salida_usd", 0) or 0)))
+
+
+def _frases_de_pases(metrics) -> List[str]:
+    """«Pasaste títulos por US$ {V} {a|desde} otro broker tuyo (costaron US$ {C}).», una
+    por lado que tenga patas en el período (con un broker filtrado hay uno solo; en
+    'global' sólo queda algo si se borró uno de los dos brokers)."""
+    out: List[str] = []
+    for valor, costo, prep in (
+            (getattr(metrics, "traspaso_salida_usd", 0) or 0,
+             getattr(metrics, "traspaso_salida_costo_usd", 0) or 0, "a"),
+            (getattr(metrics, "traspaso_entrada_usd", 0) or 0,
+             getattr(metrics, "traspaso_entrada_costo_usd", 0) or 0, "desde")):
+        if abs(valor) >= 0.5:
+            out.append(f"Pasaste títulos por US$ {fmt_num(valor, 0)} {prep} otro broker tuyo "
+                       f"(costaron US$ {fmt_num(costo, 0)}).")
+    return out
+
+
 def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContribution"],
                        highlights: List["Highlight"], period_type: str,
                        period_label_str: str) -> Optional[str]:
@@ -3309,12 +3423,14 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
                 f"operación{'es' if metrics.trades_count != 1 else ''} por "
                 f"US$ {fmt_num(realized, 0, signed=True)} de P&L realizado."
             )
-        net_flow = (metrics.deposits or 0) - (metrics.withdrawals or 0)
+        net_flow = _flujo_sin_pases(metrics)
         if abs(net_flow) >= 100:
             verbo = "Aportaste" if net_flow > 0 else "Retiraste"
             parts.append(f"{verbo} US$ {fmt_num(abs(net_flow), 0)} en el período.")
+        parts.extend(_frases_de_pases(metrics))
         return " ".join(parts)
-    if abs(delta) < 0.5 and abs_usd < 100 and metrics.trades_count == 0:
+    if (abs(delta) < 0.5 and abs_usd < 100 and metrics.trades_count == 0
+            and not _frases_de_pases(metrics)):
         return None
 
     parts: List[str] = []
@@ -3363,13 +3479,17 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
     if driver_bits:
         parts.append("Los movimientos más relevantes: " + " · ".join(driver_bits) + ".")
 
-    # Oración 3: flujos de capital del período.
-    net_flow = metrics.deposits - metrics.withdrawals
+    # Oración 3: flujos de capital del período. Sin los pases de títulos entre
+    # brokers del usuario, que no son plata nueva ni plata que se fue: tienen su
+    # propia frase, junto a los flujos (el «realizado» de arriba sale de las
+    # operaciones y no incluye el puente, así que no puede ir debajo de él).
+    net_flow = _flujo_sin_pases(metrics)
     if abs(net_flow) >= 100:
         if net_flow > 0:
             parts.append(f"Aportaste US$ {fmt_num(net_flow, 0)} de capital nuevo.")
         else:
             parts.append(f"Retiraste US$ {fmt_num(abs(net_flow), 0)} del portfolio.")
+    parts.extend(_frases_de_pases(metrics))
 
     # Oración 4: trades cerrados + win rate.
     if metrics.trades_count > 0:
