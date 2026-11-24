@@ -109,6 +109,40 @@ class AsesorSoloLecturaTest(unittest.TestCase):
         self.assertEqual(self.client.post("/api/watchlist", json={"symbol": "AAPL"}, headers=h).status_code, 403)
         self.assertEqual(self.client.put("/api/tus-senales/canal", json={"canal": "mail"}, headers=h).status_code, 403)
 
+    def test_la_vista_previa_del_pase_no_escribe_en_el_cliente(self):
+        """«Mover a otro broker» (especificación B.2): la vista previa es un POST que sólo
+        LEE. Con sólo lectura, la asesora la puede pedir para su cliente y la base queda
+        IGUAL (todas las tablas, contadas antes y después)."""
+        with main.db_abierta() as conn:
+            for nombre in ("Cocos", "Balanz"):
+                conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?, ?, 'ARS')",
+                             (self.ana, nombre))
+            conn.execute(
+                "INSERT INTO positions (user_id, broker, asset, quantity, invested, buy_price, "
+                "commissions, entry_date, is_cash, currency) "
+                "VALUES (?, 'Cocos', 'GGAL', 10, 50000, 5000, 0, '2025-03-03', 0, 'ARS')",
+                (self.ana,))
+            conn.execute("INSERT INTO interruptores (nombre, encendido) VALUES (?, 1) "
+                         "ON CONFLICT(nombre) DO UPDATE SET encendido=1", ("mover_entre_brokers",))
+            conn.commit()
+
+        def _apagar():
+            with main.db_abierta() as conn:
+                conn.execute("DELETE FROM interruptores WHERE nombre=?", ("mover_entre_brokers",))
+                conn.commit()
+        self.addCleanup(_apagar)
+        antes = self._filas()
+        # Los cambios de ratio de Yahoo (lo único que iría a internet), vacíos.
+        with mock.patch("main._splits_de_yahoo", lambda sym: {}), \
+                mock.patch.dict(main._splits_cache, clear=True):
+            r = self.client.post("/api/positions/traspaso/vista-previa", json={
+                "broker_origen": "Cocos", "asset": "GGAL", "moneda": "ARS",
+                "broker_destino": "Balanz", "fecha": "2025-06-16", "precio_manual": 6000},
+                headers=self._h(self.ana))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["cantidad"], 10.0)
+        self.assertEqual(self._filas(), antes, "la vista previa dejó filas en la base")
+
     def test_con_escritura_todo_como_antes(self):
         self.assertEqual(self._leer(self.beto), [200, 200, 200])
         r = self.client.put("/api/tesis", json={"asset": "AAPL", "texto": "x"}, headers=self._h(self.beto))
@@ -124,6 +158,9 @@ class AsesorSoloLecturaTest(unittest.TestCase):
             if getattr(getattr(r, "endpoint", None), "_rendi_no_escribe_en_el_cliente", False)
             for m in sorted(getattr(r, "methods", ()) or ()))
         self.assertEqual(marcadas, [
+            # «Mover a otro broker»: la vista previa sólo lee (se prueba arriba, en
+            # test_la_vista_previa_del_pase_no_escribe_en_el_cliente).
+            ("POST", "/api/positions/traspaso/vista-previa"),
             ("POST", "/api/tecnico/cartera"),
             ("POST", "/api/tecnico/en-fechas"),
             ("POST", "/api/tecnico/lista"),

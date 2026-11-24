@@ -603,6 +603,30 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             "llegadas_de_pases": llegadas_de_pases, "semillas": semillas}
 
 
+def _moneda_del_par(conn, uid: int, pair: List[str]) -> str:
+    """'ARS' | 'USD': la moneda de la CUENTA del par (la del padre, el que no tiene
+    `parent_broker_id`). Es la moneda con la que `_replay_asset` resuelve una venta
+    que no trae la suya. Sin padre en el par, o con una moneda rara, 'USD'.
+
+    Estaba copiada en los dos rearmados (`rebuild_fifo_after_import` y
+    `rebuild_pair_asset`) y la necesita un tercero: la comprobación en seco de
+    «Mover a otro broker» (`traspaso_a_mano`, C.2.6), que tiene que replayar
+    exactamente como el próximo rebuild."""
+    _ph_pair = ",".join("?" * len(pair))
+    br = conn.execute(
+        f"""SELECT currency FROM brokers
+             WHERE user_id=? AND name IN ({_ph_pair}) AND parent_broker_id IS NULL
+             ORDER BY id ASC LIMIT 1""",
+        (uid, *pair),
+    ).fetchone()
+    broker_currency = (br["currency"] if br else "USD") or "USD"
+    if broker_currency == "USDT":
+        broker_currency = "USD"
+    if broker_currency not in ("ARS", "USD"):
+        broker_currency = "USD"
+    return broker_currency
+
+
 def _affected_assets(conn, uid: int, batch_id: str) -> List[Dict[str, str]]:
     """(broker, activo) con compras/ventas en el batch recién confirmado."""
     rows = conn.execute(
@@ -646,17 +670,24 @@ def _full_events(conn, uid: int, brokers: List[str], asset: str) -> List[Dict[st
     return [dict(r) for r in rows]
 
 
-def _is_safe_to_rebuild(conn, uid: int, brokers: List[str], asset: str) -> bool:
+def _is_safe_to_rebuild(conn, uid: int, brokers: List[str], asset: str, *,
+                        sin_lotes=()) -> bool:
     """True si TODAS las positions (lotes abiertos) y ventas actuales del activo
     en los brokers del par fueron creadas por imports (vinculadas en
     import_op_links). Si hay cualquier fila manual / sin vincular (incluye lotes
     semilla huérfanos), devolvemos False → se saltea, nunca se corrompe data no
-    reproducible."""
+    reproducible.
+
+    `sin_lotes`: ids de lotes que no se cuentan, como si ya no estuvieran. Lo usa
+    «Mover a otro broker» para preguntar si el broker de origen va a quedar a
+    salvo DESPUÉS del pase (sin los lotes que se van enteros), antes de escribir
+    nada (`traspaso_a_mano`, C.2.6). La regla es esta misma: una sola."""
     _ph = ",".join("?" * len(brokers))
+    _fuera = set(sin_lotes or ())
     cur_pos = [r["id"] for r in conn.execute(
         f"SELECT id FROM positions WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0",
         (uid, *brokers, asset),
-    ).fetchall()]
+    ).fetchall() if r["id"] not in _fuera]
     cur_sells = [r["id"] for r in conn.execute(
         f"SELECT id FROM operations WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND op_type='Venta'",
         (uid, *brokers, asset),
@@ -1005,18 +1036,7 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
         # Moneda de referencia del grupo (fallback para ventas sin moneda
         # explícita). Usamos el broker PADRE del par (sin parent_broker_id); cada
         # evento igual trae su propia moneda, así que esto casi nunca aplica.
-        _ph_pair = ",".join("?" * len(pair))
-        br = conn.execute(
-            f"""SELECT currency FROM brokers
-                 WHERE user_id=? AND name IN ({_ph_pair}) AND parent_broker_id IS NULL
-                 ORDER BY id ASC LIMIT 1""",
-            (uid, *pair),
-        ).fetchone()
-        broker_currency = (br["currency"] if br else "USDT")
-        if broker_currency == "USDT":
-            broker_currency = "USD"
-        if broker_currency not in ("ARS", "USD"):
-            broker_currency = "USD"
+        broker_currency = _moneda_del_par(conn, uid, pair)
 
         # Cancelamos los pares de conducto dólar-MEP de bonos (compra+venta del
         # mismo bono, igual nominal, cruce de moneda, ≤ventana) ANTES del FIFO: son
@@ -1107,18 +1127,7 @@ def rebuild_pair_asset(conn, uid: int, broker: str, asset: str, *,
     events = _full_events(conn, uid, pair, asset)
     _use_hist = fx_version(conn, uid) == FX_V2
 
-    _ph_pair = ",".join("?" * len(pair))
-    br = conn.execute(
-        f"""SELECT currency FROM brokers
-             WHERE user_id=? AND name IN ({_ph_pair}) AND parent_broker_id IS NULL
-             ORDER BY id ASC LIMIT 1""",
-        (uid, *pair),
-    ).fetchone()
-    broker_currency = (br["currency"] if br else "USD") or "USD"
-    if broker_currency == "USDT":
-        broker_currency = "USD"
-    if broker_currency not in ("ARS", "USD"):
-        broker_currency = "USD"
+    broker_currency = _moneda_del_par(conn, uid, pair)
 
     grp_is_exchange = any(_is_exchange_broker(b) for b in pair)
     replay = _replay_asset(_cancel_conduit_pairs(events, is_exchange=grp_is_exchange),

@@ -16,14 +16,23 @@ Lo único reemplazado es lo que sale a internet: Yahoo (precios fijos), la lista
 bonos de data912 (vacía) y los benchmarks de Reportes (vacíos). El dólar de cada
 día está sembrado en `fx_rates_daily`, así cada número se puede escribir a mano.
 
-EL PASE, POR AHORA, FABRICADO (`_fabricar_pase`). El endpoint `POST
-/api/positions/traspaso` llega en la etapa E6. Hasta entonces las filas del pase se
-arman como las va a armar él (A.6/A.7 y C.7): `store_preview_txs` con
-`parser_format='traspaso_a_mano'` → `load_session_for_confirm` → `persist_batch`,
-la fila de `traspasos_a_mano`, y después la cola de cualquier puerta
-(`_cascade_after_movement_delete`: cadena, RECÁLCULO REAL y fotos). Lo que se mira
-sale de los endpoints reales (`GET /api/monthly`, el CSV mensual, Reportes). E6
-reemplaza el fabricante por el endpoint y estas pruebas tienen que seguir en verde.
+EL PASE: EL PLAN DE VERDAD, APLICADO POR UN ANDAMIO (`_fabricar_pase`). Desde la
+etapa E5 las filas del pase las arma `traspaso_a_mano.armar_plan`, el MISMO que usa
+la vista previa (`POST /api/positions/traspaso/vista-previa`) y que va a usar el
+confirmar: las validaciones de B.6, los lotes, V, C y las filas. El endpoint que
+las aplica (`POST /api/positions/traspaso`) llega en la etapa E6; hasta entonces las
+aplica `_aplicar`, como lo va a hacer él (B.3 y C.7): turno, lotes tomados, plan,
+`store_preview_txs` con `parser_format='traspaso_a_mano'` → `load_session_for_confirm`
+→ `persist_batch`, la fila de `traspasos_a_mano`, y después la cola de cualquier
+puerta (`_cascade_after_movement_delete`: cadena, RECÁLCULO REAL y fotos). Lo que se
+mira sale de los endpoints reales (`GET /api/monthly`, el CSV mensual, Reportes, la
+vista previa). E6 reemplaza el andamio por el endpoint y estas pruebas tienen que
+seguir en verde.
+
+LA RED. Lo único reemplazado es lo que sale a internet: Yahoo (precios mensuales y
+los cambios de ratio de cada `.BA`, `main._splits_de_yahoo`), la lista de bonos de
+data912 y los benchmarks de Reportes. El interruptor `mover_entre_brokers` se prende
+en el `setUp` (en la base, como lo prende un admin) y se borra al terminar.
 
 Los números de las pruebas son los de la tabla F.2 de la especificación (#n).
 
@@ -71,6 +80,9 @@ TABLAS = ("traspasos_a_mano", "import_op_links", "import_normalized_tx", "import
           "import_batches", "operations", "positions", "monthly_entries", "snapshots",
           "config", "brokers", "users")
 
+# Los precios que alguna prueba siembra (el último precio y las velas del día).
+SIMBOLOS_SEMBRADOS = ("NVDA.BA", "AAPL.BA", "BTC", "BTC-USD", "GGAL.BA")
+
 # El dólar de cada día (blue = MEP), subiendo medio peso por día desde el 1/1/2025:
 # uno distinto por fecha, así se ve de qué día salió cada número.
 _DIA_0 = date(2025, 1, 1)
@@ -116,13 +128,32 @@ class _Cuenta(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
-        # TODO(E5/E6): prender el interruptor `mover_entre_brokers` acá cuando exista.
+        self._interruptor(True)
         self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
         self.http = TestClient(main.app)
         for nombre, valor in (("_fetch_data912_bonds", {}), ("_bench_para_reportes", {})):
             p = mock.patch.object(main, nombre, return_value=valor)
             p.start()
             self.addCleanup(p.stop)
+        # Los cambios de ratio de Yahoo (`_splits_de_yahoo`, lo que va a internet):
+        # {símbolo .BA: {fecha: factor}} que cada prueba siembra. La caché de main se
+        # vacía antes y se restaura después: un split sembrado no puede filtrarse a
+        # otra prueba.
+        self.splits = {}
+        p = mock.patch.object(main, "_splits_de_yahoo", lambda sym: dict(self.splits.get(sym, {})))
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.dict(main._splits_cache, clear=True)
+        p.start()
+        self.addCleanup(p.stop)
+        # El dólar del día de dolarapi (lo que `precargar` trae para una cripto en una
+        # cuenta en pesos): sin red, y la caché de main se restaura al terminar.
+        p = mock.patch.object(main, "_fetch_dolar", return_value=None)
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.dict(main._dolar_cache)
+        p.start()
+        self.addCleanup(p.stop)
         self._fetch_orig = bf._fetch_monthly_close
         bf._HIST_CACHE.clear()
         bf._fetch_monthly_close = lambda price_key, start_iso: dict(PRECIOS)
@@ -136,6 +167,22 @@ class _Cuenta(unittest.TestCase):
             vaciar(conn, *TABLAS)
             conn.execute("DELETE FROM fx_rates_daily WHERE date >= ? AND date <= ?",
                          (_DIAS[0].isoformat(), _DIAS[-1].isoformat()))
+            for sym in SIMBOLOS_SEMBRADOS:
+                conn.execute("DELETE FROM asset_last_price WHERE symbol=?", (sym,))
+                conn.execute("DELETE FROM velas_diarias WHERE symbol=?", (sym,))
+            conn.execute("DELETE FROM interruptores WHERE nombre=?", (traspaso_a_mano.INTERRUPTOR,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _interruptor(self, encendido):
+        """El interruptor `mover_entre_brokers`, en la base (como lo prende un admin)."""
+        conn = main.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO interruptores (nombre, encendido, cambiado_at) VALUES (?, ?, "
+                "datetime('now')) ON CONFLICT(nombre) DO UPDATE SET encendido=excluded.encendido",
+                (traspaso_a_mano.INTERRUPTOR, 1 if encendido else 0))
             conn.commit()
         finally:
             conn.close()
@@ -176,135 +223,106 @@ class _Cuenta(unittest.TestCase):
         self._importar("Balanz", [
             f"2025-{m:02d}-05,DEPOSITO,Balanz,,,,50000,,,,ARS,dep" for m in range(1, 13)])
 
-    def _fabricar_pase(self, asset, origen, destino, fecha, precio, *, gasto=None):
-        """Las filas de un pase de TODO `asset` de `origen` a `destino`, escritas como las
-        va a escribir `POST /api/positions/traspaso` (C.4–C.7, A.6–A.7).
+    def _pedido(self, asset, origen, destino, fecha, *, moneda="ARS", **extra):
+        """El cuerpo de la vista previa (`PaseIn`), sin los campos que van vacíos."""
+        body = {"broker_origen": origen, "asset": asset, "moneda": moneda,
+                "broker_destino": destino, "fecha": fecha}
+        body.update({k: v for k, v in extra.items() if v is not None})
+        return body
 
-        ⚠️ ES UN ANDAMIO DE LA ETAPA E4: E6 lo reemplaza por el endpoint. Cubre sólo lo
-        que E4 necesita: lotes importados en pesos, una sola pata por lado, precio en
-        pesos. V = cantidad × precio al dólar del día (`tc_pase` = `tc_venta`, C.4.3);
-        C con `tramo.costo_y_resultado_del_tramo`, la cuenta única de los motores
-        (C.5). Todo en UNA transacción, como C.7, con la cola de las puertas
-        (`_cascade_after_movement_delete`: cadena, recálculo real y fotos)."""
+    def _vista(self, body, headers=None):
+        """POST /api/positions/traspaso/vista-previa, como lo pide la pantalla."""
+        return self.http.post("/api/positions/traspaso/vista-previa", json=body,
+                              headers=headers or self.h)
+
+    def _fabricar_pase(self, asset, origen, destino, fecha, precio, *, gasto=None,
+                       cantidad=None, moneda="ARS"):
+        """Un pase de `asset` de `origen` a `destino` (todo, o `cantidad`), con el
+        precio escrito a mano (`precio_manual`) y, si hay, un gasto en pesos."""
+        body = self._pedido(asset, origen, destino, fecha, moneda=moneda, precio_manual=precio,
+                            cantidad=cantidad,
+                            gasto=({"monto": gasto, "moneda": "ARS"} if gasto else None))
+        return self._aplicar(body)
+
+    def _aplicar(self, body):
+        """El confirmar, como lo va a hacer `POST /api/positions/traspaso` (B.3 y C.7):
+        el plan es el de verdad (`armar_plan`, el de la vista previa); lo que escribe
+        es este andamio hasta que exista `aplicar_plan`.
+
+        ⚠️ ANDAMIO DE LAS ETAPAS E4–E5: E6 lo reemplaza por el endpoint."""
+        pedido = main.PaseIn(**body)
         conn = main.get_db()
         try:
             with conn:
                 main._tomar_turno_de_la_puerta(conn, self.uid)
-                hist = fx.fx_version(conn, self.uid) == fx.FX_V2
-                tc_blue = main._config_tc_blue(conn, self.uid)
-                tc_venta = fx.fx_for_date(conn, fecha, fallback=tc_blue) if hist else tc_blue
-                lotes = [dict(r) for r in conn.execute(
-                    "SELECT * FROM positions WHERE user_id=? AND broker=? AND asset=? "
-                    "AND is_cash=0 ORDER BY entry_date, id", (self.uid, origen, asset))]
-                self.assertTrue(lotes, f"{origen} no tiene {asset}")
-                tid = secrets.token_hex(16)
-                compras, recetas = [], []
-                q = inv_sin_com = c_nat = c_usd = 0.0
-                for k, lote in enumerate(lotes):
-                    origen_fila = conn.execute(
-                        "SELECT n.batch_id, n.raw_row_id, n.asset_type, n.asset_name "
-                        "FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
-                        "WHERE b.user_id=? AND n.created_position_id=? AND n.operation_type='BUY'",
-                        (self.uid, lote["id"])).fetchone()
-                    self.assertIsNotNone(origen_fila, "el andamio sólo mueve lotes importados")
-                    take = float(lote["quantity"])
-                    moneda = (lote["currency"] or "ARS").upper()
-                    self.assertEqual(moneda, "ARS", "el andamio sólo mueve lotes en pesos")
-                    t = tramo.costo_y_resultado_del_tramo(
-                        conn, lote=lote, take=take, currency=moneda, sell_currency=moneda,
-                        exit_price=precio, chunk_commission=0.0, tc_venta=tc_venta,
-                        tc_blue=tc_blue, hist=hist, op_date=fecha, transfer_out=False)
-                    inv, com = float(lote["invested"] or 0), float(lote["commissions"] or 0)
-                    q += take
-                    inv_sin_com += inv
-                    c_nat += inv + com
-                    c_usd += t["invested_usd"]
-                    compra_original = str(lote["entry_date"])[:10]
-                    compras.append(NormalizedTx(
-                        row_index=-49999 + k, date=fecha, broker=destino, operation_type=OP_BUY,
-                        asset_symbol=asset, asset_type=lote["asset_type"] or origen_fila["asset_type"],
-                        asset_name=origen_fila["asset_name"], quantity=take,
-                        unit_price=lote["buy_price"] or ((inv + com) / take),
-                        gross_amount=inv, fees=com, currency=moneda, tc_compra=lote["tc_compra"],
-                        fecha_compra=compra_original, traspaso_id=tid,
-                        notes=(f"Llegó desde otro broker tuyo el {_ddmmaaaa(fecha)} · compra "
-                               f"original del {_ddmmaaaa(compra_original)}")))
-                    recetas.append({"origen": "importado", "lote_id": lote["id"], "broker": origen,
-                                    "broker_destino": destino,
-                                    "fila_origen": {"batch_id": origen_fila["batch_id"],
-                                                    "raw_row_id": origen_fila["raw_row_id"]},
-                                    "cantidad": take, "invested": inv, "commissions": com,
-                                    "parcial": False,
-                                    "foto": {c: lote[c] for c in (
-                                        "id", "broker", "asset", "quantity", "invested",
-                                        "commissions", "buy_price", "entry_date", "currency",
-                                        "tc_compra", "asset_type", "notes")}})
-                tipo = compras[0].asset_type
-                v_ars = q * precio
-                v_usd = v_ars / tc_venta
-                patas = dict(asset_symbol=asset, asset_type=tipo, quantity=q, unit_price=precio,
-                             gross_amount=None, fees=0.0, currency="ARS", traspaso_id=tid,
-                             valor_usd=v_usd, valor_ars=v_ars, costo_usd=c_usd,
-                             costo_nativo=c_nat)
-                filas_a = [
-                    NormalizedTx(row_index=-49999, date=fecha, broker=origen,
-                                 operation_type=OP_SELL, asset_symbol=asset, asset_type=tipo,
-                                 quantity=q, unit_price=0.0, gross_amount=0.0, fees=0.0,
-                                 currency="ARS", transfer_out=True, traspaso_id=tid,
-                                 costo_nativo=inv_sin_com,
-                                 notes=(f"Traspaso a otro broker tuyo el {_ddmmaaaa(fecha)} — "
-                                        "sale al costo, sin ganancia")),
-                    NormalizedTx(row_index=-49998, date=fecha, broker=origen,
-                                 operation_type=OP_TRASPASO_SALIDA,
-                                 notes=f"Salieron {q:g} {asset} a otro broker tuyo (valor del día)",
-                                 **patas),
-                ]
-                gasto_usd = 0.0
-                if gasto:
-                    gasto_usd = gasto / tc_venta
-                    filas_a.append(NormalizedTx(
-                        row_index=-49997, date=fecha, broker=origen, operation_type=OP_FEE,
-                        gross_amount=gasto, fees=0.0, currency="ARS", traspaso_id=tid,
-                        valor_usd=gasto_usd,
-                        notes=f"Costo del pase de {asset} a otro broker tuyo"))
-                filas_b = compras + [NormalizedTx(
-                    row_index=-49999 + len(compras), date=fecha, broker=destino,
-                    operation_type=OP_TRASPASO_ENTRADA,
-                    notes=f"Entraron {q:g} {asset} desde otro broker tuyo (valor del día)",
-                    **patas)]
-
+                hoy = main._iso_today()
+                cuentas = traspaso_a_mano.cuentas_del_pedido(conn, self.uid, pedido, hoy=hoy)
+                main._tomar_lotes(conn, self.uid, cuentas.patas_a, cuentas.asset)
+                main._tomar_lotes(conn, self.uid, cuentas.patas_b, cuentas.asset)
+                plan = traspaso_a_mano.armar_plan(conn, self.uid, pedido, hoy=hoy,
+                                                  cuentas=cuentas, helpers=main._import_helpers,
+                                                  para_confirmar=True)
                 antes = main._foto_contable(conn, self.uid)
-                sid_a = pl.store_preview_txs(conn, self.uid, broker=origen,
+                tid = secrets.token_hex(16)
+                # C.7.2 — las «· USD» que hagan falta, antes de cualquier otra escritura.
+                for nombre in plan.brokers_a_crear:
+                    raiz = nombre[:-len(" · USD")]
+                    self.assertEqual(main._pata_de_la_moneda(conn, self.uid, raiz, "USD"), nombre)
+                # C.7.3 — los cargados a mano salen de `positions`, primero.
+                for l in plan.lotes:
+                    if l.origen != "a_mano":
+                        continue
+                    q = float(l.lote["quantity"])
+                    if l.parcial:
+                        n = conn.execute(
+                            "UPDATE positions SET quantity=?, invested=?, commissions=? "
+                            "WHERE id=? AND user_id=? AND quantity=?",
+                            (q - l.take,
+                             (fx.costo_del_lote(l.lote["invested"], l.lote["buy_price"], q)
+                              or 0) - l.mov_inv,
+                             float(l.lote["commissions"] or 0) - l.mov_com,
+                             l.lote_id, self.uid, q)).rowcount
+                    else:
+                        n = conn.execute("DELETE FROM positions WHERE id=? AND user_id=? AND quantity=?",
+                                         (l.lote_id, self.uid, q)).rowcount
+                    self.assertEqual(n, 1)
+                filas_a, filas_b = plan.filas(tid)
+                sid_a = pl.store_preview_txs(conn, self.uid, broker=cuentas.raiz_a,
                                              parser_format=traspaso_a_mano.FORMATO,
-                                             file_name="Pase entre brokers", txs=filas_a)
-                sid_b = pl.store_preview_txs(conn, self.uid, broker=destino,
+                                             file_name=traspaso_a_mano.ARCHIVO_DEL_PASE, txs=filas_a)
+                sid_b = pl.store_preview_txs(conn, self.uid, broker=cuentas.raiz_b,
                                              parser_format=traspaso_a_mano.FORMATO,
-                                             file_name="Pase entre brokers", txs=filas_b)
-                receta = {"v": 1, "broker_origen": origen, "broker_destino": destino,
-                          "fx_version": "v2" if hist else "v1", "lotes": recetas,
-                          "gasto": ({"broker": origen, "monto": gasto, "moneda": "ARS"}
-                                    if gasto else None),
-                          "precio": {"unitario": precio, "moneda": "ARS",
-                                     "fuente": "precio_a_mano", "fecha": fecha},
-                          "valor_nativo": v_ars, "valor_usd": v_usd, "valor_ars": v_ars,
-                          "costo_usd": c_usd, "tc_pase": tc_venta, "tc_venta": tc_venta,
-                          "brokers_usd_creados": [], "precio_cargado_en_destino": None}
+                                             file_name=traspaso_a_mano.ARCHIVO_DEL_PASE, txs=filas_b)
+                receta = plan.receta()
+                _, raw_b = pl.load_session_for_confirm(conn, uid=self.uid, session_id=sid_b)
+                for k, lote in enumerate(receta["lotes"]):
+                    lote["fila_destino_raw_row_id"] = raw_b.get(traspaso_a_mano.BASE_ROW_INDEX + k)
                 conn.execute(
                     "INSERT INTO traspasos_a_mano (id, user_id, lote_salida, lote_entrada, fecha, "
                     "asset, cantidad, moneda, receta_json) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (tid, self.uid, sid_a, sid_b, fecha, asset, q, "ARS", json.dumps(receta)))
+                    (tid, self.uid, sid_a, sid_b, plan.fecha, plan.asset, plan.cantidad,
+                     plan.moneda, json.dumps(receta)))
                 for sid in (sid_a, sid_b):
                     txs, raw = pl.load_session_for_confirm(conn, uid=self.uid, session_id=sid)
                     r = ps.persist_batch(conn, uid=self.uid, batch_id=sid, txs=txs,
                                          raw_row_ids_by_index=raw, helpers=main._import_helpers)
                     self.assertEqual(r["skipped_rows"], [], r)
-                main._cascade_after_movement_delete(conn, self.uid, fecha, {origen, destino},
-                                                    antes=antes)
+                if plan.precio_cargado_en_destino:
+                    conn.execute(
+                        "UPDATE positions SET price_override=? WHERE user_id=? AND broker IN "
+                        f"({','.join('?' * len(cuentas.patas_b))}) AND asset=? AND is_cash=0",
+                        (plan.precio_cargado_en_destino["puesto"], self.uid, *cuentas.patas_b,
+                         plan.asset))
+                main._cascade_after_movement_delete(conn, self.uid, plan.fecha,
+                                                    set(plan.patas_tocadas), antes=antes)
         finally:
             conn.close()
+        self._esperar_reconstruccion()
         return {"traspaso_id": tid, "lote_salida": sid_a, "lote_entrada": sid_b,
-                "V": v_usd, "V_ars": v_ars, "C": c_usd, "C_nativo": c_nat,
-                "gasto_usd": gasto_usd, "cantidad": q}
+                "V": plan.valor_usd, "V_ars": plan.valor_ars, "C": plan.costo_usd,
+                "C_nativo": sum(p["c_nativo"] for p in plan.pares()),
+                "gasto_usd": plan.gasto["valor_usd"] if plan.gasto else 0.0,
+                "cantidad": plan.cantidad, "plan": plan}
 
     def _rebuild(self):
         """«Después del rebuild» (F.1): el rearmado entero, como el backfill."""
@@ -676,6 +694,722 @@ class PuenteEnPesos(_Cuenta):
         self.assertAlmostEqual(float(por[("Cocos", "2025-06")]), v_ars - c_ars, places=2)
         self.assertAlmostEqual(float(por[("Balanz", "2025-06")]), -(v_ars - c_ars), places=2)
         self.assertEqual(por[("global", "2025-06")], "")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Etapa E5: la vista previa (`armar_plan`), por HTTP
+# ══════════════════════════════════════════════════════════════════════════════
+
+TABLAS_CONTADAS = ("import_batches", "import_normalized_tx", "import_raw_rows",
+                   "import_op_links", "positions", "operations", "traspasos_a_mano",
+                   "brokers", "monthly_entries", "snapshots", "config", "flujos_a_mano")
+
+
+class _Vista(_Cuenta):
+    """Lo que necesitan las pruebas de la vista previa: brokers, lotes a mano y lo que
+    dice el servidor cuando frena (status y texto exacto de B.6)."""
+
+    def _broker(self, nombre, moneda="ARS", padre=None):
+        conn = main.get_db()
+        try:
+            pid = None
+            if padre:
+                pid = conn.execute("SELECT id FROM brokers WHERE user_id=? AND name=?",
+                                   (self.uid, padre)).fetchone()["id"]
+            bid = conn.execute(
+                "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?,?,?)",
+                (self.uid, nombre, moneda, pid)).lastrowid
+            conn.commit()
+            return bid
+        finally:
+            conn.close()
+
+    def _lote_a_mano(self, broker, asset, cantidad, precio, fecha, moneda="ARS", **extra):
+        """Un lote cargado a mano por la puerta de siempre (`POST /api/positions`)."""
+        body = {"broker": broker, "asset": asset, "quantity": cantidad, "buy_price": precio,
+                "invested": round(cantidad * precio, 6), "entry_date": fecha,
+                "currency": moneda, **extra}
+        r = self.http.post("/api/positions", json=body, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        return self._lote(broker=None, asset=asset, entry_date=fecha)
+
+    def _lote_viejo(self, broker, asset, cantidad, invertido, fecha, moneda):
+        """Un lote como los que quedaron de antes de las reglas de hoy (en pesos en una
+        pata en dólares, o sin fecha). Ninguna puerta los crea ya: se siembran."""
+        conn = main.get_db()
+        try:
+            pid = conn.execute(
+                "INSERT INTO positions (user_id, broker, asset, quantity, invested, buy_price, "
+                "commissions, entry_date, is_cash, currency, asset_type) "
+                "VALUES (?,?,?,?,?,?,0,?,0,?,?)",
+                (self.uid, broker, asset, cantidad, invertido, invertido / cantidad, fecha,
+                 moneda, "CRYPTO" if asset == "BTC" else "CEDEAR")).lastrowid
+            conn.commit()
+            return pid
+        finally:
+            conn.close()
+
+    def _lote(self, broker=None, asset="NVDA", entry_date=None):
+        conn = main.get_db()
+        try:
+            q = "SELECT * FROM positions WHERE user_id=? AND asset=? AND is_cash=0"
+            args = [self.uid, asset]
+            if broker:
+                q += " AND broker=?"
+                args.append(broker)
+            if entry_date:
+                q += " AND substr(entry_date, 1, 10)=?"
+                args.append(entry_date)
+            r = conn.execute(q + " ORDER BY id DESC LIMIT 1", args).fetchone()
+            return dict(r) if r else None
+        finally:
+            conn.close()
+
+    def _lotes(self, broker, asset="NVDA"):
+        conn = main.get_db()
+        try:
+            return [dict(r) for r in conn.execute(
+                "SELECT broker, quantity, invested, commissions, substr(entry_date, 1, 10) AS ed, "
+                "substr(COALESCE(en_broker_desde, ''), 1, 10) AS desde, currency "
+                "FROM positions WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 "
+                "ORDER BY entry_date, id", (self.uid, broker, asset)).fetchall()]
+        finally:
+            conn.close()
+
+    def _no_puede(self, body, status, texto, headers=None):
+        r = self._vista(body, headers=headers)
+        self.assertEqual(r.status_code, status, r.text)
+        self.assertEqual(r.json()["detail"], texto)
+        return r
+
+    def _ok(self, body):
+        r = self._vista(body)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def _contar(self):
+        conn = main.get_db()
+        try:
+            return {t: conn.execute(f"SELECT COUNT(*) AS n FROM {t}").fetchone()["n"]
+                    for t in TABLAS_CONTADAS}
+        finally:
+            conn.close()
+
+
+class VistaPrevia(_Vista):
+
+    def test_vista_previa_no_escribe(self):
+        """#27. Dos vistas previas iguales no escriben nada (las filas de cada tabla de la
+        cuenta, contadas antes y después) y dan la misma firma. La respuesta trae lo que
+        lee la pantalla (`VistaPreviaDelPase`), con los números a mano: 10 NVDA a
+        $45.000 el 16/06, que costaron $300.000 + $1.500 el 10/01. Y el confirmar (acá,
+        el andamio de E6) arma el MISMO plan: la misma firma."""
+        self._historia()
+        lote = self._lote("Cocos")
+        body = self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, precio_manual=PRECIO_PASE)
+        antes = self._contar()
+        r1, r2 = self._vista(body), self._vista(body)
+        self.assertEqual((r1.status_code, r2.status_code), (200, 200), r1.text)
+        self.assertEqual(self._contar(), antes, "la vista previa escribió algo")
+        j = r1.json()
+        self.assertEqual(j["firma"], r2.json()["firma"])
+        self.assertRegex(j["firma"], r"^[0-9a-f]{16}$")
+        V, C = 450000 / dolar(FECHA_PASE), 301500 / dolar("2025-01-10")
+        self.assertEqual(j, {
+            "ok": True,
+            "origen": {"cuenta": "Cocos", "etiqueta": "Cocos · en pesos"},
+            "destino": {"cuenta": "Balanz", "brokers_a_crear": []},
+            "asset": "NVDA", "moneda": "ARS", "fecha": FECHA_PASE,
+            "cantidad": 10.0, "cantidad_disponible": 10.0,
+            "lotes": [{"lote_id": lote["id"], "a_mano": False, "fecha_compra": "2025-01-10",
+                       "cantidad": 10.0, "de_un_lote_de": 10.0, "costo": 300000.0,
+                       "comisiones": 1500.0, "moneda": "ARS", "broker_origen": "Cocos",
+                       "broker_destino": "Balanz"}],
+            "valuacion": {"precio_unitario": PRECIO_PASE, "moneda_precio": "ARS",
+                          "fuente": "precio_a_mano", "fecha_precio": FECHA_PASE,
+                          "dolar": dolar(FECHA_PASE)},
+            "valor_nativo": 450000.0, "valor_ars": 450000.0, "valor_usd": round(V, 2),
+            "costo_usd": round(C, 2), "puente_usd": round(V - C, 2),
+            "gasto": None, "avisos": [], "firma": j["firma"]})
+        # La valuación vuelve tal cual al confirmar: tiene la forma exacta de `ValuacionIn`.
+        main.ValuacionIn(**j["valuacion"])
+        # La firma no lleva el precio (C.9): con otro precio, la misma.
+        otra = self._ok({**body, "precio_manual": PRECIO_PASE + 1000})
+        self.assertEqual(otra["firma"], j["firma"])
+        self.assertNotEqual(otra["valor_nativo"], j["valor_nativo"])
+
+        # Parte de un lote: 4 de los 10, en proporción (C.3); otra firma.
+        p = self._ok({**body, "cantidad": 4})
+        self.assertNotEqual(p["firma"], j["firma"])
+        self.assertEqual({k: p["lotes"][0][k] for k in ("cantidad", "de_un_lote_de", "costo",
+                                                       "comisiones")},
+                         {"cantidad": 4.0, "de_un_lote_de": 10.0, "costo": 120000.0,
+                          "comisiones": 600.0})
+        self.assertEqual(self._contar(), antes)
+
+        # El confirmar arma el mismo plan (la misma firma) y lo aplica.
+        hecho = self._aplicar(body)
+        self.assertEqual(hecho["plan"].firma, j["firma"])
+        self.assertEqual(self._lotes("Balanz")[0]["desde"], FECHA_PASE)
+        # Después del pase, la vista previa de lo mismo ya no encuentra lotes.
+        self._no_puede(body, 400, "No tenés NVDA en Cocos en pesos que estuvieran ahí el "
+                                  "16/06/2025.")
+
+    def test_tramos_por_pata(self):
+        """A.6, nota 1: la salida de los importados se parte en tramos contiguos de la
+        misma pata, en el orden FIFO ([hija, padre, hija] → tres SELL), y los cargados a
+        mano no tienen SELL (salen de `positions`). Sin base: un plan escrito a mano."""
+        def lote(i, pata, q, origen="importado"):
+            return traspaso_a_mano.LoteDelPlan(
+                lote={"id": i, "quantity": q, "entry_date": f"2025-01-0{i}"}, origen=origen,
+                fila_origen=None, asset_type="CEDEAR", asset_name=None, take=q, parcial=False,
+                mov_inv=10.0 * q, mov_com=0.0, moneda="USD", pata_a=pata, pata_b="Balanz")
+        plan = traspaso_a_mano.Plan(
+            cuentas=None, cantidad=0, disponible=0,
+            lotes=[lote(1, "Cocos · USD", 5), lote(2, "Cocos", 3), lote(3, "Cocos", 1, "a_mano"),
+                   lote(4, "Cocos · USD", 2)],
+            fx_version="v2", tc_blue=1, tc_venta=1, tc_pase=1, dolar_del_dia=1, precio=1,
+            moneda_precio="USD", fuente="precio_a_mano", fecha_precio="", brokers_a_crear=[],
+            gasto=None, precio_cargado_en_destino=None)
+        self.assertEqual([(t["pata"], t["cantidad"], t["inv"]) for t in plan.tramos()],
+                         [("Cocos · USD", 5, 50.0), ("Cocos", 3, 30.0), ("Cocos · USD", 2, 20.0)])
+
+
+class ValidacionesDeLaVistaPrevia(_Vista):
+    """B.6, cada una con su status y su texto exacto, en el orden de la tabla."""
+
+    def test_fecha_brokers_interruptor_e_idor(self):
+        """#1–#5, el interruptor apagado y otra cuenta (B.7: el mismo 404)."""
+        self._historia()
+        base = self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, precio_manual=PRECIO_PASE)
+        sin_fecha = {k: v for k, v in base.items() if k != "fecha"}
+        self._no_puede(sin_fecha, 400, "Elegí la fecha del pase.")
+        self._no_puede({**base, "fecha": ""}, 400, "Elegí la fecha del pase.")
+        for mala in ("2025-02-30", "16/06/2025", "2025-6-16"):
+            self._no_puede({**base, "fecha": mala}, 400,
+                           "Fecha inválida. Usá el formato día/mes/año.")
+        manana = (date.fromisoformat(main._iso_today()) + timedelta(days=1)).isoformat()
+        self._no_puede({**base, "fecha": manana}, 400,
+                       "La fecha del pase no puede ser posterior a hoy.")
+        self._no_puede({**base, "broker_origen": "Nadie"}, 404,
+                       "No encontramos ese broker en tu cuenta.")
+        self._no_puede({**base, "broker_destino": "Nadie"}, 404,
+                       "No encontramos el broker al que querés pasarlo. Si es nuevo, crealo "
+                       "primero.")
+        self._broker("Cocos · USD", "USDT", padre="Cocos")
+        mismo = "Ése es el mismo broker: las dos monedas de una cuenta son una sola. Elegí otro broker."
+        self._no_puede({**base, "broker_destino": "Cocos · USD"}, 400, mismo)
+        self._no_puede({**base, "broker_origen": "Cocos · USD", "broker_destino": "Cocos",
+                        "moneda": "USD"}, 400, mismo)
+        # Otra cuenta con los mismos nombres a la vista: para ella no existen.
+        conn = main.get_db()
+        try:
+            otro = conn.execute(
+                "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'x', 1, 1, 'plus')", (f"otro-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+        self._no_puede(base, 404, "No encontramos ese broker en tu cuenta.",
+                       headers={"Authorization": f"Bearer {main.create_token(otro)}"})
+        # Apagado, nadie arma pases nuevos.
+        self._interruptor(False)
+        self._no_puede(base, 403, "Esta opción no está disponible por ahora.")
+        self._interruptor(True)
+        self.assertEqual(self._vista(base).status_code, 200)
+
+    def test_bloqueos_de_familia_tipo_y_wallbit(self):
+        """#10 (y #6–#11): de un broker argentino a uno de afuera, un exchange, Wallbit, el
+        efectivo, un bono, un fondo y un código de ticker viejo."""
+        for nombre, moneda in (("Schwab", "USD"), ("Binance", "USDT"), ("Wallbit", "USD")):
+            self._broker(nombre, moneda)
+        self._lote_a_mano("Cocos", "NVDA", 5, 30000, "2025-02-03")
+        base = self._pedido("NVDA", "Cocos", "Balanz", "2025-06-16", precio_manual=45000)
+        self._no_puede({**base, "broker_destino": "Schwab"}, 400,
+                       "No se puede pasar de Cocos a Schwab: uno opera en el mercado argentino "
+                       "y el otro afuera. Un CEDEAR no es lo mismo que la acción de Estados "
+                       "Unidos.")
+        self._no_puede({**base, "broker_origen": "Binance", "broker_destino": "Schwab",
+                        "moneda": "USD"}, 400,
+                       "No se puede pasar de Binance a Schwab: uno es un exchange cripto y el "
+                       "otro un broker.")
+        self._no_puede({**base, "broker_destino": "Binance"}, 400,
+                       "No se puede pasar de Cocos a Binance: uno es un exchange cripto y el "
+                       "otro un broker.")
+        wallbit = ("Wallbit se sincroniza sola con tu cuenta real: no se le pueden pasar ni "
+                   "sacar títulos a mano.")
+        self._no_puede({**base, "broker_destino": "Wallbit"}, 400, wallbit)
+        self._no_puede({**base, "broker_origen": "Wallbit", "broker_destino": "Schwab",
+                        "moneda": "USD"}, 400, wallbit)
+        efectivo = ("El efectivo no se mueve con esta opción. Usá Retirar en un broker y "
+                    "Depositar en el otro.")
+        for caja in ("USD", "ARS", "usdt"):
+            self._no_puede({**base, "asset": caja}, 400, efectivo)
+        bono = "Por ahora los bonos y las letras no se pueden pasar entre brokers desde Rendi."
+        self._no_puede({**base, "asset": "AL30"}, 400, bono)
+        self._lote_a_mano("Cocos", "ONCRE", 100, 1000, "2025-02-03", asset_type="BOND")
+        self._no_puede({**base, "asset": "ONCRE"}, 400, bono)
+        fondo = ("Los fondos comunes no se pasan entre brokers: se rescatan en uno y se "
+                 "suscriben en el otro. Registralo como una venta y una compra.")
+        self._no_puede({**base, "asset": "FCI:COCOSPPA"}, 400, fondo)
+        self._lote_a_mano("Cocos", "COCOSPPA", 100, 10, "2025-02-03", asset_type="FUND")
+        self._no_puede({**base, "asset": "COCOSPPA"}, 400, fondo)
+        self._no_puede({**base, "asset": "SQ"}, 409,
+                       "SQ ahora cotiza como XYZ. Editá el lote para que diga XYZ y volvé a "
+                       "moverlo.")
+        self.assertEqual(self._vista(base).status_code, 200)
+
+    def test_traspaso_automatico_ya_cerrado(self):
+        """#12. El archivo de A ya trae la salida hacia B con la marca del cruce
+        automático («Traspaso a {B}», sin pase): no se mueve dos veces. Vale también
+        con B renombrado (la nota guarda el nombre viejo: `nombres_anteriores`)."""
+        self._historia()
+        self._importar("Cocos", ["2025-06-14,VENTA,Cocos,NVDA,10,45000,450000,,,0,ARS,"
+                                 "Traspaso a Balanz el 14/06/2025"])
+        body = self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, precio_manual=PRECIO_PASE)
+        self._no_puede(body, 409, "Rendi ya pasó estos NVDA de Cocos a Balanz el 14/06, cuando "
+                                  "importaste el archivo de Balanz. No hace falta moverlos otra vez.")
+        conn = main.get_db()
+        try:
+            bid = conn.execute("SELECT id FROM brokers WHERE user_id=? AND name='Balanz'",
+                               (self.uid,)).fetchone()["id"]
+        finally:
+            conn.close()
+        r = self.http.put(f"/api/brokers/{bid}", json={"name": "Balanz Nuevo", "currency": "ARS"},
+                          headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self._no_puede({**body, "broker_destino": "Balanz Nuevo"}, 409,
+                       "Rendi ya pasó estos NVDA de Cocos a Balanz Nuevo el 14/06, cuando "
+                       "importaste el archivo de Balanz Nuevo. No hace falta moverlos otra vez.")
+        # A más de 4 días ya no es ése (y no quedan lotes: el #17).
+        self._no_puede({**body, "broker_destino": "Balanz Nuevo", "fecha": "2025-06-20"}, 400,
+                       "No tenés NVDA en Cocos en pesos que estuvieran ahí el 20/06/2025.")
+
+    def test_llegada_ya_importada_en_b(self):
+        """#13 y su aviso: B ya trae la entrada en su archivo (marca IEB:DETR). A ≤ 60 días
+        frena con las instrucciones; más lejos entra con un aviso."""
+        self._historia()
+        self._importar("Balanz", ["2025-06-14,COMPRA,Balanz,NVDA,10,30000,300000,,,0,ARS,"
+                                  "Transferencia IEB:DETR"])
+        body = self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, precio_manual=PRECIO_PASE)
+        self._no_puede(body, 409, (
+            "Balanz ya tiene registrada la llegada de 10 NVDA el 14/06 (vino en el archivo que "
+            "importaste). Si la movés también a mano, se cuentan dos veces.\n\nHacé esto: en "
+            "Movimientos, filtrá por Balanz y borrá la «Compra» de NVDA del 14/06 y el «Depósito» "
+            "del mismo día. Después volvé y mové los NVDA desde Cocos con fecha 14/06: así quedan "
+            "con lo que pagaste originalmente."))
+        j = self._ok({**body, "fecha": "2025-09-20"})
+        self.assertEqual(j["avisos"], ["Ojo: Balanz ya tiene una entrada de NVDA por traspaso "
+                                       "del 14/06 (del archivo). Si es la misma, no la muevas a mano."])
+
+    def test_fecha_antes_del_capital_declarado_frena(self):
+        """#43 (#14). La historia de A arranca en marzo con un capital inicial cargado a
+        mano: un pase de febrero lo volvería segundo renglón y la cadena le pisaría el
+        capital. Lo mismo del lado de B."""
+        r = self.http.post("/api/monthly", json={"year": 2025, "month": 3, "broker": "Cocos",
+                                                 "capital_inicio": 100000,
+                                                 "capital_final": 100000}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._lote_a_mano("Cocos", "NVDA", 5, 30000, "2025-03-15")
+        body = self._pedido("NVDA", "Cocos", "Balanz", "2025-02-20", precio_manual=45000)
+        self._no_puede(body, 409, (
+            "Tu historia de Cocos en Rendi arranca en marzo de 2025 con un capital inicial que "
+            "cargaste a mano. El pase no puede tener una fecha anterior: elegí desde el 01/03/2025."))
+        r = self.http.post("/api/monthly", json={"year": 2025, "month": 4, "broker": "Balanz",
+                                                 "capital_inicio": 5000, "capital_final": 5000},
+                           headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._no_puede({**body, "fecha": "2025-03-20"}, 409, (
+            "Tu historia de Balanz en Rendi arranca en abril de 2025 con un capital inicial que "
+            "cargaste a mano. El pase no puede tener una fecha anterior: elegí desde el 01/04/2025."))
+        self.assertEqual(self._ok({**body, "fecha": "2025-04-02"})["cantidad"], 5.0)
+
+    def test_ventas_posteriores_en_a_y_en_b(self):
+        """#15 y #16: una venta importada o a mano después de la fecha, en A o en B."""
+        self._historia()
+        self._importar("Cocos", ["2025-08-01,VENTA,Cocos,NVDA,4,50000,200000,,,0,ARS,venta"])
+        self._importar("Balanz", ["2025-03-01,COMPRA,Balanz,NVDA,2,32000,64000,,,0,ARS,compra",
+                                  "2025-09-01,VENTA,Balanz,NVDA,1,52000,52000,,,0,ARS,venta"])
+        body = self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, precio_manual=PRECIO_PASE)
+        self._no_puede(body, 409, "Después del 16/06/2025 vendiste NVDA en Cocos. Para no cambiar "
+                                  "esas ventas, elegí una fecha del 01/08/2025 en adelante.")
+        self._no_puede({**body, "fecha": "2025-08-01"}, 409, (
+            "Después del 01/08/2025 vendiste NVDA en Balanz. Si lo pasamos con esa fecha "
+            "cambiarían esas ventas: elegí una fecha del 01/09/2025 en adelante."))
+        self.assertEqual(self._ok({**body, "fecha": "2025-09-01"})["cantidad"], 6.0)
+        # Una venta a mano (la puerta «Vender»), también.
+        r = self.http.post("/api/positions/sell", json={
+            "broker": "Cocos", "asset": "NVDA", "quantity": 1, "exit_price": 51000,
+            "date": "2025-10-01", "currency": "ARS"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self._no_puede({**body, "fecha": "2025-09-01"}, 409, (
+            "Después del 01/09/2025 vendiste NVDA en Cocos. Para no cambiar esas ventas, elegí "
+            "una fecha del 01/10/2025 en adelante."))
+
+    def test_pases_posteriores_en_a_y_en_b(self):
+        """#15 y #16, cuando lo posterior es otro pase: el texto pide deshacerlo."""
+        self._historia()
+        self._broker("IOL")
+        self._fabricar_pase("NVDA", "Cocos", "IOL", "2025-08-01", 50000, cantidad=4)
+        self._no_puede(self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE,
+                                    precio_manual=PRECIO_PASE), 409,
+                       "El 01/08/2025 ya pasaste NVDA de Cocos a IOL. Elegí una fecha del "
+                       "01/08/2025 en adelante, o deshacé primero ese pase.")
+        self._fabricar_pase("NVDA", "IOL", "Balanz", "2025-09-01", 51000, cantidad=2)
+        self._no_puede(self._pedido("NVDA", "Cocos", "IOL", "2025-08-15",
+                                    precio_manual=PRECIO_PASE), 409,
+                       "El 01/09/2025 ya pasaste NVDA de IOL a Balanz. Elegí una fecha del "
+                       "01/09/2025 en adelante, o deshacé primero ese pase.")
+
+    def test_lotes_que_no_estaban_cantidad_y_sin_fecha(self):
+        """#17, #18 y #19."""
+        self._historia()
+        body = self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, precio_manual=PRECIO_PASE)
+        self._no_puede({**body, "fecha": "2025-01-05"}, 400,
+                       "No tenés NVDA en Cocos en pesos que estuvieran ahí el 05/01/2025.")
+        self._no_puede({**body, "moneda": "USD"}, 400,
+                       "No tenés NVDA en Cocos en dólares que estuvieran ahí el 16/06/2025.")
+        self._no_puede({**body, "cantidad": 12}, 400,
+                       "En Cocos tenés 10 NVDA en pesos que estaban ahí el 16/06/2025. No podés "
+                       "pasar 12.")
+        self._no_puede({**body, "cantidad": 10.5}, 400,
+                       "En Cocos tenés 10 NVDA en pesos que estaban ahí el 16/06/2025. No podés "
+                       "pasar 10,5.")
+        self.assertEqual(self._ok({**body, "cantidad": 2.5})["lotes"][0]["costo"], 75000.0)
+        self._lote_viejo("Cocos", "GGAL", 5, 5000.0, None, "ARS")
+        self._no_puede({**body, "asset": "GGAL"}, 400,
+                       "Uno de los lotes que se moverían no tiene fecha de compra. Editalo, poné "
+                       "la fecha y volvé a intentar.")
+
+    def test_split_pendiente_o_que_no_viaja_frena(self):
+        """#35. Un cambio de ratio que A todavía no ajustó → #20. Ajustado en A (el aviso
+        «Ajustar» de Cartera, `POST /api/positions/{id}/adjust-ratio`), B lo volvería a
+        ofrecer sobre el lote que llega → #21."""
+        self._historia()
+        self.splits = {"NVDA.BA": {"2025-03-03": 3.0}}
+        body = self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, precio_manual=PRECIO_PASE)
+        self._no_puede(body, 409, "NVDA tuvo un cambio de ratio que todavía no ajustaste en Cocos. "
+                                  "Primero ajustalo en Cartera (el aviso «Ajustar» de esa fila) y "
+                                  "después volvé a moverlo.")
+        lote = self._lote("Cocos")
+        r = self.http.post(f"/api/positions/{lote['id']}/adjust-ratio", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertAlmostEqual(self._lote("Cocos")["quantity"], 30.0)
+        self._no_puede(body, 409, (
+            "En Cocos estos NVDA ya tienen aplicado un cambio de ratio que Balanz no conoce: si "
+            "los pasamos, quedarían contados dos veces. Por ahora no se pueden pasar. Si los "
+            "pasaste de verdad, podés registrar una venta en Cocos y una compra en Balanz (así sí "
+            "cuenta como venta)."))
+
+    def test_marca_de_split_corporativo_no_viaja(self):
+        """#35, la otra mitad: A trae el split como un lote a $0 («Split 1:3», como Balanz),
+        que en A cuenta como ya aplicado. Esa marca es de A: en B el cambio se volvería a
+        ofrecer → #21."""
+        self._historia()
+        self.splits = {"NVDA.BA": {"2025-03-03": 3.0}}
+        self._importar("Cocos", ["2025-03-05,COMPRA,Cocos,NVDA,20,0,0,,,0,ARS,Split 1:3"])
+        self._no_puede(self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE,
+                                    precio_manual=PRECIO_PASE), 409, (
+            "En Cocos estos NVDA ya tienen aplicado un cambio de ratio que Balanz no conoce: si "
+            "los pasamos, quedarían contados dos veces. Por ahora no se pueden pasar. Si los "
+            "pasaste de verdad, podés registrar una venta en Cocos y una compra en Balanz (así sí "
+            "cuenta como venta)."))
+
+    def _editar(self, lote, **cambios):
+        body = {"broker": lote["broker"], "asset": lote["asset"], "quantity": lote["quantity"],
+                "buy_price": lote["buy_price"], "invested": lote["invested"],
+                "commissions": lote["commissions"], "entry_date": lote["entry_date"][:10],
+                "currency": lote["currency"], "asset_type": lote["asset_type"], **cambios}
+        r = self.http.put(f"/api/positions/{lote['id']}", json=body, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+
+    def test_lote_importado_editado_frena(self):
+        """#36. Un lote importado editado a mano (sólo `positions` cambia) en una A que va a
+        quedar a salvo: el pase no cuadraría con el próximo rebuild → #23, con el campo
+        que cambió. Si A conserva un lote cargado a mano, manda `positions` (C.2.7)."""
+        self._historia()
+        body = self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, precio_manual=PRECIO_PASE)
+        texto = ("El lote de NVDA del 10/01/2025 en Cocos vino de un archivo y lo cambiaste a mano "
+                 "({}). Rendi arma Cocos desde tus archivos, así que el pase no cuadraría. Para "
+                 "corregirlo de forma que quede: Importaciones → ese archivo → «Editar y rehacer», "
+                 "corregí la fila y volvé a moverlo.")
+        lote = self._lote("Cocos")
+        self._editar(lote, quantity=12)
+        self._no_puede(body, 409, texto.format("cantidad"))
+        self._editar(lote, quantity=10, invested=310000)
+        self._no_puede(body, 409, texto.format("costo"))
+        self._editar(lote, quantity=12, invested=310000)
+        self._no_puede(body, 409, texto.format("cantidad y costo"))
+        # Con un lote a mano que se queda en A, A no está a salvo: manda lo que se ve.
+        self._lote_a_mano("Cocos", "NVDA", 1, 40000, "2025-05-02")
+        self.assertEqual(self._ok({**body, "cantidad": 12})["lotes"][0]["cantidad"], 12.0)
+        # Pero si ese lote a mano también se va (todo), A queda a salvo DESPUÉS del pase
+        # (`_is_safe_to_rebuild(..., sin_lotes=…)`) y la comprobación vuelve a frenar.
+        self._no_puede(body, 409, texto.format("cantidad y costo"))
+        self._editar(lote, quantity=10, invested=300000)
+        self.assertEqual(self._ok(body)["cantidad"], 11.0)
+
+    def test_lote_en_pesos_en_la_pata_en_dolares(self):
+        """La contradicción C.1.3 contra C.1.4, decidida: la segunda condición de C.1.4
+        (misma moneda de cuenta en A y en B) vale SÓLO para cripto, que es su motivo. Un
+        CEDEAR en pesos que vive en «Cocos · USD» (dato de antes del freno de pesos) va
+        a la raíz de B y el pase se aplica (#9); una cripto en pesos en la misma pata
+        cambiaría de valuación (con y sin el dólar cripto) → #22."""
+        self._broker("Cocos · USD", "USDT", padre="Cocos")
+        self._lote_viejo("Cocos · USD", "NVDA", 5, 150000.0, "2025-02-03", "ARS")
+        body = self._pedido("NVDA", "Cocos · USD", "Balanz", "2025-06-16", precio_manual=45000)
+        j = self._ok(body)
+        self.assertEqual([(l["broker_origen"], l["broker_destino"], l["moneda"]) for l in j["lotes"]],
+                         [("Cocos · USD", "Balanz", "ARS")])
+        self.assertEqual(j["destino"]["brokers_a_crear"], [])
+        self._aplicar(body)
+        self.assertEqual([(l["quantity"], l["currency"]) for l in self._lotes("Balanz")],
+                         [(5.0, "ARS")])
+        self.assertEqual(self._lotes("Cocos · USD"), [])
+        self._lote_viejo("Cocos · USD", "BTC", 0.01, 600000.0, "2025-02-03", "ARS")
+        self._no_puede({**body, "asset": "BTC"}, 400,
+                       "En Balanz BTC se cotiza distinto que en Cocos, así que no se puede pasar.")
+
+    def test_pata_en_dolares_de_b(self):
+        """Lotes en dólares de «Cocos · USD» a una B sin su «· USD»: la vista previa avisa
+        que se va a crear y NO la crea; el confirmar la crea. Si ya hay un «Balanz · USD»
+        en pesos con datos, no se puede crear → #24 con el motivo de
+        `por_que_no_hay_pata_usd`, tal cual."""
+        self._lote_a_mano("Cocos", "NVDA", 2, 20.0, "2025-02-03", moneda="USD", commissions=1.0)
+        self.assertEqual(self._lote(asset="NVDA")["broker"], "Cocos · USD")
+        body = self._pedido("NVDA", "Cocos", "Balanz", "2025-06-16", moneda="USD",
+                            precio_manual=45000)
+        antes = self._contar()
+        j = self._ok(body)
+        self.assertEqual(self._contar(), antes, "la vista previa creó algo")
+        self.assertEqual(j["destino"]["brokers_a_crear"], ["Balanz · USD"])
+        self.assertEqual(j["avisos"], ["Vamos a crear «Balanz · USD» para los lotes en dólares."])
+        self.assertEqual(j["lotes"][0]["broker_destino"], "Balanz · USD")
+        # Un CEDEAR en dólares se valúa por su precio en pesos ÷ el dólar del día (C.4.3).
+        self.assertEqual(j["valuacion"]["moneda_precio"], "ARS")
+        self.assertEqual(j["valuacion"]["dolar"], dolar("2025-06-16"))
+        self.assertAlmostEqual(j["valor_usd"], round(2 * 45000 / dolar("2025-06-16"), 2), places=2)
+        self.assertAlmostEqual(j["costo_usd"], 41.0, places=2)
+        self._aplicar(body)
+        self.assertEqual([l["quantity"] for l in self._lotes("Balanz · USD")], [2.0])
+        # Otra vez, ahora con un «IOL · USD» en pesos con datos que no se puede adoptar.
+        self._broker("IOL")
+        self._broker("IOL · USD", "ARS")
+        self._lote_a_mano("IOL · USD", "GGAL", 1, 1000, "2025-02-03")
+        self._lote_a_mano("Cocos", "NVDA", 2, 20.0, "2025-02-04", moneda="USD")
+        conn = main.get_db()
+        try:
+            iol = dict(conn.execute("SELECT id, name FROM brokers WHERE user_id=? AND name='IOL'",
+                                    (self.uid,)).fetchone())
+            motivo = pl.por_que_no_hay_pata_usd(conn, self.uid, iol)
+        finally:
+            conn.close()
+        self.assertTrue(motivo)
+        self._no_puede({**body, "broker_destino": "IOL"}, 409, motivo)
+
+    def test_pesos_a_una_caja_en_dolares(self):
+        """#25. Un lote en pesos que va a una pata sin caja en pesos."""
+        self._broker("Schwab", "USD")
+        self._broker("IBKR", "USD")
+        self._lote_viejo("Schwab", "NVDA", 5, 150000.0, "2025-02-03", "ARS")
+        self._no_puede(self._pedido("NVDA", "Schwab", "IBKR", "2025-06-16", precio_manual=45000),
+                       400, "IBKR no tiene caja en pesos, y estos NVDA se compraron en pesos.")
+
+    def test_precio_del_dia(self):
+        """#26 y C.4.2: la vela del día, la última de la semana (con aviso), el último precio
+        de hoy, el precio cargado a mano y, sin nada, el «sin precio» con la moneda."""
+        self._historia()
+        conn = main.get_db()
+        try:
+            conn.executemany("INSERT INTO velas_diarias (symbol, date, close) VALUES (?,?,?)",
+                             [("NVDA.BA", "2025-06-12", 43000.0), ("NVDA.BA", "2025-06-13", 44000.0)])
+            conn.commit()
+        finally:
+            conn.close()
+        body = self._pedido("NVDA", "Cocos", "Balanz", "2025-06-13")
+        j = self._ok(body)
+        self.assertEqual({k: j["valuacion"][k] for k in ("precio_unitario", "fuente", "fecha_precio")},
+                         {"precio_unitario": 44000.0, "fuente": "cierre_del_dia",
+                          "fecha_precio": "2025-06-13"})
+        self.assertEqual(j["avisos"], [])
+        j = self._ok({**body, "fecha": "2025-06-15"})
+        self.assertEqual({k: j["valuacion"][k] for k in ("precio_unitario", "fuente", "fecha_precio")},
+                         {"precio_unitario": 44000.0, "fuente": "ultimo_precio",
+                          "fecha_precio": "2025-06-13"})
+        self.assertEqual(j["avisos"], ["Usamos el cierre del viernes 13/06."])
+        self.assertAlmostEqual(j["valor_usd"], round(440000 / dolar("2025-06-15"), 2), places=2)
+        r = self._no_puede({**body, "fecha": "2025-05-02"}, 409, {
+            "codigo": "sin_precio",
+            "mensaje": ("No encontramos a cuánto cotizaba NVDA el 02/05/2025. Escribí el precio de "
+                        "ese día (en pesos) para calcular cuánto valía lo que pasaste."),
+            "moneda_precio": "ARS"})
+        hoy = main._iso_today()
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,?)",
+                         ("NVDA.BA", 61000.0, hoy + " 12:00:00"))
+            conn.commit()
+        finally:
+            conn.close()
+        j = self._ok({**body, "fecha": hoy})
+        self.assertEqual({k: j["valuacion"][k] for k in ("precio_unitario", "fuente", "fecha_precio")},
+                         {"precio_unitario": 61000.0, "fuente": "ultimo_precio", "fecha_precio": hoy})
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE positions SET price_override=62000 WHERE user_id=? AND asset='NVDA'",
+                         (self.uid,))
+            conn.commit()
+        finally:
+            conn.close()
+        j = self._ok({**body, "fecha": hoy})
+        self.assertEqual({k: j["valuacion"][k] for k in ("precio_unitario", "fuente")},
+                         {"precio_unitario": 62000.0, "fuente": "precio_cargado"})
+
+    def test_gasto_del_tramite(self):
+        """#27 y los avisos del gasto: en pesos desde una cuenta sin caja en pesos frena;
+        la caja que queda en negativo se avisa con el monto (moneda adelante); en
+        dólares desde una cuenta argentina sin su «· USD», se avisa que se crea."""
+        self._historia()
+        body = self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, precio_manual=PRECIO_PASE)
+        caja = 400000 + 11 * 100000 - 301500
+        j = self._ok({**body, "gasto": {"monto": 2000000, "moneda": "ARS"}})
+        self.assertEqual(j["gasto"], {"monto": 2000000.0, "moneda": "ARS", "broker": "Cocos",
+                                      "caja_queda_negativa": True})
+        queda = f"{caja - 2000000:,.0f}".replace(",", ".").replace("-", "")
+        self.assertEqual(j["avisos"], [f"Con el gasto, la caja de Cocos queda en −${queda}."])
+        j = self._ok({**body, "gasto": {"monto": 10, "moneda": "USD"}})
+        self.assertEqual(j["gasto"]["broker"], "Cocos · USD")
+        self.assertEqual(j["destino"]["brokers_a_crear"], [])
+        self.assertIn("Vamos a crear «Cocos · USD» para el gasto en dólares.", j["avisos"])
+        self._broker("Schwab", "USD")
+        self._broker("IBKR", "USD")
+        self._lote_a_mano("Schwab", "NVDA", 2, 100.0, "2025-02-03", moneda="USD")
+        self._no_puede(self._pedido("NVDA", "Schwab", "IBKR", "2025-06-16", moneda="USD",
+                                    precio_manual=120, gasto={"monto": 5000, "moneda": "ARS"}),
+                       400, "Schwab no tiene caja en pesos.")
+
+    def test_precio_muy_lejos_avisa(self):
+        """El aviso de la banda (B.6), comparando en dólares: un precio escrito a mano
+        mil veces más chico que lo que se pagó pide revisar la moneda."""
+        self._historia()
+        j = self._ok(self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, precio_manual=10))
+        k = (10 / dolar(FECHA_PASE)) / ((301500 / dolar("2025-01-10")) / 10)
+        self.assertLess(k, 0.002)
+        self.assertEqual(j["avisos"], [f"El precio de ese día está muy lejos de lo que pagaste "
+                                       f"(×{traspaso_a_mano._veces(k)}). Revisá que esté en pesos."])
+
+    def test_cripto_en_pesos(self):
+        """#38. BTC en Cocos (lote en pesos) a otro broker argentino, con fecha de hoy:
+        V = spot × dólar cripto, en pesos, y a dólares con el dólar del día (el factor
+        cripto/MEP de Cartera). C con el dólar de la compra, no 1. Con fecha pasada no hay
+        dólar cripto: «sin precio» en pesos; con el precio escrito a mano, sí."""
+        hoy = main._iso_today()
+        self._lote_a_mano("Cocos", "BTC", 0.01, 60000000, "2025-03-03", asset_type="CRYPTO")
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,?)",
+                         ("BTC", 95000.0, hoy + " 12:00:00"))
+            conn.commit()
+        finally:
+            conn.close()
+        cache = {"data": {"cripto": {"venta": 1500.0}}, "ts": time.time()}
+        with mock.patch.dict(main._dolar_cache, cache):
+            j = self._ok(self._pedido("BTC", "Cocos", "Balanz", hoy))
+        self.assertEqual({k: j["valuacion"][k] for k in ("precio_unitario", "moneda_precio",
+                                                         "fuente", "dolar")},
+                         {"precio_unitario": 95000.0 * 1500.0, "moneda_precio": "ARS",
+                          "fuente": "ultimo_precio", "dolar": dolar(hoy)})
+        self.assertAlmostEqual(j["valor_ars"], 0.01 * 95000 * 1500, places=2)
+        self.assertAlmostEqual(j["valor_usd"], round(0.01 * 95000 * (1500 / dolar(hoy)), 2), places=2)
+        self.assertAlmostEqual(j["costo_usd"], round(600000 / dolar("2025-03-03"), 2), places=2)
+        with mock.patch.dict(main._dolar_cache, cache):
+            self._no_puede(self._pedido("BTC", "Cocos", "Balanz", "2025-06-16"), 409, {
+                "codigo": "sin_precio",
+                "mensaje": ("No encontramos a cuánto cotizaba BTC el 16/06/2025. Escribí el precio "
+                            "de ese día (en pesos) para calcular cuánto valía lo que pasaste."),
+                "moneda_precio": "ARS"})
+            j = self._ok(self._pedido("BTC", "Cocos", "Balanz", "2025-06-16",
+                                      precio_manual=100000000))
+        self.assertEqual((j["valuacion"]["fuente"], j["valor_ars"]), ("precio_a_mano", 1000000.0))
+
+
+class PasesEncadenados(_Vista):
+
+    def _iol_a_cocos(self):
+        """IOL compra AAPL el 10/01 y el 10/02 y el 10/06 los pasa a Cocos."""
+        self._broker("IOL")
+        self._importar("IOL", ["2025-01-05,DEPOSITO,IOL,,,,300000,,,,ARS,dep",
+                               "2025-01-10,COMPRA,IOL,AAPL,5,20000,100000,,,0,ARS,compra",
+                               "2025-02-10,COMPRA,IOL,AAPL,5,21000,105000,,,0,ARS,compra"])
+        self._fabricar_pase("AAPL", "IOL", "Cocos", "2025-06-10", 25000)
+
+    def test_pase_encadenado_usa_en_broker_desde(self):
+        """#39. Los AAPL llegaron a Cocos el 10/06 con sus compras de enero y febrero. Un
+        pase de Cocos con fecha anterior a esa llegada no los encuentra (#17); uno
+        posterior los mueve con su compra original, y después del rebuild real Cocos
+        queda sin AAPL."""
+        self._iol_a_cocos()
+        self.assertEqual([(l["ed"], l["desde"]) for l in self._lotes("Cocos", "AAPL")],
+                         [("2025-01-10", "2025-06-10"), ("2025-02-10", "2025-06-10")])
+        body = self._pedido("AAPL", "Cocos", "Balanz", "2025-05-01", precio_manual=26000)
+        self._no_puede(body, 400, "No tenés AAPL en Cocos en pesos que estuvieran ahí el "
+                                  "01/05/2025.")
+        j = self._ok({**body, "fecha": "2025-06-15"})
+        self.assertEqual([l["fecha_compra"] for l in j["lotes"]], ["2025-01-10", "2025-02-10"])
+        self._aplicar({**body, "fecha": "2025-06-15"})
+        self._rebuild()
+        self.assertEqual(self._lotes("Cocos", "AAPL"), [])
+        self.assertEqual([(l["ed"], l["desde"], l["quantity"]) for l in self._lotes("Balanz", "AAPL")],
+                         [("2025-01-10", "2025-06-15", 5.0), ("2025-02-10", "2025-06-15", 5.0)])
+
+    def test_la_salida_no_se_lleva_lo_que_llego_despues(self):
+        """C.2.2 en el persister: Cocos tiene su propio AAPL (01/03) y los que llegaron de
+        IOL el 10/06 (compras de enero y febrero, más viejas). Un pase de Cocos del 01/05
+        mueve sólo el suyo: es lo que había ese día, lo que mostró la vista previa y lo
+        que se lleva el registro. Antes el persister se llevaba el más viejo de HOY (uno
+        que llegó después) y B recibía otro lote. Después del rebuild real, igual."""
+        self._iol_a_cocos()
+        self._importar("Cocos", ["2025-02-20,DEPOSITO,Cocos,,,,100000,,,,ARS,dep",
+                                 "2025-03-01,COMPRA,Cocos,AAPL,2,22000,44000,,,0,ARS,compra"])
+        body = self._pedido("AAPL", "Cocos", "Balanz", "2025-05-01", precio_manual=26000)
+        j = self._ok(body)
+        self.assertEqual((j["cantidad_disponible"], [l["fecha_compra"] for l in j["lotes"]]),
+                         (2.0, ["2025-03-01"]))
+        self._no_puede({**body, "cantidad": 3}, 400,
+                       "En Cocos tenés 2 AAPL en pesos que estaban ahí el 01/05/2025. No podés "
+                       "pasar 3.")
+        self._aplicar(body)
+        esperado_b = [("2025-03-01", "2025-05-01", 2.0)]
+        esperado_a = [("2025-01-10", "2025-06-10", 5.0), ("2025-02-10", "2025-06-10", 5.0)]
+        mirar = lambda b: [(l["ed"], l["desde"], l["quantity"]) for l in self._lotes(b, "AAPL")]
+        self.assertEqual((mirar("Balanz"), mirar("Cocos")), (esperado_b, esperado_a))
+        self._rebuild()
+        self.assertEqual((mirar("Balanz"), mirar("Cocos")), (esperado_b, esperado_a))
+
+
+class LaMonedaDelPar(_Vista):
+
+    def test_moneda_de_la_cuenta_del_par(self):
+        """`rebuild._moneda_del_par`: la moneda con que el replay resuelve una venta sin la
+        suya (la del padre del par). Estaba copiada en los dos rearmados y la usa también
+        la comprobación en seco del pase: una sola, con los mismos casos."""
+        from importing import rebuild as rb
+        self._broker("Cocos · USD", "USDT", padre="Cocos")
+        self._broker("Schwab", "USD")
+        self._broker("Binance", "USDT")
+        conn = main.get_db()
+        try:
+            dice = {tuple(p): rb._moneda_del_par(conn, self.uid, list(p)) for p in (
+                ("Cocos", "Cocos · USD"), ("Cocos · USD",), ("Schwab",), ("Binance",), ("Nadie",))}
+        finally:
+            conn.close()
+        self.assertEqual(dice, {("Cocos", "Cocos · USD"): "ARS", ("Cocos · USD",): "USD",
+                                ("Schwab",): "USD", ("Binance",): "USD", ("Nadie",): "USD"})
 
 
 class ElDetectorDeAportesNoCuentaLosPases(unittest.TestCase):

@@ -20353,6 +20353,73 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
             raise HTTPException(500, f"Error al vender: {ex}")
 
 
+# ─── Mover a otro broker (el pase de títulos entre dos cuentas del usuario) ────
+# Los títulos se van de un broker tuyo (A) a otro tuyo (B) con su costo y su fecha
+# de compra: no es una venta. La lógica vive en `importing/traspaso_a_mano.py`;
+# acá están los modelos del pedido (especificación B.1) y las puertas HTTP, todas
+# `def` (van al threadpool) y al lado de la venta, así el censo del turno las cubre.
+# Las cuatro miran el interruptor `mover_entre_brokers` (en la base, lo prende un
+# admin sin deploy): apagado, nadie arma pases nuevos.
+
+class GastoDelPaseIn(BaseModel):
+    """El gasto del trámite: sale siempre de la caja de A."""
+    model_config = {"extra": "forbid"}
+    monto: float = Field(..., gt=0, le=_FINITE_BOUND)
+    moneda: Literal["ARS", "USD"]
+
+
+class ValuacionIn(BaseModel):
+    """El precio con que se valuó el pase en la vista previa: el confirmar usa ESE."""
+    model_config = {"extra": "forbid"}
+    precio_unitario: float = Field(..., gt=0, le=_FINITE_BOUND)
+    moneda_precio: Literal["ARS", "USD"]
+    fuente: Literal["cierre_del_dia", "ultimo_precio", "precio_cargado", "precio_a_mano"]
+    fecha_precio: str = Field(..., max_length=10)
+    dolar: float = Field(..., gt=0, le=_FINITE_BOUND)
+
+
+class PaseIn(BaseModel):
+    """El pedido de un pase (B.1). `fecha` llega opcional en el modelo para que su
+    falta tenga el texto de la especificación («Elegí la fecha del pase.», 400) y no
+    un 422 genérico; la valida `traspaso_a_mano.cuentas_del_pedido`."""
+    model_config = {"extra": "forbid"}
+    broker_origen: str = Field(..., min_length=1, max_length=120)   # la pata de la opción elegida
+    asset: str = Field(..., min_length=1, max_length=40)
+    moneda: Literal["ARS", "USD"]                                    # moneda de la opción (como la venta)
+    broker_destino: str = Field(..., min_length=1, max_length=120)   # cualquier pata de la cuenta B
+    cantidad: Optional[float] = Field(None, gt=0, le=_FINITE_BOUND)  # None = todo lo disponible a esa fecha
+    fecha: Optional[str] = Field(None, max_length=40)                # YYYY-MM-DD, obligatoria
+    precio_manual: Optional[float] = Field(None, gt=0, le=_FINITE_BOUND)  # por unidad, en la moneda del precio
+    gasto: Optional[GastoDelPaseIn] = None
+    firma: Optional[str] = Field(None, max_length=64)                # obligatoria al confirmar
+    valuacion: Optional[ValuacionIn] = None                          # la de la vista previa; obligatoria al confirmar
+
+
+def _exigir_interruptor(conn, nombre: str) -> None:
+    """403 si el interruptor `nombre` está apagado (sin fila = apagado)."""
+    if not interruptor(nombre, conn):
+        raise HTTPException(403, _traspaso_a_mano.MSG_APAGADO)
+
+
+@app.post("/api/positions/traspaso/vista-previa")
+@no_escribe_en_el_cliente
+def vista_previa_del_pase(body: PaseIn, uid: int = Depends(get_effective_user)):
+    """Qué se movería y cuánto valía (B.2). LEE y no escribe: no toma turno, no crea
+    la «B · USD» y no deja rastro en la base (por eso la marca: una asesora de sólo
+    lectura la puede pedir para su cliente). Los cambios de ratio de Yahoo y el
+    dólar cripto pueden ir a internet (`precargar`): acá no hay candado que
+    sostener. El confirmar vuelve a armar el mismo plan y compara la firma."""
+    with db_abierta() as conn:
+        _exigir_interruptor(conn, _traspaso_a_mano.INTERRUPTOR)
+        try:
+            _traspaso_a_mano.precargar(conn, uid, body, helpers=_import_helpers)
+            plan = _traspaso_a_mano.armar_plan(conn, uid, body, hoy=_iso_today(),
+                                               helpers=_import_helpers, para_confirmar=False)
+        except _traspaso_a_mano.PaseInvalido as ex:
+            raise HTTPException(ex.status, ex.detalle)
+        return plan.para_la_pantalla()
+
+
 # ─── Monthly ─────────────────────────────────────────────────────────────────
 
 
@@ -47151,6 +47218,20 @@ _import_helpers._restaurar_cobros_reemplazados = _restaurar_cobros_reemplazados
 _import_helpers._manual_flow_rate = _manual_flow_rate
 _import_helpers._pata_de_la_moneda = _pata_de_la_moneda
 _import_helpers._devolver_al_lote = _devolver_al_lote
+# Lo que lee el armado del pase (`traspaso_a_mano.armar_plan`, E5): de dónde vino
+# cada lote, los cambios de ratio con la MISMA decisión que el aviso «Ajustar»
+# (`_cambios_a_ofrecer` y su compuerta), el dólar de la config y, de `precargar`,
+# lo que va a internet (los cambios de ratio de Yahoo y el dólar cripto).
+_import_helpers._src_tx_for_position = _src_tx_for_position
+_import_helpers._cambios_a_ofrecer = _cambios_a_ofrecer
+_import_helpers._por_que_no_se_ajusta_el_ratio = _por_que_no_se_ajusta_el_ratio
+_import_helpers._marcas_de_split = _marcas_de_split
+_import_helpers.interruptor = interruptor
+_import_helpers.AVISO_RATIO_NUEVO = AVISO_RATIO_NUEVO
+_import_helpers._config_tc_blue = _config_tc_blue
+_import_helpers._fetch_ba_splits = _fetch_ba_splits
+_import_helpers._current_cripto_rate = _current_cripto_rate
+_import_helpers._get_dolar_data = _get_dolar_data
 
 
 @app.get("/api/imports/template")

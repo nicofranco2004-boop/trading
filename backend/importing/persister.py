@@ -870,11 +870,23 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     _pair = broker_pair(conn, uid, tx.broker)
     _ph = ",".join("?" * len(_pair))
 
+    # LA SALIDA DE UN PASE SÓLO SE LLEVA LOTES QUE YA ESTABAN EN ESTA CUENTA ESE DÍA.
+    # Un lote que llegó por un pase anterior tiene la fecha de compra vieja (por eso
+    # va primero en la cola), pero está acá desde el día en que llegó
+    # (`en_broker_desde`). Si el pase nuevo es de antes de esa llegada, el plan no lo
+    # eligió (`traspaso_a_mano`, C.2.2) y el registro tampoco lo tiene todavía (su
+    # compra está fechada el día de la llegada): sin este filtro el persister se lo
+    # llevaba igual, porque mira la tabla de HOY, y el broker de destino recibía un
+    # lote distinto del que vio la persona en la vista previa.
+    _desde_cuando, _args_desde = "", ()
+    if es_pase:
+        _desde_cuando = " AND substr(COALESCE(en_broker_desde, entry_date), 1, 10) <= ?"
+        _args_desde = (str(tx.date or "")[:10],)
     positions = _by_ccy(conn.execute(
         f"""SELECT * FROM positions
-           WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0 AND quantity > 0
+           WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0 AND quantity > 0{_desde_cuando}
            ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
-        (uid, *_pair, tx.asset_symbol),
+        (uid, *_pair, tx.asset_symbol, *_args_desde),
     ).fetchall())
     total_avail = sum((p["quantity"] or 0) for p in positions)
     qty_to_sell = float(tx.quantity or 0)
