@@ -1623,6 +1623,32 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
         raise PersistError(None, "Esta importación ya se deshizo (¿se mandó dos veces?). "
                                  "Recargá la página para ver cómo quedó.")
 
+    # LOS PASES ENTRE BROKERS (D.3.4). Acá y no en cada puerta: esta primitiva la usan
+    # el revert, «Editar y rehacer» y el deshacer de tandas del asesor.
+    #   · Un lote de un pase no se revierte: devolvería la caja que la llegada nunca
+    #     sacó y dejaría la otra mitad del pase viva. Se deshace el pase entero.
+    #   · El archivo de donde salieron títulos de un pase vivo, tampoco: el pase se
+    #     quedaría sin los lotes que movió.
+    #   · Ni uno que cambie la historia anterior a un pase vivo (C.11).
+    from importing import traspaso_a_mano as _pases
+    if batch["parser_format"] == _pases.FORMATO:
+        raise PersistError(0, _pases.MSG_REVERT_ES_PASE)
+    _filas_del_lote = conn.execute(
+        """SELECT raw_row_id, broker, asset_symbol, operation_type, date, fecha_compra,
+                  traspaso_id
+             FROM import_normalized_tx
+            WHERE batch_id=? AND excluded_at IS NULL""", (batch_id,)).fetchall()
+    _origenes = _pases.filas_origen_vivas(conn, uid)
+    for _f in _filas_del_lote:
+        _o = _origenes.get((batch_id, _f["raw_row_id"]))
+        if _o:
+            raise PersistError(0, _pases.MSG_ORIGEN_DE_UN_PASE.format(
+                B=_o[0], fecha=_pases._ddmmaaaa(_o[1])))
+    _cambia = _pases.pase_que_cambia(
+        conn, uid, [_pases.fila_del_registro(_f) for _f in _filas_del_lote])
+    if _cambia:
+        raise PersistError(0, _cambia["mensaje"])
+
     # Pre-check 1: si el batch incluye SELL/FX/FUTURES_PNL y NO estamos en
     # modo nuclear, bloqueamos con mensaje claro. En nuclear seguimos.
     blocked_ops = conn.execute(

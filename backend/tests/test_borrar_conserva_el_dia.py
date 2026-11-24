@@ -348,6 +348,42 @@ class BorrarConservaElDia(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self._assert_dia_conservado("después de borrar la posición desde Cartera")
 
+    # ── 2b. «Mover a otro broker» y su deshacer (2026-11) ─────────────────────
+    def test_pase_entre_brokers_y_su_deshacer_no_tocan_el_dia(self):
+        """El pase y su deshacer terminan en la misma cola que los borrados
+        (`_cascade_after_movement_delete`): ninguno puede aplanar el día de una foto
+        del cron ni mover la pantalla con el mercado quieto. 5 MSFT de IBKR a Schwab al
+        mismo precio que costaron (US$ 300): en la cuenta entera el pase no cambia
+        nada, y deshacerlo tampoco."""
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "Schwab", "USDT"))
+        self.conn.execute("INSERT INTO interruptores (nombre, encendido, cambiado_at) VALUES "
+                          "('mover_entre_brokers', 1, datetime('now')) ON CONFLICT(nombre) DO "
+                          "UPDATE SET encendido=1")
+        self.conn.commit()
+
+        def _apagar():
+            k = main.get_db()      # `self.conn` ya lo cerró el tearDown
+            try:
+                k.execute("DELETE FROM interruptores WHERE nombre='mover_entre_brokers'")
+                k.commit()
+            finally:
+                k.close()
+        self.addCleanup(_apagar)
+        cuerpo = {"broker_origen": self.BROKER, "asset": "MSFT", "moneda": "USD",
+                  "broker_destino": "Schwab", "fecha": "2026-02-10", "precio_manual": 300}
+        v = self.client.post("/api/positions/traspaso/vista-previa", json=cuerpo)
+        self.assertEqual(v.status_code, 200, v.text)
+        r = self.client.post("/api/positions/traspaso", json={
+            **cuerpo, "firma": v.json()["firma"], "valuacion": v.json()["valuacion"]})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("después del pase")
+        self._assert_pantalla_en_cero("después del pase")
+        r = self.client.post(f"/api/positions/traspaso/{r.json()['traspaso_id']}/deshacer")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("después de deshacer el pase")
+        self._assert_pantalla_en_cero("después de deshacer el pase")
+
     # ── 3. borrar todo el historial de un activo, y deshacerlo ───────────────
     def test_borrar_el_historial_de_un_activo_y_deshacer(self):
         r = self.client.delete("/api/assets/history", params={"asset": "AAPL"})

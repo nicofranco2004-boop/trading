@@ -502,12 +502,13 @@ class NingunaPuertaEscribeEnUnBrokerQueNoExiste(_Base):
                "entry_price": 60000, "opened_at": "2026-09-01"}
         pos = {"asset": "GD30", "quantity": 100, "buy_price": 0.6, "invested": 60}
 
+        # «Mover posición» (PUT con otro broker) ya no existe: da 409 sin mirar nada
+        # (D.19, `test_no_se_mueve_una_posicion_a_otro_broker_editandola`). Su lugar lo
+        # toma «Mover a otro broker», que se mide abajo (mira con su propia función).
         puertas = {
             "cargar posición": lambda: self.client.post(
                 "/api/positions", headers=self.h, json={**pos, "broker": "IEB", "asset": "AE38",
                                                         "asset_type": "BOND", "currency": "USD"}),
-            "mover posición": lambda: self.client.put(
-                f"/api/positions/{p2['id']}", headers=self.h, json={**pos, "broker": "Balanz"}),
             "abrir futuro": lambda: self.client.post("/api/futures", headers=self.h, json=fut),
             "editar futuro": lambda: self.client.put(
                 f"/api/futures/{fid}", headers=self.h, json={**fut, "quantity": 0.2}),
@@ -529,6 +530,54 @@ class NingunaPuertaEscribeEnUnBrokerQueNoExiste(_Base):
                                 f"{nombre}: mira si el broker existe ANTES de tomar el turno")
         finally:
             main._tomar_turno, main._broker_existe = turno, existe
+
+        # «Mover a otro broker» (`POST /api/positions/traspaso`): mira los dos brokers
+        # del pedido con `traspaso_a_mano.cuentas_del_pedido` (no con `_broker_existe`),
+        # y tiene que hacerlo DESPUÉS de tomar el turno, igual que las de arriba.
+        self.assertEqual(self._q("SELECT id FROM positions WHERE user_id=? AND id=?", p2["id"]),
+                         [{"id": p2["id"]}])
+        r = self.client.post("/api/positions", headers=self.h, json={
+            "broker": "IEB", "asset": "AAPL", "quantity": 2, "buy_price": 100, "invested": 200,
+            "currency": "USD", "entry_date": "2026-09-01"})
+        self.assertEqual(r.status_code, 200, r.text)
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO interruptores (nombre, encendido, cambiado_at) VALUES "
+                         "('mover_entre_brokers', 1, datetime('now')) ON CONFLICT(nombre) DO "
+                         "UPDATE SET encendido=1", ())
+            conn.commit()
+        finally:
+            conn.close()
+        self.addCleanup(self._sin_interruptor_del_pase)
+        cuerpo = {"broker_origen": "IEB", "asset": "AAPL", "moneda": "USD",
+                  "broker_destino": "Balanz", "fecha": "2026-09-10", "precio_manual": 110}
+        v = self.client.post("/api/positions/traspaso/vista-previa", headers=self.h, json=cuerpo)
+        self.assertEqual(v.status_code, 200, v.text)
+        orden = []
+        mira = main._traspaso_a_mano.cuentas_del_pedido
+        try:
+            main._tomar_turno = lambda c, u: (orden.append("turno"), turno(c, u))[1]
+            main._traspaso_a_mano.cuentas_del_pedido = (
+                lambda *a, **k: (orden.append("mira"), mira(*a, **k))[1])
+            r = self.client.post("/api/positions/traspaso", headers=self.h, json={
+                **cuerpo, "firma": v.json()["firma"], "valuacion": v.json()["valuacion"]})
+        finally:
+            main._tomar_turno = turno
+            main._traspaso_a_mano.cuentas_del_pedido = mira
+        self.assertEqual(r.status_code, 200, f"mover a otro broker: {r.text}")
+        self.assertIn("mira", orden, "mover a otro broker: no mira los brokers")
+        self.assertIn("turno", orden, "mover a otro broker: no toma el turno")
+        self.assertLess(orden.index("turno"), orden.index("mira"),
+                        "mover a otro broker: mira los brokers ANTES de tomar el turno")
+        self.assertEqual(self._sueltas(), {})
+
+    def _sin_interruptor_del_pase(self):
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM interruptores WHERE nombre='mover_entre_brokers'")
+            conn.commit()
+        finally:
+            conn.close()
 
     def test_restaurar_una_seccion_de_un_broker_que_ya_no_existe(self):
         """Las 70 posiciones archivadas de prod: su broker se borró cuando el
@@ -571,24 +620,27 @@ class NingunaPuertaEscribeEnUnBrokerQueNoExiste(_Base):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(self._archivadas(), [])
 
-    def test_no_se_mueve_una_posicion_a_un_broker_que_no_existe(self):
+    def test_no_se_mueve_una_posicion_a_otro_broker_editandola(self):
+        """D.19 («Mover a otro broker», 2026-11): editar un lote ya no le cambia el
+        broker, ni a uno que no existe ni a uno que sí. Las dos dan 409 con el mismo
+        texto (a un lote importado el próximo rearmado lo deshacía o lo duplicaba; a uno
+        cargado a mano se le rompía la receta). Sin cambiar de broker, la edición sigue
+        andando."""
         self._broker("IEB", "USD")
         self._broker("Balanz", "USD")
         self._depositar("IEB", 500)
         p = self._bono("IEB")
         cuerpo = {"broker": "Inventado", "asset": "AL30", "quantity": 100,
                   "buy_price": 0.6, "invested": 60}
-        r = self.client.put(f"/api/positions/{p['id']}", headers=self.h, json=cuerpo)
-        self.assertEqual(r.status_code, 400, r.text)
-        self.assertEqual(self._q("SELECT broker FROM positions WHERE user_id=? AND id=?", p["id"]),
-                         [{"broker": "IEB"}])
-        # Sin cambiar de broker, la edición sigue andando…
+        texto = main._traspaso_a_mano.MSG_PUT_OTRO_BROKER
+        for otro in ("Inventado", "Balanz"):
+            r = self.client.put(f"/api/positions/{p['id']}", headers=self.h,
+                                json={**cuerpo, "broker": otro})
+            self.assertEqual((r.status_code, r.json()["detail"]), (409, texto), otro)
+            self.assertEqual(self._q("SELECT broker FROM positions WHERE user_id=? AND id=?",
+                                     p["id"]), [{"broker": "IEB"}])
         r = self.client.put(f"/api/positions/{p['id']}", headers=self.h,
                             json={**cuerpo, "broker": "IEB", "quantity": 150})
-        self.assertEqual(r.status_code, 200, r.text)
-        # …y moverla a un broker que SÍ existe, también.
-        r = self.client.put(f"/api/positions/{p['id']}", headers=self.h,
-                            json={**cuerpo, "broker": "Balanz"})
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(self._sueltas(), {})
 

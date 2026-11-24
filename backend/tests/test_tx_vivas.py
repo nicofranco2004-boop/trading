@@ -77,6 +77,10 @@ LEEN_EL_LOG = {
     # todavía muestran la fila que se está borrando y sus gemelos borrados antes.
     ("main.py", "_entrada_de_movimiento_importado"): "los gemelos YA borrados de la fila: cada uno se llevó una capa de las fotos",
     ("main.py", "_neto_de_imports"): "el salto que muestran las fotos incluye la fila que se borra y sus gemelos borrados",
+    # «Mover a otro broker»: el deshacer de un borrado devuelve filas CON LÁPIDA (TX_VIVAS
+    # no las ve), y antes se les pregunta si cambiarían la historia de un pase vivo.
+    ("main.py", "undo_delete_operation"): "la fila borrada (con lápida) que el deshacer va a devolver: ¿cambia un pase vivo?",
+    ("main.py", "undo_delete_asset_history"): "las filas borradas (con lápida) que el deshacer va a devolver: ¿cambian un pase vivo?",
     # Scripts de reparación de una sola vez, sobre lotes puntuales.
     ("scripts/backfill_currency_fix.py", "correct_currency"): "script de reparación sobre lotes puntuales",
     ("scripts/escala_foto_bonos.py", "<módulo>"): "script de diagnóstico sobre lotes deshechos",

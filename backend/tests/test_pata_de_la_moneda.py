@@ -356,6 +356,9 @@ class PataDeLaMonedaTest(unittest.TestCase):
 
     # Auditoría a ciegas 29/10: la edición fabricaba el lote en pesos dentro de un
     # broker en dólares, y ese lote quedaba trabado (la venta manda su moneda).
+    # Desde «Mover a otro broker» (D.19, 2026-11) la edición no le cambia el broker a
+    # NINGÚN lote: 409 con el texto que manda a «Mover a otro broker». Lo que esta
+    # prueba cuida —el lote en pesos no termina en la cuenta en dólares— sigue igual.
     def test_editar_no_mueve_un_lote_en_pesos_a_un_broker_en_dolares(self):
         self._ibkr_con_dolares(300)
         pid = self._post("/api/positions", {
@@ -364,7 +367,8 @@ class PataDeLaMonedaTest(unittest.TestCase):
         r = self.client.put(f"/api/positions/{pid}", headers=self.hdr, json={
             "broker": "IBKR", "asset": "GGAL", "quantity": 10, "buy_price": 5000,
             "currency": "ARS", "entry_date": "2026-10-01"})
-        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertEqual(r.json()["detail"], main._traspaso_a_mano.MSG_PUT_OTRO_BROKER)
         lote = self._q("SELECT broker, currency FROM positions WHERE id=?", pid)[0]
         self.assertEqual((lote["broker"], lote["currency"]), ("Cocos", "ARS"))
 

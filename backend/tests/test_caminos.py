@@ -132,6 +132,17 @@ def _textos_del_servidor():
                     yield rel, n.lineno, n.value
 
 
+# Caminos de la PROPIA Rendi que viven en un texto de `importing/` (donde la regla
+# mira cualquier flecha al lado de una palabra de menú de broker). Cada uno es una
+# constante con nombre en su módulo, y la regla la saca del texto antes de mirar:
+# la lista es corta a propósito, con el motivo, y `test_los_caminos_de_rendi_existen`
+# falla si uno deja de estar en el código (una excepción vieja no tapa nada).
+_CAMINOS_DE_RENDI = {
+    # «Mover a otro broker»: dónde se deshace un pase (la página Movimientos de Rendi).
+    "Movimientos → la fila «Pase» → Deshacer": "importing/traspaso_a_mano.py CAMINO_DESHACER",
+}
+
+
 def copias_a_mano(textos):
     """Los «A → B» que son un camino de broker escrito a mano. Dos reglas:
       · un par que está tal cual en algún camino, en cualquier texto;
@@ -143,6 +154,8 @@ def copias_a_mano(textos):
     pares, palabras = _vocabulario()
     out = []
     for rel, linea, texto in textos:
+        for propio in _CAMINOS_DE_RENDI:
+            texto = texto.replace(propio, "")
         de_broker = rel.startswith("importing/") or bool(_BROKER.search(texto))
         for m in _FLECHA.finditer(texto):
             a, b = (x.strip(_BORDES).lower() for x in m.groups())
@@ -183,6 +196,14 @@ class NingunTextoEscribeUnCaminoAMano(unittest.TestCase):
             ("importing/preview.py", 1, "Conversión ARS → USD"),
         ]
         self.assertEqual(copias_a_mano(propios), [])
+
+    def test_los_caminos_de_rendi_existen(self):
+        # La excepción no puede quedar vieja: cada camino propio tiene que estar,
+        # letra por letra, en algún texto del servidor.
+        textos = [t for _rel, _l, t in _textos_del_servidor()]
+        for propio in _CAMINOS_DE_RENDI:
+            with self.subTest(camino=propio):
+                self.assertTrue(any(propio in t for t in textos), propio)
 
     def test_ningun_texto_del_servidor_copia_un_camino(self):
         textos = list(_textos_del_servidor())

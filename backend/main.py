@@ -7447,6 +7447,9 @@ def _contar_datos_de_brokers(conn, uid: int, nombres) -> dict:
                 WHERE user_id=? AND broker IN ({ph}) AND closed_at IS NULL"""),
         "archived": sum(se_van for _id, _quedan, se_van
                         in _archivadas_de_brokers(conn, uid, nombres)),
+        # Los pases vivos con otro broker del usuario (D.10.8): el borrado los deja
+        # «incompletos» (lo que llegó al otro broker se queda allá).
+        "traspasos": len(_traspaso_a_mano.pases_de_brokers(conn, uid, nombres)),
     }
 
 
@@ -7828,6 +7831,24 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
         siblings = _subcuentas_de(conn, uid, bid)
         sibling_name = siblings[0]["name"] if siblings else None
         broker_names = [broker_name] + [s["name"] for s in siblings]
+
+        # ── Guard: la cuenta en dólares SOLA («B · USD», hija de otra) con filas de
+        # un pase vivo. El lote del pase es de la cuenta (la raíz), así que el borrado
+        # no lo revierte: quedaban las patas del pase vivas sin títulos, una fila
+        # mensual de un broker que ya no existe y un deshacer imposible. Borrar la
+        # CUENTA entera sí se puede (D.19): revierte su lado del pase.
+        _es_hija = conn.execute(
+            "SELECT parent_broker_id FROM brokers WHERE id=? AND user_id=?",
+            (bid, uid)).fetchone()
+        if _es_hija and _es_hija["parent_broker_id"] and conn.execute(
+                f"""SELECT 1 FROM {TX_VIVAS}
+                     WHERE b.user_id=? AND n.broker=? AND n.traspaso_id IS NOT NULL
+                       AND EXISTS (SELECT 1 FROM traspasos_a_mano t
+                                    WHERE t.id = n.traspaso_id AND t.user_id = b.user_id
+                                      AND t.deshecho_at IS NULL)
+                     LIMIT 1""", (uid, broker_name)).fetchone():
+            raise HTTPException(409, _traspaso_a_mano.MSG_BORRAR_PATA_CON_PASE.format(
+                nombre=broker_name))
 
         # ── Guard: contar data asociada (padre Y sibling si existe) ──────────
         placeholders = ",".join("?" * len(broker_names))
@@ -15595,6 +15616,12 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
     lots = _group_lots(conn, uid, broker, asset, p.currency)
     if not lots:
         raise HTTPException(404, "No encontramos esa posición")
+    # Cambiar el ticker o el tipo de un activo con un pase vivo (D.10.14): la edición
+    # se copia sólo a las compras vinculadas; la salida del pase y su registro quedaban
+    # con el valor viejo y el pase dejaba de cuadrar.
+    if ((new_asset and new_asset != asset) or new_type) and _traspaso_a_mano.pase_vivo_del_activo(
+            conn, uid, asset, _import_persister.broker_pair(conn, uid, broker)):
+        raise HTTPException(409, _traspaso_a_mano.MSG_EDITAR_ACTIVO_CON_PASE)
 
     total_qty = sum(float(l["quantity"] or 0) for l in lots)
     # El costo de cada lote, con la misma red que la venta (`fx.costo_del_lote`):
@@ -15726,12 +15753,19 @@ def _undo_edit_position_group(conn, uid: int, token: str) -> dict:
         (uid, token)).fetchone()
     if not j:
         raise HTTPException(404, "No encontramos esa edición")
+    pl = _json.loads(j["payload_json"])
+    # Un pase vivo del activo, hecho DESPUÉS de esta edición (D.10.15): volver los
+    # lotes y las filas al ticker o al tipo de antes dejaría al pase con el nuevo.
+    for _a in {pl.get("asset"), pl.get("new_asset")} - {None, ""}:
+        if _traspaso_a_mano.pase_vivo_del_activo(
+                conn, uid, _a, pl.get("pair") or [pl.get("broker")],
+                creado_desde=j["created_at"]):
+            raise HTTPException(409, _traspaso_a_mano.MSG_EDITAR_ACTIVO_CON_PASE)
     # CLAIM ATÓMICO: marcar undone_at ES el lock (un doble-click no restaura 2×).
     if conn.execute(
         "UPDATE deleted_ops_journal SET undone_at=datetime('now') "
         "WHERE id=? AND undone_at IS NULL", (j["id"],)).rowcount != 1:
         raise HTTPException(409, "Esa edición ya se deshizo.")
-    pl = _json.loads(j["payload_json"])
     for l in pl.get("lots", []):
         conn.execute(
             "UPDATE positions SET asset=?, buy_price=?, invested=?, tc_compra=? "
@@ -15814,11 +15848,14 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
             (pid, uid)).fetchone()
         if p.is_cash or (_actual and _actual["is_cash"]):
             raise HTTPException(400, _EFECTIVO_NO_SE_EDITA)
-        # Mover el lote a OTRO broker: ese broker tiene que existir (el alta ya lo
-        # exigía; la edición no, y dejaba el lote bajo un nombre que nadie suma).
-        # Sólo si CAMBIA: editar el precio de un lote no depende de esto.
+        # Cambiarle el broker a un lote ya no se hace editándolo (D.19): a un lote
+        # importado el próximo rearmado lo deshacía o lo duplicaba, y a uno cargado a
+        # mano se le rompía la receta (borrarlo después daba 409 para siempre) y la
+        # cuenta de cada broker. Para eso está «Mover a otro broker»; si se cargó en el
+        # broker equivocado, se borra y se carga de nuevo. Sólo si CAMBIA: editar el
+        # precio de un lote no depende de esto.
         if _actual and p.broker != _actual["broker"]:
-            _exigir_broker_existente(conn, uid, p.broker)
+            raise HTTPException(409, _traspaso_a_mano.MSG_PUT_OTRO_BROKER)
         # Un lote en pesos no se lleva (ni se pasa) a una cuenta sin caja en pesos:
         # después la venta manda su moneda y no hay dónde cobrar (auditoría 29/10).
         # Sólo si CAMBIA el broker o la moneda: un lote viejo así se puede seguir
@@ -20063,6 +20100,26 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                     raise HTTPException(400, f"Cantidad solicitada ({data.quantity}) excede el total disponible ({total})")
 
                 op_date = data.date or _iso_today()
+                # Un lote que llegó a esta cuenta por un pase entre brokers DESPUÉS del
+                # día de la venta no estaba ahí: no se puede vender (hueco C4 de la
+                # revisión del pase). Lleva la fecha de compra original, así que va
+                # primero en la cola; sin esto, una venta fechada antes de la llegada
+                # se lo comía, y deshacer el pase o rearmar la cuenta ya no cuadraban.
+                # Si lo que sí estaba alcanza, la venta consume eso; si no, 409.
+                _no_estaban = _traspaso_a_mano.lotes_que_no_estaban(positions, op_date)
+                if _no_estaban:
+                    _fuera = {l["id"] for l in _no_estaban}
+                    _estaban = [p for p in positions if p["id"] not in _fuera]
+                    _disp = sum((p["quantity"] or 0) for p in _estaban)
+                    if data.quantity > _disp + 1e-9:
+                        raise HTTPException(409, _traspaso_a_mano.MSG_VENTA_ANTES_DE_LLEGAR.format(
+                            fecha=_traspaso_a_mano._ddmmaaaa(op_date), broker=data.broker,
+                            asset=data.asset,
+                            q=_traspaso_a_mano._cant(sum((l["quantity"] or 0) for l in _no_estaban)),
+                            llegada=_traspaso_a_mano._ddmmaaaa(
+                                min(str(l["en_broker_desde"])[:10] for l in _no_estaban)),
+                            disp=_traspaso_a_mano._cant(_disp)))
+                    positions = _estaban
                 remaining = data.quantity
                 ops_created = []
                 total_pnl_usd = 0.0          # "true USD" P&L → goes to monthly_entries global
@@ -20507,6 +20564,66 @@ def confirmar_pase(body: PaseIn, uid: int = Depends(get_effective_user)):
                 motivo="un error inesperado"))
     _ai_cache_invalidate(uid)
     return {"ok": True, "traspaso_id": out["traspaso_id"], "mensaje": out["mensaje"]}
+
+
+@app.post("/api/positions/traspaso/{traspaso_id}/deshacer")
+@reintentar_si_trabada
+def deshacer_pase(traspaso_id: str, uid: int = Depends(get_effective_user)):
+    """Deshace un pase entero (B.4, C.8): los títulos vuelven a A con su costo y su
+    fecha de compra, salen de B, el gasto vuelve a la caja y la cuenta queda como
+    antes del pase. Funciona AUNQUE EL INTERRUPTOR ESTÉ APAGADO: apagarlo frena pases
+    nuevos, no puede dejar a nadie con uno que no se pueda deshacer (y es lo que hay
+    que hacer antes de volver atrás un deploy, G.3). También deshace lo que queda de
+    un pase «incompleto» (se borró uno de los dos brokers).
+
+    EL ORDEN, el mismo esqueleto que el confirmar:
+      1. El turno de la cuenta en los dos motores (`_tomar_turno`; no va nada a la
+         red) y el pase, sólo si es de esta cuenta (404 si no: el mismo texto que uno
+         que no existe).
+      2. Los lotes de A y de B que sigan existiendo, tomados PARA ESCRIBIR antes de
+         mirarlos.
+      3. Las validaciones de C.8 (`validar_deshacer`): un archivo posterior que omitió
+         filas por este pase, una venta o un pase posterior en A, los lotes de B que ya
+         no están como llegaron.
+      4. La foto de lo aportado, validado y antes de la primera escritura.
+      5. Deshacer (`traspaso_a_mano.deshacer`, sin `revert_batch`: ése borra las
+         fotos medidas) y 6. la cola de cualquier puerta (cadena, RECÁLCULO, fotos).
+    Todo en un solo `with conn:`: si algo falla no queda nada a medias."""
+    with db_abierta() as conn:
+        try:
+            with conn:
+                _tomar_turno(conn, uid)
+                reg = _traspaso_a_mano.cargar_registro(conn, uid, traspaso_id)
+                for patas in (reg.patas_a, reg.patas_b):
+                    if patas:
+                        _tomar_lotes(conn, uid, patas, reg.asset)
+                reg = _traspaso_a_mano.validar_deshacer(conn, uid, traspaso_id)
+                antes = _foto_contable(conn, uid)
+                out = _traspaso_a_mano.deshacer(conn, uid, reg, helpers=_import_helpers)
+                _cascade_after_movement_delete(conn, uid, reg.fecha, set(out["patas_tocadas"]),
+                                               antes=antes)
+        except _traspaso_a_mano.PaseInvalido as ex:
+            raise HTTPException(ex.status, ex.detalle)
+        except (HTTPException, *ERR_OPERACIONAL):
+            raise
+        except Exception:
+            log.exception("deshacer_pase: uid=%s pase=%s", uid, traspaso_id)
+            raise HTTPException(500, _traspaso_a_mano.MSG_NO_SE_DESHIZO.format(
+                motivo="un error inesperado"))
+    _ai_cache_invalidate(uid)
+    return {"ok": True, "mensaje": out["mensaje"]}
+
+
+@app.get("/api/positions/traspasos")
+def traspasos_del_usuario(uid: int = Depends(get_effective_user)):
+    """Los pases que no se deshicieron (B.5), con su estado —«vivo», «incompleto» (se
+    borró uno de los dos brokers) o «desfasado» (cambió la historia y el pase ya no
+    cuadra)— y si se pueden deshacer: si no, `motivo` trae el mismo texto que daría el
+    deshacer. `habilitado` es el interruptor: la pantalla esconde «Mover a otro
+    broker» si está apagado (los pases hechos se siguen viendo y deshaciendo)."""
+    with db_abierta() as conn:
+        return {"habilitado": bool(interruptor(_traspaso_a_mano.INTERRUPTOR, conn)),
+                "traspasos": _traspaso_a_mano.traspasos_vivos(conn, uid)}
 
 
 # ─── Monthly ─────────────────────────────────────────────────────────────────
@@ -24172,12 +24289,17 @@ def _route_tx_delete(conn, uid: int, mid: str):
     except ValueError:
         raise HTTPException(400, "id de movimiento inválido")
     tx = conn.execute(
-        f"""SELECT n.operation_type, n.batch_id, n.raw_row_id FROM {TX_VIVAS}
+        f"""SELECT n.operation_type, n.batch_id, n.raw_row_id, n.traspaso_id FROM {TX_VIVAS}
             WHERE n.id=? AND b.user_id=?""",
         (tx_id, uid),
     ).fetchone()
     if not tx:
         raise HTTPException(404, "Movimiento no encontrado")
+    # Una fila de un pase entre brokers (las patas, la salida, la llegada, el gasto)
+    # no se borra sola: se deshace el pase entero (D.10.1). Lo que cambia la
+    # historia anterior a un pase lo frenan las cascadas de abajo (`pase_que_cambia`).
+    if tx["traspaso_id"]:
+        raise HTTPException(409, _traspaso_a_mano.MSG_DESHACE_EL_PASE)
     op = (tx["operation_type"] or "").upper()
     if op == "SELL":
         link = conn.execute(
@@ -25606,6 +25728,11 @@ def _devolver_cobro_bono(conn, uid: int, op, meta: dict, undo: dict) -> None:
                                  "quantity": float(d.get("take") or 0),
                                  "invested": float(d.get("inv") or 0),
                                  "commissions": float(d.get("com") or 0)})
+                    # Con el id ocupado, la columna va afuera (la numera la base): en
+                    # Postgres `id` es una identidad NOT NULL y un NULL explícito
+                    # rompía el INSERT (la misma regla que `_devolver_al_lote`).
+                    if fila["id"] is None:
+                        fila.pop("id")
                     _c = list(fila)
                     cur_l = conn.execute(
                         f"INSERT INTO positions ({','.join(_c)}) VALUES ({','.join('?' * len(_c))})",
@@ -25731,7 +25858,10 @@ def _devolver_al_lote(conn, uid: int, foto: dict, cantidad: float, inv, com: flo
 
     La foto lleva broker, asset, buy_price, tc_compra, entry_date, asset_type,
     currency, split_adjusted_through, en_broker_desde y la foto de reverso propia del
-    lote (`undo_meta`, o `undo_meta_json` en la receta del pase). El lote vuelve con
+    lote (`undo_meta`, o `undo_meta_json` en la receta del pase). La del pase trae
+    además el precio cargado a mano y las notas del lote (`price_override`, `notes`):
+    un lote que vuelve entero tiene que volver con ellos (la de la venta no los
+    guarda y vuelve sin ellos, como siempre). El lote vuelve con
     SU PROPIA foto de reverso (incluye el autodepósito que disparó el alta). Antes
     nacía con autodep=None y borrarlo después FABRICABA cash y capital aportado —
     reproducido: alta 200 sin saldo → vender → borrar la venta → borrar el lote
@@ -25764,18 +25894,28 @@ def _devolver_al_lote(conn, uid: int, foto: dict, cantidad: float, inv, com: flo
     else:
         _id_libre = foto.get("id") if foto.get("id") is not None and not conn.execute(
             "SELECT 1 FROM positions WHERE id=?", (foto.get("id"),)).fetchone() else None
+        # Con el id ocupado, la columna `id` va AFUERA del INSERT (la numera la base). Un
+        # NULL explícito lo numeraba SQLite, pero en Postgres la columna es una
+        # identidad NOT NULL y el INSERT fallaba (medido: el deshacer de un pase, y el
+        # borrado de una venta a mano, con el id del lote ocupado → 500).
+        _cols = ["user_id", "broker", "asset", "is_cash", "buy_price", "quantity", "invested",
+                 "tc_compra", "entry_date", "commissions", "asset_type", "currency",
+                 "undo_meta_json", "split_adjusted_through", "en_broker_desde",
+                 "price_override", "notes"]
+        _vals = [uid, foto.get("broker"), foto.get("asset"), 0,
+                 foto.get("buy_price"), cantidad, inv, foto.get("tc_compra"),
+                 foto.get("entry_date"), com, foto.get("asset_type"),
+                 foto.get("currency"),
+                 foto.get("undo_meta") or foto.get("undo_meta_json"),
+                 foto.get("split_adjusted_through"), foto.get("en_broker_desde"),
+                 foto.get("price_override"), foto.get("notes")]
+        if _id_libre is not None:
+            _cols.insert(0, "id")
+            _vals.insert(0, _id_libre)
         cur_ins = conn.execute(
-            """INSERT INTO positions (id, user_id, broker, asset, is_cash, buy_price,
-                 quantity, invested, tc_compra, entry_date, commissions, asset_type,
-                 currency, undo_meta_json, split_adjusted_through, en_broker_desde)
-               VALUES (?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?)""",
-            (_id_libre, uid, foto.get("broker"), foto.get("asset"),
-             foto.get("buy_price"), cantidad, inv, foto.get("tc_compra"),
-             foto.get("entry_date"), com, foto.get("asset_type"),
-             foto.get("currency"),
-             foto.get("undo_meta") or foto.get("undo_meta_json"),
-             foto.get("split_adjusted_through"), foto.get("en_broker_desde")))
-        out = {"mode": "insert", "id": cur_ins.lastrowid}
+            f"INSERT INTO positions ({', '.join(_cols)}) VALUES ({', '.join('?' * len(_cols))})",
+            tuple(_vals))
+        out = {"mode": "insert", "id": cur_ins.lastrowid if _id_libre is None else _id_libre}
     if link:
         batch_id, raw_row_id = link
         if conn.execute(
@@ -26501,6 +26641,13 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     ).fetchone()
     if not src:
         raise HTTPException(404, "La operación ya no existe en la fuente")
+    # Borrar una venta importada reescribe el registro de ese broker: si es anterior a
+    # un pase vivo, el pase quedaría con otros lotes (C.11). Va acá y no en la puerta de
+    # Movimientos: a esta cascada también se llega por DELETE /api/operations/{oid}.
+    _cambia = _traspaso_a_mano.pase_que_cambia(
+        conn, uid, [_traspaso_a_mano.fila_del_registro(src)])
+    if _cambia:
+        raise HTTPException(409, _cambia["mensaje"])
 
     if (src["operation_type"] or "").upper() != "SELL":
         raise HTTPException(400,
@@ -26647,6 +26794,10 @@ def _borrar_posicion(conn, uid: int, pid: int) -> dict:
         raise HTTPException(404, "Posición no encontrada")
     if fila["is_cash"]:
         raise HTTPException(400, _EFECTIVO_NO_SE_BORRA)
+    # Un lote del que un pase vivo se llevó una parte (D.10.3): borrarlo dejaría al
+    # pase sin de dónde devolverla.
+    if pid in _traspaso_a_mano.lotes_en_pases_vivos(conn, uid):
+        raise HTTPException(409, _traspaso_a_mano.MSG_LOTE_PASADO)
     if conn.execute("SELECT 1 FROM import_op_links WHERE position_id=? LIMIT 1",
                     (pid,)).fetchone():
         # Puede frenar con un mensaje claro (bono, compra ya vendida en parte, lote
@@ -26664,6 +26815,8 @@ def _borrar_activo_cargado_a_mano(conn, uid: int, asset: str) -> dict:
     por la puerta única (`_borrar_posicion`) y se puede deshacer. Si hay varias
     compras o alguna venta, no se adivina el orden: se le dice a la persona que
     las borre de a una (cada una tiene su tacho y su deshacer)."""
+    if _traspaso_a_mano.pase_vivo_del_activo(conn, uid, asset):
+        raise HTTPException(409, _traspaso_a_mano.MSG_ACTIVO_CON_PASE)
     lotes = conn.execute(
         "SELECT id FROM positions WHERE user_id=? AND asset=? AND is_cash=0",
         (uid, asset)).fetchall()
@@ -26714,6 +26867,19 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
     ).fetchone()
     if not src:
         raise HTTPException(404, "La compra ya no existe en la fuente")
+    # Un pase vivo entre brokers (D.10.2): el lote que LLEGÓ por el pase no se borra
+    # solo; una compra de la que salieron títulos de un pase, tampoco; y una compra
+    # que cambiaría lo que el pase consumió (C.11), tampoco.
+    if src["traspaso_id"]:
+        raise HTTPException(409, _traspaso_a_mano.MSG_DESHACE_EL_PASE)
+    _origen = _traspaso_a_mano.filas_origen_vivas(conn, uid).get((batch_id, raw_row_id))
+    if _origen:
+        raise HTTPException(409, _traspaso_a_mano.MSG_COMPRA_PASADA.format(
+            B=_origen[0], fecha=_traspaso_a_mano._ddmm(_origen[1])))
+    _cambia = _traspaso_a_mano.pase_que_cambia(
+        conn, uid, [_traspaso_a_mano.fila_del_registro(src)])
+    if _cambia:
+        raise HTTPException(409, _cambia["mensaje"])
     if (src["operation_type"] or "").upper() != "BUY":
         raise HTTPException(400, "Esta fila no es una compra importada.")
     if (src["asset_type"] or "").upper() == "BOND":
@@ -26876,6 +27042,15 @@ def undo_delete_operation(token: str, uid: int = Depends(get_effective_user)):
                 raise HTTPException(409,
                     "No se puede deshacer: desde que borraste, el activo tiene "
                     "operaciones cargadas a mano que se perderían al restaurar.")
+            # La fila que vuelve, si es anterior a un pase vivo hecho después del
+            # borrado, le cambiaría los lotes al pase (D.10.11, C.11).
+            _vuelve = conn.execute(
+                "SELECT * FROM import_normalized_tx WHERE id=? AND batch_id=?",
+                (p["tx_id"], p["batch_id"])).fetchone()
+            _cambia = _traspaso_a_mano.pase_que_cambia(
+                conn, uid, [_traspaso_a_mano.fila_del_registro(_vuelve)] if _vuelve else [])
+            if _cambia:
+                raise HTTPException(409, _cambia["mensaje"])
             antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
             # CLAIM ATÓMICO: marcar undone_at ES el lock — un doble-click/retry no puede
             # re-acreditar el cash 2× (la 2da matchea 0 filas → 409). El rollback lo
@@ -26932,6 +27107,10 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     if not asset:
         raise HTTPException(400, "Activo inválido")
     _tomar_turno(conn, uid)   # lo que se valida abajo ya no lo cambia otro pedido
+    # Un pase vivo de este activo (D.10.4): borrar el historial se llevaría sus filas
+    # y dejaría las patas de capital sin títulos. Primero se deshace el pase.
+    if _traspaso_a_mano.pase_vivo_del_activo(conn, uid, asset):
+        raise HTTPException(409, _traspaso_a_mano.MSG_ACTIVO_CON_PASE)
 
     rows = conn.execute(
         f"""SELECT n.* FROM {TX_VIVAS}
@@ -27196,6 +27375,16 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
                     raise HTTPException(409,
                         "No se puede deshacer: volviste a importar este activo desde que "
                         "lo borraste.")
+            # Las filas que vuelven, si son anteriores a un pase vivo (C.11): la misma
+            # regla que el deshacer de un borrado de a una (D.10.11).
+            if p["tx_ids"]:
+                _vuelven = conn.execute(
+                    f"SELECT * FROM import_normalized_tx WHERE id IN "
+                    f"({','.join('?' * len(p['tx_ids']))})", tuple(p["tx_ids"])).fetchall()
+                _cambia = _traspaso_a_mano.pase_que_cambia(
+                    conn, uid, [_traspaso_a_mano.fila_del_registro(r) for r in _vuelven])
+                if _cambia:
+                    raise HTTPException(409, _cambia["mensaje"])
             antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
             # CLAIM ATÓMICO (evita doble-undo → doble-crédito de cash).
             if conn.execute(
@@ -34979,6 +35168,10 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
     # y pedirlo una vez en la puerta dejaba la segunda y la tercera sin él.
     with conn:
         _tomar_turno_de_la_puerta(conn, uid)
+        # Un pase vivo con otro broker (D.10.7): limpiar revertiría su lote de este lado
+        # y, al reimportar, los títulos aparecerían en los dos brokers. Se frena.
+        if _traspaso_a_mano.pases_de_brokers(conn, uid, broker_names):
+            raise HTTPException(409, _traspaso_a_mano.MSG_LIMPIAR_CON_PASE)
         # La MISMA función que usa delete_broker: una sola lista de qué se lleva
         # el borrado de un broker (BROKER_POR_NOMBRE), futuros y secciones
         # archivadas incluidos.
@@ -50893,6 +51086,10 @@ def import_redo(batch_id: str, uid: int = Depends(get_effective_user)):
             raise HTTPException(404, "Batch no encontrado.")
         if batch_row["status"] != "confirmed":
             raise HTTPException(400, f"El batch no está en estado 'confirmed' (actual: {batch_row['status']}).")
+        # Un lote de un pase entre brokers no es un archivo: no se rehace (D.10.5). El
+        # archivo de donde salieron sus títulos lo frena `revert_batch` (D.3.4).
+        if batch_row["parser_format"] == _traspaso_a_mano.FORMATO:
+            raise HTTPException(400, _traspaso_a_mano.MSG_REVERT_ES_PASE)
 
         # 2) Reconstruir CSV desde raw_rows ANTES de revertir (al revertir
         #    no borramos raw_rows, pero queda más limpio leerlos antes).
@@ -57737,6 +57934,13 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
                     # lote NO se marca deshecho — si el asesor recupera el
                     # acceso, puede reintentar el undo de lo que faltó.
                     skipped.append({"client_uid": cid, "reason": "sin acceso de escritura"})
+                    left_ok += 1
+                    continue
+                # El cliente pasó (una parte de) este lote a otro broker suyo: borrarlo
+                # dejaría al pase sin de dónde devolverlo. Queda 'ok': deshecho el
+                # pase, el lote vuelve con su mismo id y el asesor puede reintentar.
+                if it["position_id"] in _traspaso_a_mano.lotes_en_pases_vivos(conn, cid):
+                    skipped.append({"client_uid": cid, "reason": _traspaso_a_mano.MOTIVO_ASESOR})
                     left_ok += 1
                     continue
                 pos = conn.execute(

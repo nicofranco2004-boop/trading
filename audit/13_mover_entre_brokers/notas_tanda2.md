@@ -75,3 +75,25 @@ Pendientes que quedan para las etapas siguientes:
 - **Integración / pantalla**: `traspaso_neto_pesos` de 'global' suma `valor_ars` de todas las patas (también las de
   lotes en dólares, que en las filas por broker van a `traspaso_usd_con_dia`); sólo se nota con una pata huérfana.
   Los avisos nuevos: «Vamos a sumar tu broker «X · USD» como la cuenta en dólares de X.» y el 409 de la pata suelta.
+
+## De E7 (deshacer, GET /traspasos y las guardas)
+Hecho: `POST /api/positions/traspaso/{id}/deshacer` (anda con el interruptor apagado; vivo, incompleto
+de cualquier lado y con los dos borrados), `GET /api/positions/traspasos` ({habilitado, traspasos} con
+estado vivo/incompleto/desfasado, puede_deshacer, motivo, aviso), D.3.4 en `revert_batch`, D.10 #1–#15
+(la #16 del importador es de E8), D.19, la regla C4 en `sell_position_fifo` y `pase_que_cambia` (C.11)
+ya escrita y usada por las puertas de borrado y de deshacer-borrado.
+Pendientes que deja para las etapas siguientes:
+- **E8**: `pase_que_cambia(conn, uid, filas)` ya existe (lado A y lado B, `excluir`, devuelve
+  {traspaso_id, lado, fecha, contraparte, asset, broker, op, fecha_fila, mensaje}); falta llamarla en
+  `import_confirm` (D.10.16) DESPUÉS de `filas_ya_traspasadas` (si no, frena el Débito que el antiduplicado
+  tiene que omitir) y en `run_preview` (`cambian_un_pase`). `MSG_IMPORT_CAMBIA_UN_PASE` está definido.
+  El deshacer ya lee `omitidas_json` [{batch_id, row_index, lado}] (C.8 #2): E8 sólo tiene que escribirlo.
+  Un SELL importado en B con fecha anterior a la llegada todavía lo consumiría el persister desde la
+  tabla de hoy: lo frena C.11 lado B en el confirm (E8).
+- **E9**: Movimientos tiene que poner `traspaso_id`, `contraparte` y `estado` en las filas del pase (el
+  botón «Deshacer pase» de la pantalla los usa); `traspasos_vivos` ya calcula `estado`.
+- **E10**: `marcar_desfasados` → `desfasado_at`/`desfasado_motivo`; GET ya los muestra (`aviso`).
+- **E11**: el deshacer no recalcula V ni C: si `revaluar_patas` cambia la receta, el deshacer no se entera
+  (no los usa); sí usa `receta.lotes[].invested/commissions` (no dependen del dólar).
+- **Antes de volver atrás un deploy (G.3)**: apagar el interruptor y deshacer los pases vivos
+  (`SELECT id, user_id FROM traspasos_a_mano WHERE deshecho_at IS NULL`); el deshacer no mira el interruptor.

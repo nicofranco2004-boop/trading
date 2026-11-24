@@ -6,7 +6,7 @@ fecha de compra. Cada pase escribe dos lotes de import confirmados
 (`parser_format = FORMATO`, uno por broker) y una fila en `traspasos_a_mano` que
 los une y guarda la receta para deshacerlo (especificación, secciones A.1–A.7).
 
-QUÉ HAY ACÁ HOY (etapas E3 a E6).
+QUÉ HAY ACÁ HOY (etapas E3 a E7).
 
   · E5 («Armar el pase»): cómo se arma un pase ANTES de escribirlo —
     las validaciones de la sección B.6, qué lotes se mueven, a qué pata de B va
@@ -17,6 +17,12 @@ QUÉ HAY ACÁ HOY (etapas E3 a E6).
     vuelve a armar el plan con los lotes tomados, compara la firma, fija la
     valuación que vio la persona (`Plan.fijar_valuacion`) y lo escribe todo o nada
     (`aplicar_plan`).
+  · E7, al final («Deshacer el pase y las guardas»): el deshacer
+    (`POST /api/positions/traspaso/{id}/deshacer`: `validar_deshacer` + `deshacer`),
+    cómo está cada pase (`GET /api/positions/traspasos`: `traspasos_vivos`) y lo que
+    usan las puertas que podrían desarmar un pase vivo para frenar
+    (`pase_que_cambia`, `filas_origen_vivas`, `lotes_en_pases_vivos`,
+    `pase_vivo_del_activo`, `pases_de_brokers`, `lotes_que_no_estaban`).
 
 Las LECTURAS que necesitan los que leen el
 registro: el capital, el resultado del mes y los reportes (E4, abajo, «Las patas
@@ -32,8 +38,9 @@ que cambió de broker:
     venta posterior en B guarda la fecha de compra original; sin el día de
     llegada, la historia lo contaba en B también en los meses en que estaba en A.
 
-El resto del módulo (aplicar el pase, deshacerlo, el antiduplicado, las
-guardas) lo agregan las etapas siguientes.
+El resto del módulo (el antiduplicado de los imports posteriores, el detector de
+pases desfasados y la revaluación de las patas en la migración del dólar) lo
+agregan las etapas siguientes.
 
 Todas las lecturas del registro usan `TX_VIVAS` (import confirmado y sin lápida):
 un pase deshecho deja sus dos lotes en `reverted`, así que deja de contar solo.
@@ -1890,6 +1897,10 @@ def aplicar_plan(conn, uid: int, plan: Plan, *, helpers) -> Dict[str, Any]:
     # C.7.5 — la receta, con la fila de B de cada lote (la BUY k es la fila k del lote
     # de B: `filas()` las pone primero, en el orden de los lotes).
     receta = plan.receta()
+    # Hasta qué 'Venta' existía al hacer el pase: una venta a mano del MISMO día del
+    # pase anotada antes no frena el deshacer (C.8 #3); una anotada después, sí.
+    _ops = conn.execute("SELECT MAX(id) AS m FROM operations WHERE user_id=?", (uid,)).fetchone()
+    receta["ops_hasta"] = int(_ops["m"] or 0) if _ops else 0
     _, raw_b = pipeline.load_session_for_confirm(conn, uid=uid, session_id=sid_b)
     for k, lote in enumerate(receta["lotes"]):
         lote["fila_destino_raw_row_id"] = raw_b.get(BASE_ROW_INDEX + k)
@@ -1929,3 +1940,629 @@ def aplicar_plan(conn, uid: int, plan: Plan, *, helpers) -> Dict[str, Any]:
             "mensaje": MSG_LISTO.format(q=_cant(plan.cantidad), asset=plan.asset,
                                         A=c.raiz_a, B=c.raiz_b),
             "patas_tocadas": plan.patas_tocadas}
+
+
+# ── E7: deshacer el pase (C.8), cómo está cada pase (B.5) y las guardas (D.10) ──
+#
+# QUÉ ES DESHACER. Volver la cuenta a como estaba antes del pase: los dos lotes del
+# pase quedan 'reverted' (así las patas, el puente y la llegada dejan de contar
+# solas: todo lector del registro usa `TX_VIVAS`), los lotes que llegaron a B se
+# van, los de A vuelven con su costo y su fecha de compra, el gasto vuelve a la
+# caja y el precio cargado a mano que viajó a B se saca. Después el endpoint corre
+# la cola de cualquier puerta (`_cascade_after_movement_delete`: la cadena de cada
+# pata, el RECÁLCULO y las fotos). NO usa `revert_batch`: esa primitiva borra las
+# fotos medidas desde la fecha del lote, y deshacer un pase no cambia lo que valía
+# la cartera ningún día.
+#
+# CÓMO VUELVEN LOS LOTES DE A. Los IMPORTADOS: si A se puede rearmar desde el
+# registro (`_is_safe_to_rebuild`), se rearma (`rebuild_pair_asset`): el registro ya
+# no tiene la salida del pase y los repone exactos. Si no (A tiene otros lotes de
+# ese activo cargados a mano), cada uno vuelve por el vínculo con su fila de origen
+# (`import_op_links`), no por su id: un rebuild de A posterior al pase les cambió el
+# id. Los CARGADOS A MANO vuelven al final, con su foto (`_devolver_al_lote`, la
+# misma regla que borrar una venta hecha a mano).
+#
+# EL PASE INCOMPLETO. Si se borró uno de los dos brokers, su lote del pase ya está
+# 'reverted' (lo revirtió el borrado del broker) y queda la pata del otro lado,
+# viva: el deshacer hace sólo lo de ese lado. Así ningún estado queda sin salida.
+#
+# LAS GUARDAS. Mientras un pase está vivo, las puertas que reescribirían lo que el
+# pase movió frenan y apuntan a «Deshacer pase»: revertir o rehacer un lote del pase
+# o el archivo de donde salieron sus títulos, borrar sus filas, sus lotes o el
+# historial del activo, limpiar el broker, editar el ticker en grupo y cambiarle el
+# broker a un lote. `pase_que_cambia` (C.11) es la regla única de «esto cambia la
+# historia anterior a un pase».
+
+MSG_NO_ENCONTRADO = "No encontramos ese pase."
+MSG_YA_DESHECHO = "Ese pase ya se deshizo."
+MSG_NO_SE_DESHIZO = "No pudimos deshacer el pase ({motivo}). No se cambió nada en tu cartera."
+MSG_DESHECHO = "Listo: los {q} {asset} volvieron a {A}."
+MSG_DESHECHO_SIN_B = "Listo: {B} ya no existe, así que los {q} {asset} volvieron a {A}."
+MSG_DESHECHO_SIN_A = "Listo: los {q} {asset} salieron de {B}."
+MSG_DESHECHO_SIN_NINGUNO = ("Listo: {A} y {B} ya no existen, así que no había títulos que "
+                            "mover. El pase quedó deshecho.")
+# C.8 #2: una fila de un archivo posterior que se omitió porque ya estaba este pase.
+MSG_OMITIDAS = ("Cuando importaste el archivo de {broker} del {fecha}, Rendi no cargó la "
+                "{cual} de {asset} porque ya estaba este pase. Si lo deshacés, esos títulos "
+                "quedarían sin registrar. Primero revertí ese archivo (Importaciones → el "
+                "archivo del {fecha} → Revertir), después deshacé el pase y volvé a subir el "
+                "archivo.")
+# C.8 #3: A después del pase.
+MSG_A_VENDIO = ("Después de este pase vendiste {asset} en {A} el {fecha}. Para deshacerlo, "
+                "primero borrá esa venta.")
+MSG_A_PASO = ("Después de este pase pasaste {asset} de {A} a {C} el {fecha}. Deshacé "
+              "primero ese pase.")
+# C.8 #4: B tal como llegó.
+MSG_B_PASO = "Los {asset} que llegaron a {B} los pasaste a {C} el {fecha}. Deshacé primero ese pase."
+MSG_B_VENDIO = ("Los {asset} que llegaron a {B} ya no están como llegaron: vendiste {q} de los "
+                "{n}. Para deshacer el pase, primero borrá esa venta.")
+MSG_B_EDITADO = ("Los {asset} que llegaron a {B} ya no están como llegaron: los editaste. "
+                 "Volvé a dejarlos como llegaron ({como}) para poder deshacer el pase.")
+# B.5: el pase quedó desactualizado (lo marca el detector de E10).
+MSG_DESFASADO = ("Cambió la historia de {broker} y este pase quedó desactualizado: deshacelo y "
+                 "hacelo de nuevo.")
+
+# Dónde se deshace un pase, en la pantalla de Rendi (no es un menú de un broker:
+# `tests/test_caminos.py` lo sabe por su nombre). Una sola vez: lo nombran todos los
+# textos que mandan a deshacer el pase.
+CAMINO_DESHACER = "Movimientos → la fila «Pase» → Deshacer"
+
+# D.3.4 y D.10: las puertas que desarmarían un pase vivo.
+MSG_DESHACE_EL_PASE = ("Esto es parte de un pase de títulos entre tus brokers. Para sacarlo, "
+                       f"deshacé el pase entero: {CAMINO_DESHACER}.")
+MSG_REVERT_ES_PASE = ("Este lote es un pase de títulos entre tus brokers: no se revierte desde "
+                      "acá. Deshacé el pase entero desde Movimientos (la fila «Pase» → Deshacer).")
+MSG_ORIGEN_DE_UN_PASE = ("Hay títulos de esta importación que pasaste a {B} el {fecha}. "
+                         "Deshacé ese pase antes de revertir el archivo.")
+MSG_COMPRA_PASADA = ("Parte de esta compra se pasó a {B} el {fecha}. Para borrarla, primero "
+                     "deshacé ese pase.")
+MSG_LOTE_PASADO = ("Parte de este lote se pasó a otro broker. Para borrarlo, primero deshacé "
+                   "ese pase.")
+MSG_ACTIVO_CON_PASE = ("Este activo tiene un pase entre brokers. Deshacelo primero "
+                       f"({CAMINO_DESHACER}).")
+MSG_EDITAR_ACTIVO_CON_PASE = ("Este activo tiene un pase entre brokers. Deshacé primero el pase "
+                              "y después editalo.")
+MSG_LIMPIAR_CON_PASE = ("Este broker tiene títulos que pasaste a otro broker (o que llegaron "
+                        "desde otro). Deshacé esos pases antes de limpiarlo; si no, al "
+                        "reimportar vas a ver los títulos en los dos lados.")
+# La cuenta en dólares («B · USD») sola, con filas de un pase vivo: su lote del pase es
+# el de la cuenta (la raíz) y el borrado no lo revierte. Sin este freno quedaban las
+# patas vivas sin títulos y un deshacer imposible (D.19 cubre borrar la CUENTA).
+MSG_BORRAR_PATA_CON_PASE = ("«{nombre}» tiene títulos de un pase entre tus brokers. Deshacé "
+                            f"primero el pase ({CAMINO_DESHACER}) y después borralo.")
+MSG_PUT_OTRO_BROKER = ("Para pasar este lote a otro broker usá «Mover a otro broker» (en el "
+                       "menú ⋯ de la fila). Si lo cargaste en el broker equivocado, borralo y "
+                       "cargalo de nuevo en el correcto.")
+MOTIVO_ASESOR = "se pasó a otro broker: deshacé primero ese pase"
+# C.11, la regla única de lo que cambia la historia anterior a un pase.
+MSG_CAMBIA_UN_PASE = ("Esto cambia la historia de {asset} en {broker} antes de tu pase del "
+                      "{fecha} {hacia} {contraparte}, y el pase quedaría con otros lotes. Primero "
+                      "deshacé el pase (" + CAMINO_DESHACER + "), hacé este cambio y después "
+                      "volvé a moverlos.")
+MSG_IMPORT_CAMBIA_UN_PASE = ("Este archivo trae {que} de {asset} en {broker} del {fecha_fila}, "
+                             "anteriores a tu pase del {fecha} {hacia} {contraparte}. Si lo "
+                             "confirmamos, el pase quedaría con otros lotes. Deshacé el pase "
+                             "(" + CAMINO_DESHACER + "), importá el archivo y volvé a moverlos.")
+# Una venta a mano no consume lotes que todavía no estaban en ese broker (hueco C4 de
+# la revisión): el lote que llegó por un pase lleva su compra vieja (va primero en la
+# cola) pero está acá desde `en_broker_desde`.
+MSG_VENTA_ANTES_DE_LLEGAR = ("El {fecha} todavía no tenías en {broker} todos estos {asset}: "
+                             "{q} llegaron desde otro broker tuyo el {llegada}. Elegí una fecha "
+                             "del {llegada} en adelante o vendé hasta {disp}.")
+
+# Tolerancias: la cantidad de un lote se compara con 1e-6 (como la comprobación del
+# plan, `_coinciden`).
+_TOL_CANT = 1e-6
+
+
+@dataclass
+class Registro:
+    """Un pase guardado, con cómo está cada lado HOY.
+
+    `a_vivo`/`b_vivo`: el lote del pase de ese lado sigue 'confirmed' (si se borró el
+    broker, lo revirtió el borrado). `raiz_a`/`raiz_b`: el nombre de hoy de cada
+    cuenta (`import_batches.broker`, que el renombre mantiene); si un lado se borró,
+    el de la receta. `patas_a`/`patas_b`: la cuenta y su «· USD» (vacío si ese lado
+    ya no está)."""
+    id: str
+    fecha: str
+    asset: str
+    cantidad: float
+    moneda: str
+    receta: Dict[str, Any]
+    lote_salida: str
+    lote_entrada: str
+    a_vivo: bool
+    b_vivo: bool
+    raiz_a: str
+    raiz_b: str
+    patas_a: List[str]
+    patas_b: List[str]
+    creado_at: Optional[str] = None
+    deshecho_at: Optional[str] = None
+    desfasado_at: Optional[str] = None
+    desfasado_motivo: Optional[str] = None
+    omitidas: List[Dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def estado(self) -> str:
+        if not (self.a_vivo and self.b_vivo):
+            return "incompleto"
+        return "desfasado" if self.desfasado_at else "vivo"
+
+    def lotes(self, origen: Optional[str] = None) -> List[Dict[str, Any]]:
+        return [l for l in (self.receta.get("lotes") or [])
+                if isinstance(l, dict) and (origen is None or l.get("origen") == origen)]
+
+    @property
+    def compra_mas_nueva(self) -> str:
+        """La fecha de compra más nueva de lo que se movió (C.11, lado A)."""
+        fechas = [_dia((l.get("foto") or {}).get("entry_date")) for l in self.lotes()]
+        fechas = [f for f in fechas if f]
+        return max(fechas) if fechas else self.fecha
+
+
+def _registros(conn, uid: int, *, tid: Optional[str] = None,
+               vivos: bool = True) -> List[Registro]:
+    """Los pases del usuario (los no deshechos, con `vivos`), con el estado de sus
+    dos lotes. Toda lectura filtra por `user_id` (B.7)."""
+    from importing.persister import broker_pair
+    donde, args = "t.user_id = ?", [uid]
+    if tid is not None:
+        donde += " AND t.id = ?"
+        args.append(tid)
+    if vivos:
+        donde += " AND t.deshecho_at IS NULL"
+    filas = conn.execute(
+        f"""SELECT t.*, ba.status AS st_a, ba.broker AS br_a, bb.status AS st_b, bb.broker AS br_b
+              FROM traspasos_a_mano t
+              LEFT JOIN import_batches ba ON ba.id = t.lote_salida AND ba.user_id = t.user_id
+              LEFT JOIN import_batches bb ON bb.id = t.lote_entrada AND bb.user_id = t.user_id
+             WHERE {donde}
+             ORDER BY t.fecha, t.creado_at, t.id""", tuple(args)).fetchall()
+    out: List[Registro] = []
+    for t in filas:
+        try:
+            receta = json.loads(t["receta_json"] or "{}") or {}
+        except (TypeError, ValueError):
+            log.warning("traspaso_a_mano: receta ilegible en el pase %s", t["id"])
+            receta = {}
+        try:
+            omitidas = json.loads(t["omitidas_json"] or "[]") or []
+        except (TypeError, ValueError):
+            omitidas = []
+        raiz_a = t["br_a"] or receta.get("broker_origen") or ""
+        raiz_b = t["br_b"] or receta.get("broker_destino") or ""
+        # Vivo = su lote sigue confirmado. Borrar el broker (o limpiarlo) revierte
+        # los lotes de esa cuenta, el del pase incluido.
+        a_vivo = t["st_a"] == "confirmed"
+        b_vivo = t["st_b"] == "confirmed"
+        out.append(Registro(
+            id=t["id"], fecha=_dia(t["fecha"]), asset=t["asset"], cantidad=_num(t["cantidad"]),
+            moneda=t["moneda"], receta=receta, lote_salida=t["lote_salida"],
+            lote_entrada=t["lote_entrada"], a_vivo=a_vivo, b_vivo=b_vivo,
+            raiz_a=raiz_a, raiz_b=raiz_b,
+            patas_a=broker_pair(conn, uid, raiz_a) if a_vivo else [],
+            patas_b=broker_pair(conn, uid, raiz_b) if b_vivo else [],
+            creado_at=t["creado_at"], deshecho_at=t["deshecho_at"],
+            desfasado_at=t["desfasado_at"], desfasado_motivo=t["desfasado_motivo"],
+            omitidas=[o for o in omitidas if isinstance(o, dict)]))
+    return out
+
+
+def cargar_registro(conn, uid: int, traspaso_id: str) -> Registro:
+    """El pase `traspaso_id` del usuario: 404 si no existe o es de otra cuenta (el
+    mismo texto, B.7), 409 si ya se deshizo (C.8 #1)."""
+    regs = _registros(conn, uid, tid=str(traspaso_id or ""), vivos=False)
+    if not regs:
+        raise PaseInvalido(404, MSG_NO_ENCONTRADO)
+    if regs[0].deshecho_at:
+        raise PaseInvalido(409, MSG_YA_DESHECHO)
+    return regs[0]
+
+
+def _canon(asset) -> str:
+    return str(asset or "").strip().upper()
+
+
+def _ids_de_las_filas_del_pase(conn, reg: Registro, lote: str) -> int:
+    """El id más alto de las filas del pase en su lote (que sigue confirmado: lo
+    pregunta quien llama). Lo escrito después tiene un id mayor."""
+    r = conn.execute(f"SELECT MAX(n.id) AS m FROM {TX_VIVAS} WHERE n.batch_id=? "
+                     f"AND n.traspaso_id=?", (lote, reg.id)).fetchone()
+    return int(r["m"] or 0) if r else 0
+
+
+def _salida_de_a_despues(conn, uid: int, reg: Registro):
+    """C.8 #3: lo que sacó el activo de las patas de A DESDE el día del pase y DESPUÉS
+    de él. Una SELL del registro (importada o de otro pase) con fecha posterior, o del
+    mismo día pero escrita después que las filas de este pase (su id es mayor); una
+    'Venta' cargada a mano con fecha posterior, o del mismo día y anotada después
+    del pase (`ops_hasta` de la receta). Las 'Venta' de un import ya están contadas
+    por su SELL. Devuelve {fecha, traspaso_id} (la más nueva; a igual fecha, la de un
+    pase: su texto pide deshacerlo) o None."""
+    if not reg.patas_a:
+        return None
+    mejor = None
+    ultimo = _ids_de_las_filas_del_pase(conn, reg, reg.lote_salida)
+    for s in conn.execute(
+            f"""SELECT substr(n.date, 1, 10) AS d, n.traspaso_id AS tid, n.id AS nid
+                  FROM {TX_VIVAS}
+                 WHERE b.user_id = ? AND n.broker IN ({_ph(reg.patas_a)})
+                   AND UPPER(n.asset_symbol) = ? AND n.operation_type = 'SELL'
+                   AND substr(n.date, 1, 10) >= ?
+                   AND COALESCE(n.traspaso_id, '') <> ?""",
+            (uid, *reg.patas_a, _canon(reg.asset), reg.fecha, reg.id)).fetchall():
+        if s["d"] == reg.fecha and int(s["nid"] or 0) < ultimo:
+            continue                    # del mismo día y anterior al pase: ya estaba
+        if mejor is None or s["d"] > mejor["fecha"] or (
+                s["d"] == mejor["fecha"] and s["tid"] and not mejor["traspaso_id"]):
+            mejor = {"fecha": s["d"], "traspaso_id": s["tid"]}
+    ops_hasta = reg.receta.get("ops_hasta")
+    for o in conn.execute(
+            f"""SELECT substr(o.date, 1, 10) AS d, o.id AS oid FROM operations o
+                 WHERE o.user_id = ? AND o.broker IN ({_ph(reg.patas_a)})
+                   AND UPPER(o.asset) = ? AND o.op_type = 'Venta'
+                   AND substr(o.date, 1, 10) >= ?
+                   AND NOT EXISTS (SELECT 1 FROM import_op_links k WHERE k.operation_id = o.id)""",
+            (uid, *reg.patas_a, _canon(reg.asset), reg.fecha)).fetchall():
+        if o["d"] == reg.fecha and ops_hasta is not None and int(o["oid"]) <= int(ops_hasta):
+            continue
+        if mejor is None or o["d"] > mejor["fecha"]:
+            mejor = {"fecha": o["d"], "traspaso_id": None}
+    return mejor
+
+
+def _llegadas_de_b(conn, reg: Registro) -> List[Dict[str, Any]]:
+    """Las COMPRAS del lote de B (una por lote que llegó), con el lote de `positions`
+    al que apunta hoy su vínculo (None si ya no existe). Se lee con el lote de B
+    confirmado (el deshacer la pide ANTES de revertirlo)."""
+    out = []
+    for f in conn.execute(
+            f"""SELECT n.raw_row_id, n.quantity, n.unit_price, n.currency, n.broker
+                  FROM {TX_VIVAS}
+                 WHERE n.batch_id = ? AND n.operation_type = 'BUY'
+                 ORDER BY n.id""", (reg.lote_entrada,)).fetchall():
+        link = conn.execute(
+            "SELECT position_id FROM import_op_links WHERE batch_id=? AND raw_row_id=? "
+            "AND position_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+            (reg.lote_entrada, f["raw_row_id"])).fetchone()
+        out.append({"fila": dict(f), "position_id": link["position_id"] if link else None})
+    return out
+
+
+def _lote_vivo(conn, uid: int, pid):
+    if pid is None:
+        return None
+    return conn.execute("SELECT id, quantity FROM positions WHERE id=? AND user_id=? "
+                        "AND is_cash=0", (pid, uid)).fetchone()
+
+
+def _pase_posterior_desde_b(conn, uid: int, reg: Registro):
+    """Un pase VIVO, posterior, que sacó este activo de la cuenta B (su lote de salida
+    es de B y sigue confirmado). Devuelve el registro o None."""
+    for otro in _registros(conn, uid, vivos=True):
+        if (otro.id != reg.id and otro.a_vivo and otro.raiz_a == reg.raiz_b
+                and _canon(otro.asset) == _canon(reg.asset) and otro.fecha >= reg.fecha):
+            return otro
+    return None
+
+
+def _por_que_no_se_deshace(conn, uid: int, reg: Registro) -> Optional[str]:
+    """C.8, validaciones 2 a 4 (la 1 es `cargar_registro`). Devuelve el texto (409) o
+    None si se puede deshacer. Sólo lee: la usan el deshacer y `GET /traspasos`."""
+    # 2 — filas de un archivo posterior que no entraron porque ya estaba este pase.
+    for o in reg.omitidas:
+        b = conn.execute(
+            "SELECT broker, status, COALESCE(confirmed_at, created_at) AS cuando "
+            "FROM import_batches WHERE id=? AND user_id=?",
+            (o.get("batch_id"), uid)).fetchone()
+        if b and b["status"] == "confirmed":
+            return MSG_OMITIDAS.format(
+                broker=b["broker"], fecha=_ddmmaaaa(b["cuando"]), asset=reg.asset,
+                cual="llegada" if o.get("lado") in ("entrada", "destino") else "salida")
+    # 3 — A después del pase.
+    if reg.a_vivo:
+        s = _salida_de_a_despues(conn, uid, reg)
+        if s:
+            if s["traspaso_id"]:
+                return MSG_A_PASO.format(asset=reg.asset, A=reg.raiz_a,
+                                         C=_contraparte_de_pase(conn, uid, s["traspaso_id"]),
+                                         fecha=_ddmm(s["fecha"]))
+            return MSG_A_VENDIO.format(asset=reg.asset, A=reg.raiz_a, fecha=_ddmm(s["fecha"]))
+    # 4 — B tal como llegó.
+    if reg.b_vivo:
+        llegadas = _llegadas_de_b(conn, reg)
+        vivos = [(ll, _lote_vivo(conn, uid, ll["position_id"])) for ll in llegadas]
+        if any(v is None or abs(_num(v["quantity"]) - _num(ll["fila"]["quantity"])) > _TOL_CANT
+               for ll, v in vivos):
+            posterior = _pase_posterior_desde_b(conn, uid, reg)
+            if posterior:
+                return MSG_B_PASO.format(asset=reg.asset, B=reg.raiz_b, C=posterior.raiz_b,
+                                         fecha=_ddmm(posterior.fecha))
+            n = sum(_num(ll["fila"]["quantity"]) for ll in llegadas)
+            if _salida_posterior(conn, uid, reg.patas_b, reg.asset, reg.fecha,
+                                 desde_el_mismo_dia=True):
+                quedan = sum(min(_num(v["quantity"]), _num(ll["fila"]["quantity"]))
+                             for ll, v in vivos if v is not None)
+                return MSG_B_VENDIO.format(asset=reg.asset, B=reg.raiz_b,
+                                           q=_cant(max(n - quedan, 0.0)), n=_cant(n))
+            como = " y ".join(
+                f"{_cant(ll['fila']['quantity'])} a "
+                f"{_monto(ll['fila']['unit_price'], ll['fila']['currency'])}"
+                for ll in llegadas)
+            return MSG_B_EDITADO.format(asset=reg.asset, B=reg.raiz_b, como=como)
+    return None
+
+
+def validar_deshacer(conn, uid: int, traspaso_id: str) -> Registro:
+    """C.8, las validaciones en orden. Levanta `PaseInvalido` (404/409)."""
+    reg = cargar_registro(conn, uid, traspaso_id)
+    motivo = _por_que_no_se_deshace(conn, uid, reg)
+    if motivo:
+        raise PaseInvalido(409, motivo)
+    return reg
+
+
+def _devolver_importado(conn, uid: int, lote: Dict[str, Any], helpers) -> None:
+    """C.8 paso 3 (b): un lote IMPORTADO vuelve a A por el vínculo con su fila de
+    origen. Si el lote de esa fila sigue vivo (el pase se llevó una parte), se le
+    suma; si no, vuelve con su foto (el mismo id si está libre) y el vínculo queda
+    apuntándole: es por donde lo encuentran el revert del archivo y las guardas."""
+    fo = lote.get("fila_origen") or {}
+    link = (fo.get("batch_id"), fo.get("raw_row_id")) if fo.get("batch_id") else None
+    foto = dict(lote.get("foto") or {})
+    if link:
+        r = conn.execute(
+            "SELECT position_id FROM import_op_links WHERE batch_id=? AND raw_row_id=? "
+            "AND position_id IS NOT NULL ORDER BY id DESC LIMIT 1", link).fetchone()
+        if r and _lote_vivo(conn, uid, r["position_id"]):
+            foto["id"] = r["position_id"]
+    helpers._devolver_al_lote(conn, uid, foto, _num(lote.get("cantidad")),
+                              lote.get("invested"), _num(lote.get("commissions")), link=link)
+
+
+def _devolver_a_mano(conn, uid: int, lote: Dict[str, Any], helpers) -> None:
+    """C.8 paso 4: un lote CARGADO A MANO vuelve con su foto (`_devolver_al_lote`). Un
+    lote viejo sin `invested` (su costo es precio × cantidad) vuelve sin él cuando
+    queda entero como estaba: el pase le escribió el costo de lo que quedaba."""
+    foto = dict(lote.get("foto") or {})
+    r = helpers._devolver_al_lote(conn, uid, foto, _num(lote.get("cantidad")),
+                                  _num(lote.get("invested")), _num(lote.get("commissions")))
+    if foto.get("invested") is None:
+        conn.execute("UPDATE positions SET invested=NULL WHERE id=? AND user_id=? "
+                     "AND ABS(quantity - ?) <= ?",
+                     (r["id"], uid, _num(foto.get("quantity")), 1e-9))
+
+
+def deshacer(conn, uid: int, reg: Registro, *, helpers) -> Dict[str, Any]:
+    """C.8, los pasos, adentro de la transacción del endpoint (que ya tomó el turno y
+    los lotes de A y de B, y validó con `validar_deshacer`). Devuelve {mensaje,
+    patas_tocadas}. Levanta `PaseInvalido` si otro pedido lo deshizo en el medio."""
+    from importing.rebuild import _is_safe_to_rebuild, rebuild_pair_asset
+
+    # Lo que llegó a B, leído mientras su lote sigue confirmado (abajo se revierte).
+    llegadas = _llegadas_de_b(conn, reg) if reg.b_vivo else []
+    # 7 (primero, como candado): marcar el pase deshecho. Un segundo pedido que llegó
+    # a la vez toca 0 filas y sale sin hacer nada.
+    if conn.execute(
+            "UPDATE traspasos_a_mano SET deshecho_at=datetime('now') "
+            "WHERE id=? AND user_id=? AND deshecho_at IS NULL", (reg.id, uid)).rowcount != 1:
+        raise PaseInvalido(409, MSG_YA_DESHECHO)
+    # 1 — los lotes del pase que siguen vivos, a 'reverted' (así dejan de contar: todo
+    # lector del registro usa TX_VIVAS). Tienen que ser exactamente esos.
+    lotes = [x for x, vivo in ((reg.lote_salida, reg.a_vivo), (reg.lote_entrada, reg.b_vivo))
+             if vivo]
+    if lotes and conn.execute(
+            f"UPDATE import_batches SET status='reverted', reverted_at=datetime('now') "
+            f"WHERE user_id=? AND id IN ({_ph(lotes)}) AND status='confirmed'",
+            (uid, *lotes)).rowcount != len(lotes):
+        raise PaseInvalido(409, MSG_YA_DESHECHO)
+
+    patas: List[str] = []
+    q, asset = _cant(reg.cantidad), reg.asset
+    if reg.b_vivo:
+        # 2 — B: se van los lotes que llegaron (la validación 4 garantizó que están
+        # como llegaron) y sus vínculos. B no se rearma: lo suyo queda como estaba.
+        for ll in llegadas:
+            if ll["position_id"] is not None:
+                conn.execute("DELETE FROM positions WHERE id=? AND user_id=? AND is_cash=0",
+                             (ll["position_id"], uid))
+        conn.execute("DELETE FROM import_op_links WHERE batch_id=?", (reg.lote_entrada,))
+        # 5 — el precio cargado a mano que viajó a B vuelve a lo que había, en los
+        # lotes que siguen con el que puso el pase.
+        pc = reg.receta.get("precio_cargado_en_destino")
+        if pc and pc.get("brokers_destino") and pc.get("puesto") is not None:
+            destinos = list(pc["brokers_destino"])
+            conn.execute(
+                f"UPDATE positions SET price_override=? WHERE user_id=? "
+                f"AND broker IN ({_ph(destinos)}) AND asset=? AND is_cash=0 "
+                f"AND ABS(price_override - ?) <= ?",
+                (pc.get("antes"), uid, *destinos, asset, float(pc["puesto"]),
+                 1e-9 * max(1.0, abs(float(pc["puesto"])))))
+        patas += reg.patas_b
+    if reg.a_vivo:
+        # 3 — A, los importados: rearmar si A se puede rearmar; si no, por el vínculo.
+        importados = reg.lotes("importado")
+        if importados:
+            if _is_safe_to_rebuild(conn, uid, reg.patas_a, asset):
+                rebuild_pair_asset(conn, uid, reg.raiz_a, asset,
+                                   tc_blue=helpers._config_tc_blue(conn, uid))
+            else:
+                for l in importados:
+                    _devolver_importado(conn, uid, l, helpers)
+        # 4 — A, los que eran cargados a mano, al final.
+        for l in reg.lotes("a_mano"):
+            _devolver_a_mano(conn, uid, l, helpers)
+        # El precio cargado a mano de A es del ACTIVO (vive en cada lote): si el pase
+        # se llevó todos los lotes, el rearmado no tiene de dónde copiarlo. Vuelve el
+        # de la foto a los lotes de A que quedaron sin uno.
+        po = next((l["foto"]["price_override"] for l in reg.lotes()
+                   if (l.get("foto") or {}).get("price_override") is not None), None)
+        if po is not None:
+            conn.execute(
+                f"UPDATE positions SET price_override=? WHERE user_id=? "
+                f"AND broker IN ({_ph(reg.patas_a)}) AND asset=? AND is_cash=0 "
+                f"AND price_override IS NULL", (po, uid, *reg.patas_a, asset))
+        # 6 — el gasto vuelve a la caja de A (la única puerta de la caja).
+        g = reg.receta.get("gasto")
+        if g and _num(g.get("monto")) > 0 and g.get("broker"):
+            helpers._adjust_broker_cash(conn, uid, g["broker"], _num(g["monto"]))
+            patas.append(g["broker"])
+        patas += reg.patas_a
+
+    if reg.a_vivo and reg.b_vivo:
+        mensaje = MSG_DESHECHO.format(q=q, asset=asset, A=reg.raiz_a)
+    elif reg.a_vivo:
+        mensaje = MSG_DESHECHO_SIN_B.format(q=q, asset=asset, A=reg.raiz_a, B=reg.raiz_b)
+    elif reg.b_vivo:
+        mensaje = MSG_DESHECHO_SIN_A.format(q=q, asset=asset, B=reg.raiz_b)
+    else:
+        mensaje = MSG_DESHECHO_SIN_NINGUNO.format(A=reg.raiz_a, B=reg.raiz_b)
+    return {"mensaje": mensaje, "patas_tocadas": list(dict.fromkeys(p for p in patas if p))}
+
+
+def traspasos_vivos(conn, uid: int) -> List[Dict[str, Any]]:
+    """B.5: los pases que no se deshicieron, con su estado y si se pueden deshacer
+    (y si no, por qué: el mismo texto que daría el deshacer). Sólo lee."""
+    out = []
+    for reg in _registros(conn, uid, vivos=True):
+        motivo = _por_que_no_se_deshace(conn, uid, reg)
+        aviso = None
+        if reg.desfasado_at:
+            aviso = MSG_DESFASADO.format(
+                broker=reg.raiz_b if reg.desfasado_motivo == "destino" else reg.raiz_a)
+        out.append({
+            "id": reg.id, "fecha": reg.fecha, "asset": reg.asset, "cantidad": reg.cantidad,
+            "moneda": reg.moneda, "broker_origen": reg.raiz_a, "broker_destino": reg.raiz_b,
+            "valor_usd": round(_num(reg.receta.get("valor_usd")), 2),
+            "costo_usd": round(_num(reg.receta.get("costo_usd")), 2),
+            "estado": reg.estado, "puede_deshacer": motivo is None, "motivo": motivo,
+            "aviso": aviso,
+        })
+    return out
+
+
+# ── las guardas (D.3.4, D.10) ──────────────────────────────────────────────────
+
+def lotes_en_pases_vivos(conn, uid: int) -> set:
+    """Los `lote_id` (ids de `positions` en A al momento del pase) de las recetas de
+    los pases vivos: un lote cargado a mano que se llevó una parte, o el que el
+    asesor cargó y el cliente pasó."""
+    out = set()
+    for reg in _registros(conn, uid, vivos=True):
+        for l in reg.lotes():
+            if l.get("lote_id") is not None:
+                out.add(l["lote_id"])
+    return out
+
+
+def filas_origen_vivas(conn, uid: int) -> Dict[Tuple[str, Any], Tuple[str, str]]:
+    """{(batch_id, raw_row_id) de la COMPRA importada de donde salieron títulos de un
+    pase vivo: (cuenta de destino, fecha del pase)}."""
+    out: Dict[Tuple[str, Any], Tuple[str, str]] = {}
+    for reg in _registros(conn, uid, vivos=True):
+        for l in reg.lotes("importado"):
+            fo = l.get("fila_origen") or {}
+            if fo.get("batch_id") is not None:
+                out.setdefault((fo["batch_id"], fo.get("raw_row_id")), (reg.raiz_b, reg.fecha))
+    return out
+
+
+def pase_vivo_del_activo(conn, uid: int, asset: str, patas=None, *,
+                         creado_desde: Optional[str] = None) -> Optional[Registro]:
+    """El primer pase vivo de `asset` (en esas patas, si se dan: de cualquiera de los
+    dos lados que siga vivo). `creado_desde`: sólo los creados desde ese momento
+    (texto 'AAAA-MM-DD HH:MM:SS', como `datetime('now')`)."""
+    patas = set(patas) if patas else None
+    for reg in _registros(conn, uid, vivos=True):
+        if _canon(reg.asset) != _canon(asset):
+            continue
+        if patas is not None and not (patas & (set(reg.patas_a) | set(reg.patas_b))):
+            continue
+        if creado_desde and str(reg.creado_at or "") < str(creado_desde):
+            continue
+        return reg
+    return None
+
+
+def pases_de_brokers(conn, uid: int, nombres) -> List[str]:
+    """Los pases vivos que tocan esos brokers: su lote de A o de B sigue confirmado y
+    es de una de esas cuentas, o tiene filas en una de esas patas. Es el conteo
+    «traspasos» del borrado de un broker (D.10.8) y el freno de «Limpiar» (D.10.7)."""
+    nombres = [n for n in (nombres or []) if n]
+    if not nombres:
+        return []
+    tocados = {r["tid"] for r in conn.execute(
+        f"""SELECT DISTINCT n.traspaso_id AS tid FROM {TX_VIVAS}
+             WHERE b.user_id = ? AND b.parser_format = ? AND n.traspaso_id IS NOT NULL
+               AND (b.broker IN ({_ph(nombres)}) OR n.broker IN ({_ph(nombres)}))""",
+        (uid, FORMATO, *nombres, *nombres)).fetchall()}
+    return [r["id"] for r in conn.execute(
+        "SELECT id FROM traspasos_a_mano WHERE user_id = ? AND deshecho_at IS NULL "
+        "ORDER BY fecha, id", (uid,)).fetchall() if r["id"] in tocados]
+
+
+def pase_que_cambia(conn, uid: int, filas, *, excluir=None) -> Optional[Dict[str, Any]]:
+    """C.11, la regla única. `filas`: dicts {broker, asset, op, date, fecha_compra,
+    traspaso_id} que una puerta está por agregar, sacar o reescribir en el registro.
+    Devuelve el primer pase vivo cuya historia anterior cambiaría —{traspaso_id, lado
+    ('origen'|'destino'), fecha, contraparte, asset, broker, op, fecha_fila,
+    mensaje}— o None.
+      · Lado A (su lote sigue confirmado, la fila en una pata de A, el mismo activo, no
+        es del pase): una COMPRA del día del pase o antes y comprada no después que lo
+        más nuevo que se movió (cambia los lotes que el pase consumió), o una VENTA del
+        día del pase o antes.
+      · Lado B (su lote sigue confirmado, la fila en una pata de B): una VENTA anterior
+        al pase (el rearmado de B fabricaría un lote semilla y dejaría los movidos
+        enteros: títulos de más)."""
+    filas = [f for f in (filas or [])
+             if f and str(f.get("op") or "").upper() in ("BUY", "SELL")]
+    if not filas:
+        return None
+    excluir = set(excluir or ())
+    for reg in _registros(conn, uid, vivos=True):
+        if reg.id in excluir:
+            continue
+        asset = _canon(reg.asset)
+        for f in filas:
+            if f.get("traspaso_id") == reg.id or _canon(f.get("asset")) != asset:
+                continue
+            op = str(f.get("op")).upper()
+            d = _dia(f.get("date")) or ""
+            fc = _dia(f.get("fecha_compra")) or d
+            lado = None
+            if reg.a_vivo and f.get("broker") in reg.patas_a and d and d <= reg.fecha:
+                if op == "SELL" or (op == "BUY" and fc <= reg.compra_mas_nueva):
+                    lado = "origen"
+            if lado is None and reg.b_vivo and f.get("broker") in reg.patas_b \
+                    and op == "SELL" and d and d < reg.fecha:
+                lado = "destino"
+            if lado:
+                broker = reg.raiz_a if lado == "origen" else reg.raiz_b
+                contraparte = reg.raiz_b if lado == "origen" else reg.raiz_a
+                hacia = "a" if lado == "origen" else "desde"
+                return {"traspaso_id": reg.id, "lado": lado, "fecha": reg.fecha,
+                        "contraparte": contraparte, "asset": reg.asset, "broker": broker,
+                        "op": op, "fecha_fila": d,
+                        "mensaje": MSG_CAMBIA_UN_PASE.format(
+                            asset=reg.asset, broker=broker, fecha=_ddmmaaaa(reg.fecha),
+                            hacia=hacia, contraparte=contraparte)}
+    return None
+
+
+def fila_del_registro(fila) -> Dict[str, Any]:
+    """Una fila de `import_normalized_tx` en la forma que pide `pase_que_cambia`."""
+    d = dict(fila)
+    return {"broker": d.get("broker"), "asset": d.get("asset_symbol"),
+            "op": d.get("operation_type"), "date": d.get("date"),
+            "fecha_compra": d.get("fecha_compra"), "traspaso_id": d.get("traspaso_id")}
+
+
+def lotes_que_no_estaban(lotes, fecha: str):
+    """Hueco C4: de la cola FIFO de una venta a mano (`lotes`, filas de `positions`
+    ya en orden), los que llegaron a esta cuenta por un pase DESPUÉS de `fecha` (su
+    `en_broker_desde` es posterior). Una venta de ese día no los puede consumir: no
+    estaban. Los lotes sin `en_broker_desde` siguen como siempre."""
+    f = _dia(fecha) or ""
+    return [l for l in lotes if l["en_broker_desde"] and _dia(l["en_broker_desde"]) > f]

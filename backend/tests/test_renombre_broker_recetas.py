@@ -884,6 +884,52 @@ def _actuar_deshacer_grupo(cta, ctx):
     return [_codigo(cta.pedir("post", f"/api/positions/group/undo/{ctx['tok']}"))]
 
 
+# «Mover a otro broker» (2026-11): la receta del pase (`traspasos_a_mano.receta_json`)
+# guarda los nombres de la cuenta de origen y de destino, de la pata de cada lote, de la
+# caja del gasto y la foto de cada lote. Armar el pase de esta cuenta a otra, [renombrar
+# esta], y deshacerlo: los títulos y el gasto tienen que volver al broker de HOY. El
+# deshacer anda con el interruptor apagado (lo apaga el escenario antes de deshacer).
+def _armar_pase_entre_brokers(cta):
+    conn = main.get_db()
+    try:
+        # El segundo broker, sembrado: el plan Free de estas cuentas permite uno solo
+        # por la puerta de alta, y el tope no es lo que se mide acá.
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?, 'Destino', ?)",
+                     (cta.uid, cta.moneda))
+        conn.commit()
+    finally:
+        conn.close()
+    cta.importar(f"2026-08-01,DEPOSITO,{cta.nombre},,,,1000,,,0,USD,",
+                 f"2026-08-03,COMPRA,{cta.nombre},AAPL,4,150,600,,,1,USD,")
+    conn = main.get_db()
+    try:
+        conn.execute("INSERT INTO interruptores (nombre, encendido, cambiado_at) VALUES "
+                     "('mover_entre_brokers', 1, datetime('now')) ON CONFLICT(nombre) DO UPDATE "
+                     "SET encendido=1", ())
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        cuerpo = {"broker_origen": cta.nombre, "asset": "AAPL", "moneda": "USD",
+                  "broker_destino": "Destino", "fecha": "2026-08-10", "precio_manual": 170,
+                  "gasto": {"monto": 2, "moneda": "USD"}}
+        v = cta.ok("post", "/api/positions/traspaso/vista-previa", json=cuerpo)
+        hecho = cta.ok("post", "/api/positions/traspaso",
+                       json={**cuerpo, "firma": v["firma"], "valuacion": v["valuacion"]})
+    finally:
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM interruptores WHERE nombre='mover_entre_brokers'")
+            conn.commit()
+        finally:
+            conn.close()
+    return {"tid": hecho["traspaso_id"]}
+
+
+def _actuar_deshacer_pase(cta, ctx):
+    return [_codigo(cta.pedir("post", f"/api/positions/traspaso/{ctx['tid']}/deshacer"))]
+
+
 ESCENARIOS = [
     Escenario("posicion_a_mano", _armar_posicion, _actuar_posicion,
               recetas={"manual_position"}),
@@ -946,6 +992,8 @@ ESCENARIOS = [
               _actuar_deshacer_op, registros={"manual_op"}),
     Escenario("deshacer_edicion_de_posicion", _armar_edicion_grupo, _actuar_deshacer_grupo,
               recetas={"manual_position", "fifo_sell"}, registros={"position_group_edit"}),
+    Escenario("pase_entre_brokers", _armar_pase_entre_brokers, _actuar_deshacer_pase,
+              moneda="USD"),
     Escenario("plantilla_del_importador", _armar_plantilla, _actuar_importar_con_la_plantilla,
               moneda="USD"),
     Escenario("plantilla_con_columna_que_se_llama_como_el_broker",

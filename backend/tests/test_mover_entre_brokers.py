@@ -34,6 +34,12 @@ los cambios de ratio de cada `.BA`, `main._splits_de_yahoo`), la lista de bonos 
 data912 y los benchmarks de Reportes. El interruptor `mover_entre_brokers` se prende
 en el `setUp` (en la base, como lo prende un admin) y se borra al terminar.
 
+EL DESHACER Y LAS GUARDAS (E7). `POST /api/positions/traspaso/{id}/deshacer` y
+`GET /api/positions/traspasos`, por HTTP. La prueba central es #12: `estado()` entero
+(F.1: contabilidad, comisiones, Movimientos, el CSV de transacciones y las fotos
+medidas) antes del pase == después del deshacer, con sus variantes. Las guardas de las
+otras puertas (#20, #22–#26) frenan con su texto y no tocan nada.
+
 Los números de las pruebas son los de la tabla F.2 de la especificación (#n).
 
 Corre con: cd backend && python3 -m pytest tests/test_mover_entre_brokers.py
@@ -2824,6 +2830,1028 @@ class Concurrencia(_Confirmar):
             conn.close()
         self.assertEqual(donde, {("Balanz Nuevo", 10.0)})
         self.assertNotIn("Balanz", meses)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# E7 — Deshacer el pase (C.8), cómo está cada pase (B.5) y las guardas (D.10, D.3.4)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Fotos MEDIDAS del cron entre la fecha del pase y ayer, a mitad y a fin de mes, con
+# su dólar y su composición: ningún pase ni deshacer las puede tocar (son mediciones
+# a mercado de ese día, no se pueden volver a derivar).
+FOTOS_MEDIDAS = {"2025-06-20": (1950.0, 1400.0), "2025-06-30": (1960.0, 1410.0),
+                 "2025-07-15": (1970.0, 1420.0), "2025-07-31": (1980.0, 1430.0),
+                 "2025-12-15": (1990.0, 1440.0), "2025-12-31": (2000.0, 1450.0),
+                 "2026-03-15": (2010.0, 1460.0)}
+
+MSG_DESHACE_EL_PASE = traspaso_a_mano.MSG_DESHACE_EL_PASE
+MSG_REVERT_ES_PASE = traspaso_a_mano.MSG_REVERT_ES_PASE
+
+
+class _Deshacer(_Confirmar):
+    """Lo que necesitan las pruebas del deshacer: las dos puertas nuevas por HTTP y el
+    `estado()` entero de F.1 (la contabilidad, lo que publican Movimientos, las
+    comisiones y el CSV de transacciones, y las fotos medidas)."""
+    maxDiff = None
+
+    def _deshacer(self, tid, headers=None):
+        return self.http.post(f"/api/positions/traspaso/{tid}/deshacer", headers=headers or self.h)
+
+    def _deshacer_ok(self, tid):
+        r = self._deshacer(tid)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual(set(r.json()), {"ok", "mensaje"})
+        return r.json()["mensaje"]
+
+    def _no_deshace(self, tid, status, texto):
+        r = self._deshacer(tid)
+        self.assertEqual(r.status_code, status, r.text)
+        self.assertEqual(r.json()["detail"], texto)
+        return r
+
+    def _traspasos(self, headers=None):
+        r = self.http.get("/api/positions/traspasos", headers=headers or self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def _uno(self, tid):
+        hay = [t for t in self._traspasos()["traspasos"] if t["id"] == tid]
+        self.assertEqual(len(hay), 1, f"el pase {tid} no está en GET /traspasos")
+        return hay[0]
+
+    def _plantar_fotos(self):
+        conn = main.get_db()
+        try:
+            for d, (valor, aportado) in FOTOS_MEDIDAS.items():
+                conn.execute(
+                    """INSERT INTO snapshots (user_id, date, total_value, total_invested,
+                           net_deposited, fx_to_usd_blue, holdings_json, source, base, apto)
+                       VALUES (?,?,?,?,?,1200,'[{"asset": "NVDA", "value_usd": 1}]',
+                               'cron','mercado',1)
+                       ON CONFLICT(user_id, date) DO UPDATE SET
+                           total_value=excluded.total_value,
+                           total_invested=excluded.total_invested,
+                           net_deposited=excluded.net_deposited,
+                           fx_to_usd_blue=excluded.fx_to_usd_blue,
+                           holdings_json=excluded.holdings_json,
+                           source='cron', base='mercado', apto=1""",
+                    (self.uid, d, valor, aportado, aportado))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _get(self, url):
+        r = self.http.get(url, headers=self.h)
+        self.assertEqual(r.status_code, 200, f"{url}: {r.text[:300]}")
+        return r
+
+    def estado_completo(self):
+        """`estado()` de F.1 entero: la contabilidad (`estado`), las comisiones, lo que
+        publica Movimientos, las filas del CSV de transacciones y las fotos MEDIDAS
+        (las del cron, sin la de hoy, que se reescribe sola)."""
+        e = self.estado()
+        com = self._get("/api/insights/commissions").json()
+        e["comisiones"] = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in com.items()}
+        movs = self._get("/api/movements").json()
+        movs = movs.get("movements", movs) if isinstance(movs, dict) else movs
+        e["movimientos"] = sorted(
+            (str(m.get("type")), str(m.get("date"))[:10], str(m.get("broker")),
+             str(m.get("asset") or ""), round(float(m.get("amount_usd") or 0), 2),
+             round(float(m.get("fees_usd") or 0), 2), round(float(m.get("quantity") or 0), 6))
+            for m in movs)
+        filas = list(csv.reader(io.StringIO(self._get("/api/export/transactions.csv").text)))
+        e["csv"] = sorted(tuple(f) for f in filas)
+        conn = main.get_db()
+        try:
+            e["fotos"] = sorted(
+                (r["date"], round(float(r["total_value"]), 4), round(float(r["net_deposited"]), 4))
+                for r in conn.execute(
+                    "SELECT date, total_value, net_deposited FROM snapshots WHERE user_id=? "
+                    "AND fx_to_usd_blue IS NOT NULL AND date < ?", (self.uid, main._iso_today())))
+            e["brokers"] = sorted(r["name"] for r in conn.execute(
+                "SELECT name FROM brokers WHERE user_id=?", (self.uid,)))
+        finally:
+            conn.close()
+        return e
+
+    def _igual(self, despues, antes, sin=()):
+        """Igual clave por clave. La contabilidad de cada mes (`mensual`) con la
+        tolerancia de la propia cadena (`_repair_monthly_chain`, EPS = US$ 0,01): un
+        import con una venta deja el mes de la venta con un resto PREEXISTENTE —el
+        persister escribe el capital final con el resultado sin redondear (8,5275) y el
+        recálculo pone el realizado en 8,53 sin rearmar el capital de un mes cerrado:
+        2,5 diezmilésimos medidos—, que la reparación no toca por debajo de EPS. Una
+        puerta que cambia el capital inicial de esos meses (el pase y su deshacer) los
+        rearma con la fórmula y el resto desaparece; la comparación lo vería como un
+        cambio del pase."""
+        for clave in antes:
+            if clave in sin:
+                continue
+            if clave == "mensual":
+                self.assertEqual(set(despues[clave]), set(antes[clave]), "cambiaron los meses")
+                lejos = {k: (antes[clave][k], despues[clave][k]) for k in antes[clave]
+                         if any(abs(a - b) > 0.01 for a, b in zip(antes[clave][k],
+                                                                   despues[clave][k]))}
+                self.assertEqual(lejos, {}, "cambió «mensual» (antes, después)")
+                continue
+            self.assertEqual(despues[clave], antes[clave], f"cambió «{clave}»")
+
+    def _lotes_del_pase(self, tid):
+        conn = main.get_db()
+        try:
+            reg = conn.execute("SELECT lote_salida, lote_entrada, deshecho_at FROM traspasos_a_mano "
+                               "WHERE id=? AND user_id=?", (tid, self.uid)).fetchone()
+            estados = [conn.execute("SELECT status FROM import_batches WHERE id=?", (x,))
+                       .fetchone()["status"] for x in (reg["lote_salida"], reg["lote_entrada"])]
+            return estados, reg["deshecho_at"]
+        finally:
+            conn.close()
+
+    def _id_broker(self, nombre):
+        conn = main.get_db()
+        try:
+            return conn.execute("SELECT id FROM brokers WHERE user_id=? AND name=?",
+                                (self.uid, nombre)).fetchone()["id"]
+        finally:
+            conn.close()
+
+    def _lote_original(self, broker="Cocos"):
+        """El import de la historia de ese broker (no un lote de pase)."""
+        conn = main.get_db()
+        try:
+            return conn.execute(
+                "SELECT id FROM import_batches WHERE user_id=? AND broker=? AND status='confirmed' "
+                "AND COALESCE(parser_format,'') <> 'traspaso_a_mano' ORDER BY created_at, id",
+                (self.uid, broker)).fetchone()["id"]
+        finally:
+            conn.close()
+
+    def _fila(self, tid, op, lote="lote_salida"):
+        conn = main.get_db()
+        try:
+            return conn.execute(
+                f"SELECT n.id FROM import_normalized_tx n JOIN traspasos_a_mano t "
+                f"ON t.{lote} = n.batch_id WHERE t.id=? AND n.operation_type=? ORDER BY n.id",
+                (tid, op)).fetchone()["id"]
+        finally:
+            conn.close()
+
+
+class DeshacerDejaLaCuentaIdentica(_Deshacer):
+
+    def test_deshacer_deja_la_cuenta_identica(self):
+        """#12, la prueba más importante de la función. Fecha del pase de un mes
+        anterior, un gasto de $5.000 y fotos medidas plantadas entre la fecha y ayer.
+        `estado()` (F.1 entero) antes del pase == después del deshacer; los dos lotes
+        del pase quedan 'reverted' y el registro deshecho. Y lo mismo después del
+        rebuild real, y el segundo click dice que ya se deshizo."""
+        self._historia()
+        self._plantar_fotos()
+        antes = self.estado_completo()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, gasto=5000)
+        tid = p["traspaso_id"]
+        durante = self.estado_completo()
+        self.assertNotEqual(durante["lotes"], antes["lotes"], "control: el pase movió los lotes")
+        self.assertEqual(durante["fotos"], antes["fotos"], "el pase tocó una foto medida")
+        t = self._uno(tid)
+        self.assertEqual({k: t[k] for k in ("estado", "puede_deshacer", "motivo", "aviso",
+                                            "broker_origen", "broker_destino", "asset",
+                                            "cantidad", "moneda", "fecha")},
+                         {"estado": "vivo", "puede_deshacer": True, "motivo": None, "aviso": None,
+                          "broker_origen": "Cocos", "broker_destino": "Balanz", "asset": "NVDA",
+                          "cantidad": 10.0, "moneda": "ARS", "fecha": FECHA_PASE})
+        self.assertAlmostEqual(t["valor_usd"], round(p["V"], 2), places=2)
+        self.assertAlmostEqual(t["costo_usd"], round(p["C"], 2), places=2)
+
+        self.assertEqual(self._deshacer_ok(tid), "Listo: los 10 NVDA volvieron a Cocos.")
+        self._igual(self.estado_completo(), antes)
+        self.assertEqual(self._lotes_del_pase(tid)[0], ["reverted", "reverted"])
+        self.assertIsNotNone(self._lotes_del_pase(tid)[1])
+        self.assertEqual(self._traspasos()["traspasos"], [])
+        self._no_deshace(tid, 409, "Ese pase ya se deshizo.")
+        self._rebuild()
+        self._igual(self.estado_completo(), antes)
+
+    def test_lote_cargado_a_mano_parcial(self):
+        """#12, variante: un lote cargado a mano del que se pasa una parte (y uno viejo,
+        sin `invested`: su costo es precio × cantidad). Vuelven enteros, con su foto."""
+        self._historia()
+        self._broker("IOL")
+        self._lote_a_mano("IOL", "GGAL", 10, 1000, "2025-02-03", notes="compra del aguinaldo")
+        conn = main.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO positions (user_id, broker, asset, quantity, invested, buy_price, "
+                "commissions, entry_date, is_cash, currency, asset_type) VALUES "
+                "(?, 'IOL', 'GGAL', 6, NULL, 1100, 30, '2025-03-03', 0, 'ARS', 'STOCK')",
+                (self.uid,))
+            conn.commit()
+        finally:
+            conn.close()
+        self._plantar_fotos()
+        antes = self.estado_completo()
+        p = self._fabricar_pase("GGAL", "IOL", "Balanz", FECHA_PASE, 1500, cantidad=13)
+        self.assertEqual([(l["origen"], l["parcial"]) for l in p["receta"]["lotes"]],
+                         [("a_mano", False), ("a_mano", True)])
+        self.assertEqual(self._deshacer_ok(p["traspaso_id"]), "Listo: los 13 GGAL volvieron a IOL.")
+        self._igual(self.estado_completo(), antes)
+        # El que salió entero vuelve con su foto: también sus notas.
+        self.assertEqual(self._lote("IOL", "GGAL", "2025-02-03")["notes"], "compra del aguinaldo")
+
+    def test_importados_y_a_mano_con_un_importado_parcial(self):
+        """#12, variante: un lote cargado a mano viejo (2 del 02/01) y el importado (10
+        del 10/01); se pasan 7 (el a mano entero y 5 del importado). A queda a salvo
+        (sólo importados): el deshacer la rearma desde el registro y devuelve el que
+        era a mano con su foto."""
+        self._historia()
+        self._lote_a_mano("Cocos", "NVDA", 2, 28000, "2025-01-02")
+        self._plantar_fotos()
+        antes = self.estado_completo()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=7)
+        self.assertEqual([(l["origen"], l["parcial"]) for l in p["receta"]["lotes"]],
+                         [("a_mano", False), ("importado", True)])
+        partido = p["receta"]["lotes"][1]["lote_id"]
+        self._deshacer_ok(p["traspaso_id"])
+        self._igual(self.estado_completo(), antes)
+        # A quedó a salvo, así que se rearmó desde el registro (C.8 paso 3 a): el lote
+        # importado renace entero, con un id nuevo. Por el vínculo (paso 3 b) habría
+        # vuelto sumándole al mismo id.
+        self.assertNotEqual(self._lote("Cocos", entry_date="2025-01-10")["id"], partido)
+
+    def test_con_un_rebuild_de_a_en_el_medio(self):
+        """#12, variante: entre el pase y el deshacer A se rearma entero (el rebuild
+        real, como el backfill) y tiene una venta posterior de OTRO activo. Los ids de
+        lo que quedó en A cambian: el deshacer no busca por id."""
+        self._historia()
+        self._importar("Cocos", ["2025-07-01,COMPRA,Cocos,AAPL,5,20000,100000,,,0,ARS,compra",
+                                 "2025-08-01,VENTA,Cocos,AAPL,2,25000,50000,,,0,ARS,venta"])
+        self._plantar_fotos()
+        antes = self.estado_completo()
+        ids_antes = {l["id"] for l in self._lotes_ids("Cocos")}
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=6)
+        self._rebuild()
+        self.assertFalse({l["id"] for l in self._lotes_ids("Cocos")} & ids_antes,
+                         "control: el rebuild del medio cambió los ids de A")
+        self._deshacer_ok(p["traspaso_id"])
+        self._igual(self.estado_completo(), antes)
+
+    def _lotes_ids(self, broker):
+        conn = main.get_db()
+        try:
+            return [dict(r) for r in conn.execute(
+                "SELECT id FROM positions WHERE user_id=? AND broker=? AND is_cash=0",
+                (self.uid, broker))]
+        finally:
+            conn.close()
+
+    def test_a_no_reconstruible_vuelve_por_el_vinculo(self):
+        """C.8 paso 3 (b) y `_devolver_al_lote(link=…)`: A tiene además un lote cargado a
+        mano del activo, así que no se puede rearmar. Un pase parcial del importado
+        vuelve sumándole al lote vivo; uno total lo vuelve a crear (con su id) y deja el
+        vínculo de la fila de origen apuntándole: después, revertir el archivo original
+        de A lo saca, sin dejar un lote huérfano."""
+        self._historia()
+        self._lote_a_mano("Cocos", "NVDA", 3, 33000, "2025-03-01")
+        antes = self.estado_completo()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=4)
+        self.assertEqual([(l["origen"], l["parcial"]) for l in p["receta"]["lotes"]],
+                         [("importado", True)])
+        partido = p["receta"]["lotes"][0]["lote_id"]
+        self._deshacer_ok(p["traspaso_id"])
+        self._igual(self.estado_completo(), antes)
+        self.assertEqual(self._lote("Cocos", entry_date="2025-01-10")["id"], partido,
+                         "A no se puede rearmar: el lote vuelve por el vínculo, al mismo id")
+
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=10)
+        lote = p["receta"]["lotes"][0]
+        self.assertEqual((lote["origen"], lote["parcial"]), ("importado", False))
+        self.assertIsNone(self._lote("Cocos", entry_date="2025-01-10"), "control: salió entero")
+        self._deshacer_ok(p["traspaso_id"])
+        self._igual(self.estado_completo(), antes)
+        vuelto = self._lote("Cocos", entry_date="2025-01-10")
+        self.assertEqual(vuelto["id"], lote["lote_id"], "vuelve con su mismo id")
+        fo = lote["fila_origen"]
+        conn = main.get_db()
+        try:
+            self.assertEqual([r["position_id"] for r in conn.execute(
+                "SELECT position_id FROM import_op_links WHERE batch_id=? AND raw_row_id=?",
+                (fo["batch_id"], fo["raw_row_id"]))], [vuelto["id"]])
+        finally:
+            conn.close()
+        r = self.http.post(f"/api/imports/{self._lote_original('Cocos')}/revert", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual([(l[0], l[3]) for l in self._sin_ids("Cocos")], [(3.0, "2025-03-01")],
+                         "revertir el archivo de A dejó un lote huérfano")
+
+    def test_con_el_id_ocupado_el_vinculo_sigue_al_lote_nuevo(self):
+        """`_devolver_al_lote(link=…)`, el borde: si el id del lote que salió entero ya
+        no está libre, vuelve con uno nuevo y el vínculo de su fila de origen (y el lote
+        que el revert del archivo borra) pasa a ese id. Sin eso, revertir el archivo
+        original de A dejaba el lote huérfano. (Los ids no se reusan: se ocupa a mano,
+        con un lote de otra cuenta.)"""
+        self._historia()
+        self._lote_a_mano("Cocos", "NVDA", 3, 33000, "2025-03-01")
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=10)
+        lote = p["receta"]["lotes"][0]
+        conn = main.get_db()
+        try:
+            otro = conn.execute(
+                "INSERT INTO users (email, password_hash, approved, tier) VALUES (?, 'x', 1, 'plus')",
+                (f"ocupa-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?, 'X', 'USD')",
+                         (otro,))
+            conn.execute("INSERT INTO positions (id, user_id, broker, asset, is_cash, quantity, "
+                         "invested, buy_price) VALUES (?, ?, 'X', 'ZZZ', 0, 1, 1, 1)",
+                         (lote["lote_id"], otro))
+            conn.commit()
+        finally:
+            conn.close()
+        self._deshacer_ok(p["traspaso_id"])
+        vuelto = self._lote("Cocos", entry_date="2025-01-10")
+        self.assertNotEqual(vuelto["id"], lote["lote_id"])
+        fo = lote["fila_origen"]
+        conn = main.get_db()
+        try:
+            self.assertEqual([r["position_id"] for r in conn.execute(
+                "SELECT position_id FROM import_op_links WHERE batch_id=? AND raw_row_id=?",
+                (fo["batch_id"], fo["raw_row_id"]))], [vuelto["id"]])
+        finally:
+            conn.close()
+        r = self.http.post(f"/api/imports/{self._lote_original('Cocos')}/revert", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual([(l[0], l[3]) for l in self._sin_ids("Cocos")], [(3.0, "2025-03-01")])
+
+    def test_gasto_vuelve_a_la_caja(self):
+        """#8, el deshacer: el gasto (US$ 5) vuelve a la caja de A y el realizado de A
+        deja de llevarlo; la identidad vuelve a ser la de antes del pase."""
+        self._broker("IBKR", "USD")
+        self._broker("Schwab", "USD")
+        self._importar("IBKR", ["2025-01-05,DEPOSITO,IBKR,,,,1000,,,,USD,dep",
+                                "2025-01-10,COMPRA,IBKR,MSFT,2,300,600,,,1,USD,compra"])
+        antes = self.estado()
+        p = self._aplicar(self._pedido("MSFT", "IBKR", "Schwab", FECHA_PASE, moneda="USD",
+                                       precio_manual=420, gasto={"monto": 5, "moneda": "USD"}))
+        self.assertEqual(self.estado()["caja"]["IBKR"], 394.0)
+        self._deshacer_ok(p["traspaso_id"])
+        despues = self.estado()
+        self.assertEqual(despues["caja"]["IBKR"], 399.0)
+        self.assertEqual({k: v for k, v in despues.items() if k != "mensual"},
+                         {k: v for k, v in antes.items() if k != "mensual"})
+        for k, v in antes["mensual"].items():
+            if k[0] in ("IBKR", "global"):
+                self.assertEqual(despues["mensual"][k], v, k)
+        for k, v in despues["mensual"].items():
+            if k[0] == "Schwab":
+                self.assertEqual(v, (0.0, 0.0, 0.0, 0.0), f"Schwab sin el pase {k}")
+
+    def test_precio_cargado_vuelve(self):
+        """C.8 paso 5 y el precio de A: el precio cargado a mano viajó a B (que no tenía
+        uno); al deshacer, B vuelve a no tenerlo y A lo recupera aunque el pase se haya
+        llevado todos sus lotes."""
+        self._historia()
+        # Balanz tiene su propio NVDA, sin precio cargado: el pase se lo pone (C.7.8).
+        self._importar("Balanz", ["2025-03-01,COMPRA,Balanz,NVDA,3,35000,105000,,,0,ARS,compra"])
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE positions SET price_override=46000 WHERE user_id=? "
+                         "AND broker='Cocos' AND asset='NVDA' AND is_cash=0", (self.uid,))
+            conn.commit()
+        finally:
+            conn.close()
+        p = self._aplicar(self._pedido("NVDA", "Cocos", "Balanz", main._iso_today()))
+        self.assertEqual(p["receta"]["precio_cargado_en_destino"]["brokers_destino"], ["Balanz"])
+        self._deshacer_ok(p["traspaso_id"])
+        conn = main.get_db()
+        try:
+            precios = sorted((r["broker"], r["price_override"]) for r in conn.execute(
+                "SELECT broker, price_override FROM positions WHERE user_id=? AND asset='NVDA' "
+                "AND is_cash=0", (self.uid,)))
+        finally:
+            conn.close()
+        self.assertEqual(precios, [("Balanz", None), ("Cocos", 46000.0)])
+
+    def test_cuenta_manual_deshacer_no_borra_fotos(self):
+        """#46 (la parte del deshacer, por HTTP): una cuenta 100 % cargada a mano hace un
+        pase y lo deshace; la cuenta no pasa a reconstruible y las fotos del cron
+        quedan intactas."""
+        self._broker("IBKR", "USD")
+        self._broker("Schwab", "USD")
+        self._lote_a_mano("IBKR", "MSFT", 5, 300, "2025-02-01", moneda="USD")
+        self._plantar_fotos()
+        antes = self.estado_completo()
+        p = self._aplicar(self._pedido("MSFT", "IBKR", "Schwab", "2025-06-10", moneda="USD",
+                                       precio_manual=380))
+        self._deshacer_ok(p["traspaso_id"])
+        conn = main.get_db()
+        try:
+            self.assertIsNone(conn.execute(bf._HAY_IMPORT_RECONSTRUIBLE, (self.uid,)).fetchone())
+        finally:
+            conn.close()
+        despues = self.estado_completo()
+        self.assertEqual(despues["fotos"], antes["fotos"])
+        self.assertEqual(despues["lotes"], antes["lotes"])
+        self.assertEqual(despues["caja"], antes["caja"])
+
+
+class DeshacerBloqueado(_Deshacer):
+
+    def test_deshacer_bloqueado_si_b_vendio_o_lo_paso(self):
+        """#13. Una venta en B de lo que llegó → 409 «vendiste»; borrar la venta → se
+        deshace. Un pase posterior B → IOL → deshacer A → B da 409 «los pasaste a IOL»;
+        deshecho ése, el primero se deshace."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        tid = p["traspaso_id"]
+        r = self.http.post("/api/positions/sell", headers=self.h, json={
+            "broker": "Balanz", "asset": "NVDA", "quantity": 3, "exit_price": 50000,
+            "date": "2025-07-01", "currency": "ARS"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        texto = ("Los NVDA que llegaron a Balanz ya no están como llegaron: vendiste 3 de los "
+                 "10. Para deshacer el pase, primero borrá esa venta.")
+        self._no_deshace(tid, 409, texto)
+        t = self._uno(tid)
+        self.assertEqual((t["puede_deshacer"], t["motivo"]), (False, texto))
+        conn = main.get_db()
+        try:
+            oid = conn.execute("SELECT id FROM operations WHERE user_id=? AND op_type='Venta' "
+                               "ORDER BY id DESC", (self.uid,)).fetchone()["id"]
+        finally:
+            conn.close()
+        r = self.http.delete(f"/api/operations/{oid}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self._deshacer_ok(tid)
+
+        self._broker("IOL")
+        p1 = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        p2 = self._fabricar_pase("NVDA", "Balanz", "IOL", "2025-08-01", PRECIO_PASE)
+        self._no_deshace(p1["traspaso_id"], 409,
+                         "Los NVDA que llegaron a Balanz los pasaste a IOL el 01/08. Deshacé "
+                         "primero ese pase.")
+        self._deshacer_ok(p2["traspaso_id"])
+        self._deshacer_ok(p1["traspaso_id"])
+        self.assertEqual(self._sin_ids("Balanz") + self._sin_ids("IOL"), [])
+        self.assertEqual([l[0] for l in self._sin_ids("Cocos")], [10.0])
+
+    def test_deshacer_bloqueado_si_a_vendio_despues(self):
+        """#14. Una venta en A posterior al pase → 409; borrarla → se deshace. Un pase
+        posterior A → IOL → 409 «deshacé primero ese pase». Y una venta en A del MISMO
+        día del pase, anotada antes, no frena (ya estaba)."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=6)
+        r = self.http.post("/api/positions/sell", headers=self.h, json={
+            "broker": "Cocos", "asset": "NVDA", "quantity": 2, "exit_price": 50000,
+            "date": "2025-07-01", "currency": "ARS"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self._no_deshace(p["traspaso_id"], 409,
+                         "Después de este pase vendiste NVDA en Cocos el 01/07. Para deshacerlo, "
+                         "primero borrá esa venta.")
+        conn = main.get_db()
+        try:
+            oid = conn.execute("SELECT id FROM operations WHERE user_id=? AND op_type='Venta' "
+                               "ORDER BY id DESC", (self.uid,)).fetchone()["id"]
+        finally:
+            conn.close()
+        self.assertEqual(self.http.delete(f"/api/operations/{oid}", headers=self.h).status_code, 200)
+        self._esperar_reconstruccion()
+        self._deshacer_ok(p["traspaso_id"])
+
+        self._broker("IOL")
+        p1 = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=6)
+        p2 = self._fabricar_pase("NVDA", "Cocos", "IOL", "2025-08-01", PRECIO_PASE)
+        self._no_deshace(p1["traspaso_id"], 409,
+                         "Después de este pase pasaste NVDA de Cocos a IOL el 01/08. Deshacé "
+                         "primero ese pase.")
+        self._deshacer_ok(p2["traspaso_id"])
+        self._deshacer_ok(p1["traspaso_id"])
+
+        # La venta del mismo día, anotada ANTES del pase: ya estaba, no frena.
+        r = self.http.post("/api/positions/sell", headers=self.h, json={
+            "broker": "Cocos", "asset": "NVDA", "quantity": 1, "exit_price": 50000,
+            "date": FECHA_PASE, "currency": "ARS"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=4)
+        self.assertTrue(self._uno(p["traspaso_id"])["puede_deshacer"])
+        self._deshacer_ok(p["traspaso_id"])
+        self.assertEqual(sum(l[0] for l in self._sin_ids("Cocos")), 9.0)
+
+    def test_idor_y_un_pase_que_no_existe(self):
+        """#30, la parte del deshacer: el pase de otra cuenta da el mismo 404 que uno que
+        no existe, y GET /traspasos sólo trae los propios."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        conn = main.get_db()
+        try:
+            otro = conn.execute(
+                "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'x', 1, 1, 'plus')", (f"otro-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+        h2 = {"Authorization": f"Bearer {main.create_token(otro)}"}
+        r = self._deshacer(p["traspaso_id"], headers=h2)
+        self.assertEqual((r.status_code, r.json()["detail"]), (404, "No encontramos ese pase."))
+        self.assertEqual(self._traspasos(headers=h2)["traspasos"], [])
+        self._no_deshace("no-existe", 404, "No encontramos ese pase.")
+        self.assertEqual(self._lotes_del_pase(p["traspaso_id"])[0], ["confirmed", "confirmed"])
+
+
+class InterruptorYEstados(_Deshacer):
+
+    def test_deshacer_anda_con_el_interruptor_apagado(self):
+        """B.4 y G.3: apagar el interruptor frena pases nuevos (y GET dice
+        `habilitado: false`), pero los hechos se siguen viendo y deshaciendo. Es lo que
+        hay que hacer antes de volver atrás un deploy."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        self.assertTrue(self._traspasos()["habilitado"])
+        self._interruptor(False)
+        t = self._traspasos()
+        self.assertFalse(t["habilitado"])
+        self.assertEqual([x["id"] for x in t["traspasos"]], [p["traspaso_id"]])
+        self.assertEqual(self._vista(self._pedido("NVDA", "Balanz", "Cocos", FECHA_PASE,
+                                                  precio_manual=PRECIO_PASE)).status_code, 403)
+        self._deshacer_ok(p["traspaso_id"])
+
+    def test_desfasado_se_ve_y_se_deshace(self):
+        """B.5: un pase marcado desfasado (el detector es de E10; acá se marca a mano)
+        dice `desfasado` con el aviso, y se deshace igual."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE traspasos_a_mano SET desfasado_at=datetime('now'), "
+                         "desfasado_motivo='origen' WHERE id=?", (p["traspaso_id"],))
+            conn.commit()
+        finally:
+            conn.close()
+        t = self._uno(p["traspaso_id"])
+        self.assertEqual((t["estado"], t["aviso"], t["puede_deshacer"]),
+                         ("desfasado", "Cambió la historia de Cocos y este pase quedó "
+                                       "desactualizado: deshacelo y hacelo de nuevo.", True))
+        self._deshacer_ok(p["traspaso_id"])
+
+
+class OtrasPuertas(_Deshacer):
+
+    def test_no_se_desarma_por_otras_puertas(self):
+        """#20. Mientras el pase está vivo, ninguna otra puerta lo desarma: cada una
+        frena con su texto y la cuenta queda igual. Al final el deshacer deja la cuenta
+        como antes del pase."""
+        self._historia()
+        self._lote_a_mano("Cocos", "NVDA", 2, 28000, "2025-01-02")
+        # Una edición de grupo ANTES del pase (con su deshacer guardado).
+        r = self.http.patch("/api/positions/group", headers=self.h, json={
+            "broker": "Cocos", "asset": "NVDA", "tc_mode": "fixed", "tc_value": 998})
+        self.assertEqual(r.status_code, 200, r.text)
+        tok = r.json()
+        self._esperar_reconstruccion()
+        antes = self.estado_completo()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=7,
+                                gasto=2000)
+        tid = p["traspaso_id"]
+        durante = self.estado_completo()
+        a_mano, importado = p["receta"]["lotes"]
+        self.assertEqual((a_mano["origen"], importado["origen"], importado["parcial"]),
+                         ("a_mano", "importado", True))
+        original = self._lote_original("Cocos")
+        lote_b = self._lote("Balanz", entry_date="2025-01-10")
+
+        def frena(r, status, texto=None, contiene=None):
+            self.assertEqual(r.status_code, status, r.text)
+            if texto is not None:
+                self.assertEqual(r.json()["detail"], texto)
+            if contiene is not None:
+                self.assertIn(contiene, r.json()["detail"])
+            self._esperar_reconstruccion()
+            self._igual(self.estado_completo(), durante)
+
+        for lote in (p["lote_salida"], p["lote_entrada"]):
+            frena(self.http.post(f"/api/imports/{lote}/revert", headers=self.h), 400,
+                  MSG_REVERT_ES_PASE)
+            frena(self.http.post(f"/api/imports/{lote}/redo", headers=self.h), 400,
+                  MSG_REVERT_ES_PASE)
+        for op, lote in (("SELL", "lote_salida"), ("TRASPASO_SALIDA", "lote_salida"),
+                         ("FEE", "lote_salida"), ("BUY", "lote_entrada"),
+                         ("TRASPASO_ENTRADA", "lote_entrada")):
+            frena(self.http.delete(f"/api/movements/tx-{self._fila(tid, op, lote)}",
+                                   headers=self.h), 409, MSG_DESHACE_EL_PASE)
+        frena(self.http.delete(f"/api/positions/{lote_b['id']}", headers=self.h), 409,
+              MSG_DESHACE_EL_PASE)
+        # Lo que queda en A del lote importado partido: por Cartera (el lote) y por
+        # Movimientos (su compra).
+        frena(self.http.delete(f"/api/positions/{importado['lote_id']}", headers=self.h), 409,
+              traspaso_a_mano.MSG_LOTE_PASADO)
+        conn = main.get_db()
+        try:
+            compra = conn.execute(
+                "SELECT id FROM import_normalized_tx WHERE batch_id=? AND raw_row_id=?",
+                (importado["fila_origen"]["batch_id"],
+                 importado["fila_origen"]["raw_row_id"])).fetchone()["id"]
+        finally:
+            conn.close()
+        frena(self.http.delete(f"/api/movements/tx-{compra}", headers=self.h), 409,
+              "Parte de esta compra se pasó a Balanz el 16/06. Para borrarla, primero deshacé "
+              "ese pase.")
+        frena(self.http.delete("/api/assets/history", params={"asset": "NVDA"}, headers=self.h),
+              409, traspaso_a_mano.MSG_ACTIVO_CON_PASE)
+        origen = ("Hay títulos de esta importación que pasaste a Balanz el 16/06/2025. "
+                  "Deshacé ese pase antes de revertir el archivo.")
+        frena(self.http.post(f"/api/imports/{original}/revert", headers=self.h), 400, origen)
+        frena(self.http.post(f"/api/imports/{original}/redo", headers=self.h), 400,
+              contiene=origen)
+        for cambio in ({"new_asset": "NVDA2"}, {"new_asset_type": "STOCK"}):
+            frena(self.http.patch("/api/positions/group", headers=self.h,
+                                  json={"broker": "Cocos", "asset": "NVDA", **cambio}),
+                  409, traspaso_a_mano.MSG_EDITAR_ACTIVO_CON_PASE)
+            frena(self.http.patch("/api/positions/group", headers=self.h,
+                                  json={"broker": "Balanz", "asset": "NVDA", **cambio}),
+                  409, traspaso_a_mano.MSG_EDITAR_ACTIVO_CON_PASE)
+        # La edición de grupo hecha ANTES del pase no se deshace después (D.10.15).
+        frena(self.http.post(f"/api/positions/group/undo/{tok['undo_token']}", headers=self.h),
+              409, traspaso_a_mano.MSG_EDITAR_ACTIVO_CON_PASE)
+        frena(self.http.post("/api/imports/wipe-broker", params={"broker": "Cocos"},
+                             headers=self.h), 409, traspaso_a_mano.MSG_LIMPIAR_CON_PASE)
+        frena(self.http.post("/api/imports/wipe-broker", params={"broker": "Balanz"},
+                             headers=self.h), 409, traspaso_a_mano.MSG_LIMPIAR_CON_PASE)
+
+        self._deshacer_ok(tid)
+        self._igual(self.estado_completo(), antes)
+        # Deshecho el pase, la edición de antes se deshace y las puertas vuelven a andar.
+        r = self.http.post(f"/api/positions/group/undo/{tok['undo_token']}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_cambios_anteriores_al_pase_frenan_en_las_puertas_de_borrado(self):
+        """C.11 en las puertas de E7 (#21, la parte que no es del importador): borrar
+        una venta importada de A anterior al pase (o del mismo día) → 409; deshacer el
+        borrado de una compra de A más vieja que lo que se movió, hecho antes del pase →
+        409. Deshecho el pase, las dos puertas vuelven a andar."""
+        self._importar("Cocos", [
+            "2025-01-05,DEPOSITO,Cocos,,,,900000,,,,ARS,dep",
+            "2025-01-08,COMPRA,Cocos,NVDA,2,29000,58000,,,0,ARS,compra",
+            "2025-01-10,COMPRA,Cocos,NVDA,10,30000,300000,,,0,ARS,compra"])
+
+        def tx(op, fecha):
+            conn = main.get_db()
+            try:
+                return conn.execute(
+                    "SELECT n.id FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id "
+                    "WHERE b.user_id=? AND n.operation_type=? AND n.date=?",
+                    (self.uid, op, fecha)).fetchone()["id"]
+            finally:
+                conn.close()
+        # Borrada ANTES del pase (con su deshacer guardado): la compra del 08/01, más
+        # vieja que lo que después se mueve.
+        r = self.http.delete(f"/api/movements/tx-{tx('BUY', '2025-01-08')}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        token = r.json()["undo_token"]
+        self._esperar_reconstruccion()
+        self._importar("Cocos", ["2025-03-10,VENTA,Cocos,NVDA,1,35000,35000,,,0,ARS,venta",
+                                 "2025-09-10,VENTA,Cocos,NVDA,1,36000,36000,,,0,ARS,venta"])
+        venta_mar, venta_sep = tx("SELL", "2025-03-10"), tx("SELL", "2025-09-10")
+        # Con la fecha del 16/06 la venta de septiembre quedaría después y frenaría el
+        # pase (#15): va el 10/09, el mismo día.
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", "2025-09-10", PRECIO_PASE, cantidad=6)
+        cambia = ("Esto cambia la historia de NVDA en Cocos antes de tu pase del 10/09/2025 a "
+                  "Balanz, y el pase quedaría con otros lotes. Primero deshacé el pase "
+                  "(Movimientos → la fila «Pase» → Deshacer), hacé este cambio y después volvé "
+                  "a moverlos.")
+        r = self.http.delete(f"/api/movements/tx-{venta_mar}", headers=self.h)
+        self.assertEqual((r.status_code, r.json()["detail"]), (409, cambia))
+        r = self.http.post(f"/api/operations/undo/{token}", headers=self.h)
+        self.assertEqual((r.status_code, r.json()["detail"]), (409, cambia))
+        # La del mismo día del pase también es «antes» (la consumió primero).
+        r = self.http.delete(f"/api/movements/tx-{venta_sep}", headers=self.h)
+        self.assertEqual((r.status_code, r.json()["detail"]), (409, cambia))
+        self._deshacer_ok(p["traspaso_id"])
+        r = self.http.post(f"/api/operations/undo/{token}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+
+
+class DeshacerUnBorradoDeHistorial(_Deshacer):
+
+    def test_deshacer_el_borrado_del_historial_anterior_al_pase_frena(self):
+        """C.11 en el deshacer del borrado del historial de un activo (la misma regla
+        que D.10.11): se borró el historial importado de NVDA en Cocos (la compra del
+        10/01), después se cargó a mano un lote del 01/02 y se lo pasó a Balanz. Deshacer
+        el borrado devolvería una compra más vieja que lo que se movió: el pase habría
+        consumido otra cosa. Frena; deshecho el pase, anda."""
+        self._historia()
+        r = self.http.delete("/api/assets/history", params={"asset": "NVDA"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        token = r.json()["undo_token"]
+        self._esperar_reconstruccion()
+        self._lote_a_mano("Cocos", "NVDA", 2, 31000, "2025-02-01")
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        r = self.http.post(f"/api/assets/undo/{token}", headers=self.h)
+        self.assertEqual((r.status_code, r.json()["detail"]), (409,
+                         "Esto cambia la historia de NVDA en Cocos antes de tu pase del "
+                         "16/06/2025 a Balanz, y el pase quedaría con otros lotes. Primero "
+                         "deshacé el pase (Movimientos → la fila «Pase» → Deshacer), hacé este "
+                         "cambio y después volvé a moverlos."))
+        cambia = r.json()["detail"]
+        self._deshacer_ok(p["traspaso_id"])
+        # Deshecho el pase, la regla del pase ya no frena. (Frena la de siempre: con el
+        # lote cargado a mano de vuelta, deshacer el borrado se lo llevaría.)
+        r = self.http.post(f"/api/assets/undo/{token}", headers=self.h)
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertNotEqual(r.json()["detail"], cambia)
+        self.assertIn("cargadas a mano", r.json()["detail"])
+
+
+class BorrarUnLadoYDeshacer(_Deshacer):
+
+    def test_borrar_a_y_deshacer_lo_que_queda(self):
+        """#22. Borrar Cocos (A) pide confirmación con `counts.traspasos`; con
+        `?force=true`, el global del mes ve sólo la pata de B (aportes + V, realizado −(V
+        − C)); GET dice `incompleto`; deshacer saca los títulos de B y el global queda
+        sin la pata."""
+        self._historia()
+        antes = self._mensual()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        V, C = p["V"], p["C"]
+        r = self.http.delete(f"/api/brokers/{self._id_broker('Cocos')}", headers=self.h)
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertEqual(r.json()["detail"]["counts"]["traspasos"], 1)
+        r = self.http.delete(f"/api/brokers/{self._id_broker('Cocos')}", params={"force": "true"},
+                             headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        m = self._mensual()
+        jun = ("global", 2025, 6)
+        self.assertAlmostEqual(m[jun]["deposits"], antes[("Balanz", 2025, 6)]["deposits"] + V,
+                               places=4)
+        self.assertAlmostEqual(m[jun]["pnl_realized"], -(V - C), places=4)
+        t = self._uno(p["traspaso_id"])
+        self.assertEqual((t["estado"], t["puede_deshacer"], t["broker_origen"]),
+                         ("incompleto", True, "Cocos"))
+        self.assertEqual(self._deshacer_ok(p["traspaso_id"]), "Listo: los 10 NVDA salieron de Balanz.")
+        self.assertEqual(self._sin_ids("Balanz"), [])
+        m = self._mensual()
+        self.assertAlmostEqual(m[jun]["deposits"], antes[("Balanz", 2025, 6)]["deposits"], places=4)
+        self.assertAlmostEqual(m[jun]["pnl_realized"], 0.0, places=4)
+        self.assertIsNotNone(self._lotes_del_pase(p["traspaso_id"])[1])
+        self.assertEqual(self._traspasos()["traspasos"], [])
+
+    def test_borrar_b_y_deshacer_lo_que_queda(self):
+        """#23. El caso simétrico: se borra Balanz (B) y el deshacer devuelve los títulos
+        a Cocos con su costo, y el gasto a la caja."""
+        self._historia()
+        lotes_antes = self._sin_ids("Cocos")
+        caja_antes = self.estado()["caja"]["Cocos"]
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, gasto=3000)
+        r = self.http.delete(f"/api/brokers/{self._id_broker('Balanz')}", params={"force": "true"},
+                             headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual(self._uno(p["traspaso_id"])["estado"], "incompleto")
+        self.assertEqual(self._deshacer_ok(p["traspaso_id"]),
+                         "Listo: Balanz ya no existe, así que los 10 NVDA volvieron a Cocos.")
+        self.assertEqual(self._sin_ids("Cocos"), lotes_antes)
+        self.assertEqual(self.estado()["caja"]["Cocos"], caja_antes)
+        m = self._mensual()
+        self.assertAlmostEqual(m[("Cocos", 2025, 6)]["withdrawals"],
+                               m[("global", 2025, 6)]["withdrawals"], places=4)
+        self.assertAlmostEqual(m[("global", 2025, 6)]["pnl_realized"], 0.0, places=4)
+
+    def test_la_cuenta_en_dolares_sola_no_se_borra_con_un_pase_vivo(self):
+        """La «B · USD» que creó el pase, sola: su lado del pase es de la cuenta (la
+        raíz), así que borrarla no lo revertiría. Frena (aun con `force`) hasta
+        deshacer el pase; la cuenta entera sí se puede borrar (#22)."""
+        self._broker("Cocos · USD", "USDT", padre="Cocos")
+        self._lote_a_mano("Cocos", "NVDA", 3, 15.0, "2025-01-20", moneda="USD")
+        p = self._aplicar(self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, moneda="USD",
+                                       precio_manual=PRECIO_PASE))
+        self.assertEqual(p["receta"]["brokers_usd_creados"], ["Balanz · USD"])
+        r = self.http.delete(f"/api/brokers/{self._id_broker('Balanz · USD')}",
+                             params={"force": "true"}, headers=self.h)
+        self.assertEqual((r.status_code, r.json()["detail"]),
+                         (409, traspaso_a_mano.MSG_BORRAR_PATA_CON_PASE.format(nombre="Balanz · USD")))
+        self.assertEqual([l[0] for l in self._sin_ids("Balanz · USD")], [3.0])
+        self._deshacer_ok(p["traspaso_id"])
+        r = self.http.delete(f"/api/brokers/{self._id_broker('Balanz · USD')}",
+                             params={"force": "true"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_borrar_los_dos_y_deshacer(self):
+        """Los dos brokers borrados: el pase queda «incompleto» sin ningún lado vivo y el
+        deshacer sólo lo marca deshecho (no hay títulos que mover)."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        for b in ("Cocos", "Balanz"):
+            r = self.http.delete(f"/api/brokers/{self._id_broker(b)}", params={"force": "true"},
+                                 headers=self.h)
+            self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual(self._uno(p["traspaso_id"])["estado"], "incompleto")
+        self.assertEqual(self._deshacer_ok(p["traspaso_id"]),
+                         "Listo: Cocos y Balanz ya no existen, así que no había títulos que "
+                         "mover. El pase quedó deshecho.")
+        self.assertEqual(self._traspasos()["traspasos"], [])
+
+    def test_limpiar_broker_con_pase_vivo_frena(self):
+        """#24: «Limpiar broker» (`POST /api/imports/wipe-broker`) frena en los dos lados
+        y no toca nada."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        antes = self._tablas()
+        for b in ("Cocos", "Balanz"):
+            r = self.http.post("/api/imports/wipe-broker", params={"broker": b}, headers=self.h)
+            self.assertEqual((r.status_code, r.json()["detail"]),
+                             (409, traspaso_a_mano.MSG_LIMPIAR_CON_PASE))
+        self.assertEqual(self._tablas(), antes)
+        self._deshacer_ok(p["traspaso_id"])
+        r = self.http.post("/api/imports/wipe-broker", params={"broker": "Balanz"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_renombrar_a_y_b_y_deshacer(self):
+        """#25. Renombrar Cocos y Balanz (con la «Balanz · USD» que creó el pase): la
+        receta queda con los nombres nuevos (también `brokers_usd_creados`), GET dice
+        los nombres de hoy y el deshacer devuelve los títulos a la A renombrada."""
+        self._broker("Cocos · USD", "USDT", padre="Cocos")
+        self._lote_a_mano("Cocos", "NVDA", 3, 15.0, "2025-01-20", moneda="USD")
+        antes = self._sin_ids("Cocos · USD")
+        p = self._aplicar(self._pedido("NVDA", "Cocos", "Balanz", FECHA_PASE, moneda="USD",
+                                       precio_manual=PRECIO_PASE, gasto={"monto": 1, "moneda": "USD"}))
+        for viejo, nuevo in (("Cocos", "Cocos Capital"), ("Balanz", "Balanz SA")):
+            r = self.http.put(f"/api/brokers/{self._id_broker(viejo)}", headers=self.h,
+                              json={"name": nuevo, "currency": "ARS"})
+            self.assertEqual(r.status_code, 200, r.text)
+        receta = self._pase_escrito(p["traspaso_id"])["receta"]
+        self.assertEqual((receta["broker_origen"], receta["broker_destino"],
+                          receta["brokers_usd_creados"], receta["gasto"]["broker"],
+                          [(l["broker"], l["broker_destino"]) for l in receta["lotes"]]),
+                         ("Cocos Capital", "Balanz SA", ["Balanz SA · USD"], "Cocos Capital · USD",
+                          [("Cocos Capital · USD", "Balanz SA · USD")]))
+        t = self._uno(p["traspaso_id"])
+        self.assertEqual((t["broker_origen"], t["broker_destino"]), ("Cocos Capital", "Balanz SA"))
+        self.assertEqual(self._deshacer_ok(p["traspaso_id"]),
+                         "Listo: los 3 NVDA volvieron a Cocos Capital.")
+        self.assertEqual(self._sin_ids("Cocos Capital · USD"), antes)
+        self.assertEqual(self._sin_ids("Balanz SA · USD"), [])
+
+    def test_put_con_otro_broker_bloqueado(self):
+        """#26 (D.19): `PUT /api/positions/{id}` con otro broker da 409, para un lote
+        importado y para uno cargado a mano; editarlo sin cambiar el broker sigue en 200."""
+        self._historia()
+        self._lote_a_mano("Cocos", "GGAL", 10, 1000, "2025-02-03")
+        for lote in (self._lote("Cocos", "NVDA"), self._lote("Cocos", "GGAL")):
+            body = {"broker": "Balanz", "asset": lote["asset"], "quantity": lote["quantity"],
+                    "buy_price": lote["buy_price"], "invested": lote["invested"],
+                    "commissions": lote["commissions"], "entry_date": lote["entry_date"][:10],
+                    "currency": lote["currency"], "asset_type": lote["asset_type"]}
+            r = self.http.put(f"/api/positions/{lote['id']}", json=body, headers=self.h)
+            self.assertEqual((r.status_code, r.json()["detail"]),
+                             (409, traspaso_a_mano.MSG_PUT_OTRO_BROKER))
+            self.assertEqual(self._lote(None, lote["asset"], lote["entry_date"][:10])["broker"],
+                             "Cocos")
+        self._editar(self._lote("Cocos", "GGAL"), notes="corregido")
+
+
+class VentaAManoAntesDeLaLlegada(_Deshacer):
+
+    def test_venta_a_mano_no_consume_lo_que_llego_despues(self):
+        """Hueco C4 de la revisión: en B, una venta a mano fechada ANTES de que llegaran
+        los títulos del pase no los consume (no estaban). Si lo propio de B alcanza,
+        consume eso; si no, 409 con la fecha. Después de la llegada, consume primero lo
+        más viejo (lo que llegó), como siempre."""
+        self._historia()
+        self._importar("Balanz", ["2025-03-01,COMPRA,Balanz,NVDA,3,35000,105000,,,0,ARS,compra"])
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+
+        def vender(q, fecha):
+            return self.http.post("/api/positions/sell", headers=self.h, json={
+                "broker": "Balanz", "asset": "NVDA", "quantity": q, "exit_price": 50000,
+                "date": fecha, "currency": "ARS"})
+        r = vender(5, "2025-05-01")
+        self.assertEqual((r.status_code, r.json()["detail"]), (409,
+                         "El 01/05/2025 todavía no tenías en Balanz todos estos NVDA: 10 llegaron "
+                         "desde otro broker tuyo el 16/06/2025. Elegí una fecha del 16/06/2025 en "
+                         "adelante o vendé hasta 3."))
+        r = vender(2, "2025-05-01")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual([(l[0], l[3]) for l in self._sin_ids("Balanz")],
+                         [(10.0, "2025-01-10"), (1.0, "2025-03-01")])
+        self.assertTrue(self._uno(p["traspaso_id"])["puede_deshacer"],
+                        "la venta de antes de la llegada no tocó lo que llegó")
+        r = vender(1, "2025-07-01")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual([(l[0], l[3]) for l in self._sin_ids("Balanz")],
+                         [(9.0, "2025-01-10"), (1.0, "2025-03-01")])
+
+
+class AsesorGrupal(_Deshacer):
+
+    def test_deshacer_grupal_del_asesor_saltea_el_lote_pasado(self):
+        """D.10.6 (#20): la compra que un asesor cargó en grupo y el cliente pasó (en
+        parte) a otro broker no se borra con el deshacer del grupo: queda salteada con
+        el motivo y el lote del grupo sin deshacer. Deshecho el pase, el lote vuelve con
+        su mismo id y el asesor puede reintentar."""
+        conn = main.get_db()
+        try:
+            tag = uuid.uuid4().hex[:8]
+            asesor = conn.execute("INSERT INTO users (email, password_hash, approved, tier) "
+                                  "VALUES (?, 'x', 1, 'advisor')", (f"asesor-{tag}@rendi.test",)).lastrowid
+            conn.execute("INSERT INTO advisor_clients (advisor_uid, client_uid, link_type, "
+                         "permission, status, label) VALUES (?,?,'managed','read_write','active','Yo')",
+                         (asesor, self.uid))
+            conn.commit()
+        finally:
+            conn.close()
+
+        def limpiar():
+            k = main.get_db()
+            try:
+                k.execute("DELETE FROM advisor_op_batch_items WHERE batch_id IN "
+                          "(SELECT id FROM advisor_op_batches WHERE advisor_uid=?)", (asesor,))
+                k.execute("DELETE FROM advisor_op_batches WHERE advisor_uid=?", (asesor,))
+                k.execute("DELETE FROM advisor_clients WHERE advisor_uid=?", (asesor,))
+                k.commit()
+            finally:
+                k.close()
+        self.addCleanup(limpiar)
+        ha = {"Authorization": f"Bearer {main.create_token(asesor)}"}
+        self._historia()
+        r = self.http.post("/api/advisor/group-op", headers=ha, json={
+            "asset": "GGAL", "currency": "ARS", "entry_date": "2025-02-03",
+            "rows": [{"client_uid": self.uid, "broker": "Cocos", "quantity": 10,
+                      "buy_price": 1000}]})
+        self.assertEqual(r.status_code, 200, r.text)
+        lote_grupal = r.json()["batch_id"]
+        self._esperar_reconstruccion()
+        pid = self._lote("Cocos", "GGAL")["id"]
+        p = self._fabricar_pase("GGAL", "Cocos", "Balanz", FECHA_PASE, 1500, cantidad=4)
+        r = self.http.post(f"/api/advisor/group-op/{lote_grupal}/undo", headers=ha)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["undone"], r.json()["fully_undone"]), ([], False))
+        self.assertEqual(r.json()["skipped"], [{"client_uid": self.uid,
+                                                "reason": traspaso_a_mano.MOTIVO_ASESOR}])
+        self.assertEqual(self._lote("Cocos", "GGAL")["quantity"], 6.0)
+        self._deshacer_ok(p["traspaso_id"])
+        self.assertEqual(self._lote("Cocos", "GGAL")["id"], pid)
+        r = self.http.post(f"/api/advisor/group-op/{lote_grupal}/undo", headers=ha)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["fully_undone"])
+        self.assertIsNone(self._lote("Cocos", "GGAL"))
+
+
+class PaseQueCambia(_Deshacer):
+
+    def test_la_regla_unica_de_lo_que_cambia_un_pase(self):
+        """C.11, `pase_que_cambia`, sobre un pase real (Cocos → Balanz el 16/06, se mueve
+        el lote comprado el 10/01). Lado A: una compra del día del pase o antes y no
+        más nueva que lo movido, o una venta del día del pase o antes. Lado B: una venta
+        anterior al pase. Lo demás no: compras de A posteriores o más nuevas que lo
+        movido, ventas posteriores, compras de B, otro activo, las filas del propio pase
+        y un pase excluido."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        tid = p["traspaso_id"]
+        conn = main.get_db()
+        try:
+            def cambia(broker, op, fecha, fecha_compra=None, asset="NVDA", traspaso_id=None,
+                       excluir=None):
+                r = traspaso_a_mano.pase_que_cambia(
+                    conn, self.uid, [{"broker": broker, "asset": asset, "op": op, "date": fecha,
+                                      "fecha_compra": fecha_compra, "traspaso_id": traspaso_id}],
+                    excluir=excluir)
+                return (r["lado"], r["contraparte"]) if r else None
+            self.assertEqual(cambia("Cocos", "BUY", "2025-01-09"), ("origen", "Balanz"))
+            self.assertEqual(cambia("Cocos", "BUY", "2025-01-10"), ("origen", "Balanz"))
+            self.assertIsNone(cambia("Cocos", "BUY", "2025-02-01"), "más nueva que lo movido")
+            self.assertIsNone(cambia("Cocos", "BUY", "2025-07-01"), "posterior al pase")
+            self.assertEqual(cambia("Cocos", "SELL", "2025-03-01"), ("origen", "Balanz"))
+            self.assertEqual(cambia("Cocos", "SELL", FECHA_PASE), ("origen", "Balanz"))
+            self.assertIsNone(cambia("Cocos", "SELL", "2025-06-17"))
+            self.assertEqual(cambia("Balanz", "SELL", "2025-06-15"), ("destino", "Cocos"))
+            self.assertIsNone(cambia("Balanz", "SELL", FECHA_PASE), "B: sólo ANTES del pase")
+            self.assertIsNone(cambia("Balanz", "BUY", "2025-01-01"))
+            self.assertIsNone(cambia("Cocos", "SELL", "2025-03-01", asset="AAPL"))
+            self.assertIsNone(cambia("Cocos", "SELL", "2025-03-01", traspaso_id=tid))
+            self.assertIsNone(cambia("Cocos", "SELL", "2025-03-01", excluir={tid}))
+            self.assertIsNone(cambia("Cocos", "DEPOSIT", "2025-03-01"))
+            r = traspaso_a_mano.pase_que_cambia(conn, self.uid, [{
+                "broker": "Cocos", "asset": "NVDA", "op": "SELL", "date": "2025-03-01"}])
+            self.assertEqual(r["mensaje"], traspaso_a_mano.MSG_CAMBIA_UN_PASE.format(
+                asset="NVDA", broker="Cocos", fecha="16/06/2025", hacia="a", contraparte="Balanz"))
+        finally:
+            conn.close()
+        self._deshacer_ok(tid)
+        conn = main.get_db()
+        try:
+            self.assertIsNone(traspaso_a_mano.pase_que_cambia(conn, self.uid, [{
+                "broker": "Cocos", "asset": "NVDA", "op": "SELL", "date": "2025-03-01"}]),
+                "un pase deshecho no frena nada")
+        finally:
+            conn.close()
 
 
 class ElDetectorDeAportesNoCuentaLosPases(unittest.TestCase):
