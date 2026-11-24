@@ -214,7 +214,13 @@ class UnRielGuardTest(unittest.TestCase):
     """Guards que leen CÓDIGO. Un test de comportamiento pasa igual aunque mañana
     alguien escriba la cuarta copia en otro archivo — y esa copia es el bug."""
 
-    MOTORES = ("main.py", "importing/persister.py", "importing/rebuild.py")
+    MOTORES = ("main.py", "importing/persister.py", "importing/rebuild.py", "importing/tramo.py")
+    # Desde 2026-11 («Mover a otro broker», etapa E2b) los dos motores del import
+    # calculan cada tramo de venta con la cuenta única de `importing/tramo.py`, que
+    # es la que llama a la conversión. La venta manual de main.py la sigue llamando
+    # directo.
+    LLAMAN_A_LA_CONVERSION = ("main.py", "importing/tramo.py")
+    USAN_LA_CUENTA_DEL_TRAMO = ("importing/persister.py", "importing/rebuild.py")
 
     @staticmethod
     def _fuente(rel):
@@ -243,14 +249,19 @@ class UnRielGuardTest(unittest.TestCase):
                     f"{rel} volvió a pedir el blue sin mirar el fx_version: {s!r}")
 
     def test_los_tres_motores_usan_la_misma_funcion(self):
-        """Los tres llaman a `costo_en_moneda_de_venta`. Si uno deja de llamarla
-        es que volvió a tener su propia copia."""
-        for rel in self.MOTORES:
+        """Los tres usan `costo_en_moneda_de_venta`: la venta manual directo, y los
+        dos del import a través de la cuenta única del tramo (`importing/tramo.py`).
+        Si uno deja de llamar a la que le toca es que volvió a tener su propia copia."""
+        for rel in self.LLAMAN_A_LA_CONVERSION:
             # `assertIn` sobre el archivo entero pega los 2 MB de main.py en el
             # mensaje de fallo. El booleano no.
             self.assertTrue(
                 "costo_en_moneda_de_venta(" in self._fuente(rel),
                 f"{rel} dejó de usar la conversión única")
+        for rel in self.USAN_LA_CUENTA_DEL_TRAMO:
+            self.assertTrue(
+                "costo_y_resultado_del_tramo(" in self._fuente(rel),
+                f"{rel} dejó de usar la cuenta única del tramo")
 
     def test_un_tc_invalido_no_convierte_en_vez_de_inventar_un_costo(self):
         """`> 0`, no "¿tiene valor?".

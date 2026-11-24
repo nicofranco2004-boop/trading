@@ -380,7 +380,12 @@ def _es_importada(conn, op: Dict[str, Any]) -> bool:
 
 def _compras_importadas(conn, uid: int, op: Dict[str, Any]):
     """Las compras importadas del activo en la fecha de compra del lote, o None si
-    la venta no vino de un archivo. Es de donde salió el lote que consumió."""
+    la venta no vino de un archivo. Es de donde salió el lote que consumió.
+
+    La fecha de compra de una fila es `COALESCE(fecha_compra, date)`: la llegada de
+    un pase desde otro broker del usuario está fechada el día del pase pero el lote
+    conserva su compra original (`entry_date`), que es la que trae la venta. En toda
+    otra fila `fecha_compra` es NULL y queda `date`, como siempre."""
     if not (op.get("entry_date") and _es_importada(conn, op)):
         return None
     try:
@@ -393,7 +398,7 @@ def _compras_importadas(conn, uid: int, op: Dict[str, Any]):
     return conn.execute(
         f"""SELECT n.currency, n.tc_compra, n.quantity, n.gross_amount, n.fees FROM {TX_VIVAS}
              WHERE b.user_id=? AND n.broker IN ({ph}) AND n.asset_symbol=?
-               AND n.operation_type=? AND n.date=?""",
+               AND n.operation_type=? AND COALESCE(n.fecha_compra, n.date)=?""",
         (uid, *par, op["asset"], OP_BUY, str(op["entry_date"])[:10])).fetchall()
 
 

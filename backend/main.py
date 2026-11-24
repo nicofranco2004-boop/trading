@@ -16098,14 +16098,23 @@ def _corporate_zero_dates(conn, uid: int) -> dict:
     lote gratis de Balanz Resultados), y la foto cuando completa con CEDEARs de un
     cambio de ratio. Lo usa `_applicable_splits` sólo con ventana de ±7 días
     alrededor de un cambio confirmado: un $0 de otra fecha (un dividendo en
-    acciones) no tapa nada."""
+    acciones) no tapa nada.
+
+    Con los pases entre brokers del usuario («Mover a otro broker»):
+      · la fecha es la de COMPRA (`fecha_compra`): un lote gratis que se pasó a otro
+        broker conserva la marca del día en que nació, no la del pase (igual que
+        todas las demás filas, donde `fecha_compra` es NULL y queda `date`);
+      · la SALIDA del pase (SELL a $0 con `traspaso_id`) no es un evento societario:
+        es un movimiento entre cuentas propias, y tomarla por un split taparía uno
+        de verdad que cayera cerca."""
     out = {}
     for r in conn.execute(
-        "SELECT n.broker b, UPPER(n.asset_symbol) a, n.date d "
+        "SELECT n.broker b, UPPER(n.asset_symbol) a, COALESCE(n.fecha_compra, n.date) d "
         f"FROM {TX_VIVAS} "
         "WHERE b.user_id=? "
         "  AND n.operation_type IN ('BUY','SELL') AND COALESCE(n.asset_symbol,'') <> '' "
-        "  AND COALESCE(n.unit_price,0) = 0 AND COALESCE(n.gross_amount,0) = 0",
+        "  AND COALESCE(n.unit_price,0) = 0 AND COALESCE(n.gross_amount,0) = 0"
+        "  AND NOT (n.operation_type='SELL' AND n.traspaso_id IS NOT NULL)",
         (uid,),
     ):
         out.setdefault((r["b"], r["a"]), []).append((r["d"] or "")[:10])
@@ -20133,6 +20142,16 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                                 "currency": (p["currency"] if "currency" in p.keys() else None),
                                 "tc_compra": (p["tc_compra"] if "tc_compra" in p.keys() else None),
                                 "asset_type": (p["asset_type"] if "asset_type" in p.keys() else None),
+                                # La marca del split y desde cuándo está en este broker
+                                # (un lote que llegó por un pase): sin ellas, el lote que
+                                # vuelve al borrar esta venta (`_devolver_al_lote`) volvía
+                                # a ofrecer un ajuste de ratio ya hecho, o como si siempre
+                                # hubiera estado acá. `en_broker_desde` no es un broker:
+                                # el renombre la saltea (`renombre_broker.NO_SON_UN_BROKER`).
+                                "split_adjusted_through": (p["split_adjusted_through"]
+                                                           if "split_adjusted_through" in p.keys() else None),
+                                "en_broker_desde": (p["en_broker_desde"]
+                                                    if "en_broker_desde" in p.keys() else None),
                                 "consumed": take,
                                 # La PROPIA foto de reverso del lote (con su autodepósito).
                                 # Sin esto, el lote que el borrado de esta venta re-crea nacía
@@ -22162,6 +22181,13 @@ def _plata_de_fila_importada(conn, uid: int, r) -> tuple:
     q = float(r["quantity"] or 0)
     fees = float(r["fees"] or 0)
     if op == "BUY":
+        # La LLEGADA de un pase desde otro broker del usuario no debitó nada (el
+        # persister no le toca la caja: los títulos ya estaban pagos), así que
+        # borrarla tampoco devuelve nada. Las guardas impiden borrar las filas de un
+        # pase, pero los journals viejos y cualquier lector nuevo tienen que ver lo
+        # mismo que hizo el persister.
+        if "traspaso_id" in keys and r["traspaso_id"]:
+            return cuenta, 0.0
         if r["gross_amount"] is not None:
             invested = float(r["gross_amount"])
         else:
@@ -25344,6 +25370,88 @@ def _restaurar_cobros_reemplazados(conn, uid: int, batch_id: str) -> int:
     return vueltos
 
 
+def _devolver_al_lote(conn, uid: int, foto: dict, cantidad: float, inv, com: float, *,
+                      link=None) -> dict:
+    """Devuelve `cantidad` títulos —con `inv` de inversión (None = el lote no la
+    tenía) y `com` de comisiones— al lote que retrata `foto`. LA regla de los dos
+    que devuelven títulos a un lote: borrar una venta hecha a mano (la foto es la que
+    la venta guardó en su receta, `undo_meta_json["lot"]`) y deshacer un pase entre
+    brokers (la foto es la de la receta del pase, `traspasos_a_mano.receta_json`).
+    Estaba escrita adentro del borrado de la venta; el pase la necesitaba igual.
+
+      · Si el lote SIGUE VIVO (venta parcial, o un pase que se llevó una parte), se
+        le SUMA lo devuelto en vez de pisarlo con la foto: si tuvo dos ventas
+        parciales, restaurar la foto entera lo dejaría inflado.
+      · Si ya no existe, se vuelve a crear con la foto, con su MISMO id si está libre:
+        las fotos de los cobros de bonos nombran al lote por id. Con un id nuevo, la
+        amortización anotada antes de la venta quedaba imborrable ("ya no queda
+        nominal") y la bandeja creía que el lote había nacido más chico (auditoría
+        2026-10-10). Misma regla que `_devolver_cobro_bono`.
+
+    La foto lleva broker, asset, buy_price, tc_compra, entry_date, asset_type,
+    currency, split_adjusted_through, en_broker_desde y la foto de reverso propia del
+    lote (`undo_meta`, o `undo_meta_json` en la receta del pase). El lote vuelve con
+    SU PROPIA foto de reverso (incluye el autodepósito que disparó el alta). Antes
+    nacía con autodep=None y borrarlo después FABRICABA cash y capital aportado —
+    reproducido: alta 200 sin saldo → vender → borrar la venta → borrar el lote
+    dejaba 200 de cash y 200 de aportado salidos de la nada.
+
+    `split_adjusted_through` y `en_broker_desde` vuelven con el lote: sin la marca del
+    split, el aviso de cambio de ratio volvía a ofrecer un ajuste ya hecho; sin la
+    fecha de llegada, un lote que había llegado por un pase volvía como si siempre
+    hubiera estado en este broker. Las fotos viejas no las traen y vuelven en None,
+    como antes.
+
+    `link=(batch_id, raw_row_id)`: el lote es de una importación (el deshacer de un
+    pase cuando el broker no se puede rearmar) y su vínculo con la fila de origen
+    tiene que apuntar al id con que quedó —es por donde `_src_tx_for_position`, el
+    revert del archivo y las guardas lo encuentran—.
+
+    Devuelve lo que necesita quien la llama para deshacerla:
+    {"mode": "update", "id", "qty", "inv", "com"} o {"mode": "insert", "id"}."""
+    live = conn.execute(
+        "SELECT id, quantity, invested, commissions FROM positions "
+        " WHERE id=? AND user_id=? AND is_cash=0", (foto.get("id"), uid)).fetchone()
+    if live:
+        conn.execute(
+            "UPDATE positions SET quantity=?, invested=?, commissions=? "
+            " WHERE id=? AND user_id=?",
+            (float(live["quantity"] or 0) + cantidad,
+             (float(live["invested"] or 0) + inv) if inv is not None else live["invested"],
+             float(live["commissions"] or 0) + com, live["id"], uid))
+        out = {"mode": "update", "id": live["id"], "qty": cantidad, "inv": inv, "com": com}
+    else:
+        _id_libre = foto.get("id") if foto.get("id") is not None and not conn.execute(
+            "SELECT 1 FROM positions WHERE id=?", (foto.get("id"),)).fetchone() else None
+        cur_ins = conn.execute(
+            """INSERT INTO positions (id, user_id, broker, asset, is_cash, buy_price,
+                 quantity, invested, tc_compra, entry_date, commissions, asset_type,
+                 currency, undo_meta_json, split_adjusted_through, en_broker_desde)
+               VALUES (?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?)""",
+            (_id_libre, uid, foto.get("broker"), foto.get("asset"),
+             foto.get("buy_price"), cantidad, inv, foto.get("tc_compra"),
+             foto.get("entry_date"), com, foto.get("asset_type"),
+             foto.get("currency"),
+             foto.get("undo_meta") or foto.get("undo_meta_json"),
+             foto.get("split_adjusted_through"), foto.get("en_broker_desde")))
+        out = {"mode": "insert", "id": cur_ins.lastrowid}
+    if link:
+        batch_id, raw_row_id = link
+        if conn.execute(
+                "UPDATE import_op_links SET position_id=? "
+                " WHERE batch_id=? AND raw_row_id=? AND position_id IS NOT NULL",
+                (out["id"], batch_id, raw_row_id)).rowcount == 0:
+            conn.execute(
+                "INSERT INTO import_op_links (batch_id, raw_row_id, position_id) VALUES (?,?,?)",
+                (batch_id, raw_row_id, out["id"]))
+        # El revert del archivo borra los lotes por `created_position_id`: tiene que
+        # nombrar al lote vivo, no al que había antes.
+        conn.execute(
+            "UPDATE import_normalized_tx SET created_position_id=? WHERE batch_id=? AND raw_row_id=?",
+            (out["id"], batch_id, raw_row_id))
+    return out
+
+
 def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
     """Borra una operación CARGADA A MANO revirtiendo exactamente lo que hizo al
     crearse, usando la foto que quedó en `undo_meta_json` (ver la migración).
@@ -25405,50 +25513,18 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
             frac = consumed / base_qty
             inv_back = (float(lot["invested"]) * frac) if lot.get("invested") is not None else None
             com_back = float(lot.get("commissions") or 0) * frac
-            # ¿El lote sobrevivió (venta parcial) o se borró (venta total)?
-            live = conn.execute(
-                "SELECT id, quantity, invested, commissions FROM positions "
-                " WHERE id=? AND user_id=? AND is_cash=0", (lot.get("id"), uid)).fetchone()
-            if live:
-                # SUMAMOS lo consumido en vez de pisar con la foto: si el lote tuvo dos
-                # ventas parciales, restaurar la foto entera lo dejaría inflado.
-                conn.execute(
-                    "UPDATE positions SET quantity=?, invested=?, commissions=? "
-                    " WHERE id=? AND user_id=?",
-                    (float(live["quantity"] or 0) + consumed,
-                     (float(live["invested"] or 0) + inv_back) if inv_back is not None else live["invested"],
-                     float(live["commissions"] or 0) + com_back, live["id"], uid))
-                # Para el undo: hay que volver a QUITARLE lo que le devolvimos.
-                undo["lot"] = {"mode": "update", "id": live["id"], "qty": consumed,
-                               "inv": inv_back, "com": com_back}
-            else:
-                # Con su MISMO id si está libre: las fotos de los cobros de bonos
-                # nombran al lote por id. Con un id nuevo, la amortización anotada
-                # antes de la venta quedaba imborrable ("ya no queda nominal") y la
-                # bandeja creía que el lote había nacido más chico (auditoría
-                # 2026-10-10). Misma regla que `_devolver_cobro_bono`.
-                _id_libre = lot.get("id") if lot.get("id") is not None and not conn.execute(
-                    "SELECT 1 FROM positions WHERE id=?", (lot.get("id"),)).fetchone() else None
-                cur_ins = conn.execute(
-                    """INSERT INTO positions (id, user_id, broker, asset, is_cash, buy_price,
-                         quantity, invested, tc_compra, entry_date, commissions, asset_type,
-                         currency, undo_meta_json)
-                       VALUES (?,?,?,?,0,?,?,?,?,?,?,?,?,?)""",
-                    (_id_libre, uid, lot.get("broker") or broker, lot.get("asset") or op["asset"],
-                     lot.get("buy_price"), consumed, inv_back, lot.get("tc_compra"),
-                     lot.get("entry_date"), com_back, lot.get("asset_type"),
-                     lot.get("currency"),
-                     # El lote vuelve con SU PROPIA foto de reverso (incluye el
-                     # autodepósito que disparó el alta). Antes nacía con autodep=None y
-                     # borrarlo después FABRICABA cash y capital aportado — reproducido:
-                     # alta 200 sin saldo → vender → borrar la venta → borrar el lote
-                     # dejaba 200 de cash y 200 de aportado salidos de la nada. Para las
-                     # ventas viejas (sin la foto guardada) caemos al mínimo anterior.
-                     lot.get("undo_meta") or
-                     _json.dumps({"src": "manual_position", "cost": inv_back or 0,
-                                  "autodep": None, "restored_from_sale": oid})))
-                # Para el undo: el lote lo creamos NOSOTROS, así que se borra entero.
-                undo["lot"] = {"mode": "insert", "id": cur_ins.lastrowid}
+            # Lo que la foto no trae lo completa la operación: el broker y el activo
+            # de la fila, y —para las ventas viejas, sin la foto de reverso del lote—
+            # el mínimo de siempre.
+            foto = dict(lot)
+            foto["broker"] = lot.get("broker") or broker
+            foto["asset"] = lot.get("asset") or op["asset"]
+            foto["undo_meta"] = lot.get("undo_meta") or _json.dumps(
+                {"src": "manual_position", "cost": inv_back or 0,
+                 "autodep": None, "restored_from_sale": oid})
+            # Para el undo: "update" = volver a QUITARLE lo que le devolvimos;
+            # "insert" = el lote lo creamos NOSOTROS, así que se borra entero.
+            undo["lot"] = _devolver_al_lote(conn, uid, foto, consumed, inv_back, com_back)
         cash = float(meta.get("cash") or 0)
         if cash:
             # El broker que RECIBIÓ la plata puede no ser el de la operación (par

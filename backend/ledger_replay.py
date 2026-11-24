@@ -108,7 +108,7 @@ def cash_en(conn, uid: int, fecha: str, *, session_id: str = None) -> dict:
     """
     filas = conn.execute(
         """SELECT n.broker, n.operation_type, n.gross_amount, n.quantity, n.fees, n.taxes,
-                  COALESCE(n.settlement_currency, n.currency) ccy
+                  COALESCE(n.settlement_currency, n.currency) ccy, n.traspaso_id
            FROM import_normalized_tx n
            JOIN import_batches b ON b.id = n.batch_id
            WHERE b.user_id = ? AND n.excluded_at IS NULL
@@ -136,6 +136,13 @@ def cash_en(conn, uid: int, fecha: str, *, session_id: str = None) -> dict:
     saldos = {}
     for r in filas:
         op = r["operation_type"]
+        # La LLEGADA de un pase desde otro broker del usuario no se pagó: el
+        # persister no le toca la caja (los títulos ya estaban pagos en el otro
+        # broker). Restarla acá inventaría una salida de efectivo del tamaño del
+        # costo. El gasto del pase (FEE con `traspaso_id`) sí salió de la caja y
+        # cuenta como cualquier comisión; las patas TRASPASO_* no tienen monto.
+        if r["traspaso_id"] and op == "BUY":
+            continue
         monto = float(r["gross_amount"] or 0)
         if monto <= 0:
             continue

@@ -37,6 +37,7 @@ from .schema import (
     NormalizedTx,
     OP_BUY, OP_SELL, OP_DEPOSIT, OP_WITHDRAW, OP_DIVIDEND, OP_INTEREST,
     OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_TAX, OP_FUTURES_PNL,
+    OPERATION_TYPES_INTERNOS,
 )
 from . import seed as _seed
 import efectivo as _efectivo   # el precio de los dólares y su ganancia cambiaria
@@ -46,15 +47,16 @@ import efectivo as _efectivo   # el precio de los dólares y su ganancia cambiar
 # se entera hasta que el número aparece mal en pantalla meses después.
 log = logging.getLogger(__name__)
 try:
-    from fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
-                    costo_del_lote, RIEL_MEP)
+    from fx import fx_for_date, fx_version, FX_V2
     from efectivo import asset_de_caja
     import resultado_dual as _resultado_dual
 except ImportError:  # pragma: no cover — import relativo según cómo se cargue el paquete
-    from ..fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
-                      costo_del_lote, RIEL_MEP)
+    from ..fx import fx_for_date, fx_version, FX_V2
     from ..efectivo import asset_de_caja
     from .. import resultado_dual as _resultado_dual
+# El costo y el resultado de cada tramo de una venta (antes copiados acá y en el
+# rebuild): ver `importing/tramo.py`.
+from . import tramo as _tramo
 
 
 def blue_for_date(conn, date_str, fallback):
@@ -518,6 +520,15 @@ def persist_batch(
                     _persist_futures_pnl(conn, uid, batch_id, raw_row_id, tx, helpers)
                     counts["operations"] += 1
 
+                elif op in OPERATION_TYPES_INTERNOS:
+                    # Las patas de un pase entre brokers del usuario (TRASPASO_SALIDA /
+                    # TRASPASO_ENTRADA). No mueven caja ni posiciones: las leen el
+                    # recálculo del mes y los aportes. Sólo las escribe el pase; ningún
+                    # archivo las puede fabricar (no están en OPERATION_TYPES), y una sin
+                    # pase es un error de programación, no un dato a guardar.
+                    if not getattr(tx, "traspaso_id", None):
+                        raise PersistError(tx.row_index, "Fila interna de pase sin pase.")
+
                 else:
                     # OP_TRANSFER no debería llegar acá (filtrado por validator)
                     raise PersistError(tx.row_index, f"Tipo de operación no soportado: {op}")
@@ -722,21 +733,35 @@ def _persist_buy(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers):
     # criterio que el alta manual (main.py) y que el rebuild. Solo 6 de 18 parsers
     # emiten TC, así que sin esto la mayoría de los lotes importados nacían con
     # NULL y la vista "Costo en dólares → dólar de la compra" quedaba muerta.
+    #
+    # LA LLEGADA DE UN PASE desde otro broker del usuario (fila con `fecha_compra`,
+    # la escribe `importing/traspaso_a_mano.py`): el lote es el MISMO que estaba en
+    # el otro broker, así que conserva su fecha de compra (`entry_date`, la que
+    # ordena el FIFO y la que ve Cartera) y anota aparte desde qué día está en ÉSTE
+    # (`en_broker_desde`). El dólar de compra que falte se busca en la fecha de
+    # compra, no en la de llegada. Para cualquier otra compra `fecha_compra` es
+    # None y todo queda como siempre.
+    fecha_compra = getattr(tx, "fecha_compra", None)
+    entry_date = fecha_compra or tx.date
+    en_broker_desde = tx.date if fecha_compra else None
     _tc = tx.tc_compra if (tx.tc_compra and tx.tc_compra > 0) else None
-    if _tc is None and lot_currency == "ARS" and tx.date:
-        _tc = _tc_for_date(conn, tx.date)
+    if _tc is None and lot_currency == "ARS" and entry_date:
+        _tc = _tc_for_date(conn, entry_date)
     cur = conn.execute(
         """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
-           invested, tc_compra, price_override, notes, entry_date, commissions, currency, asset_type)
-           VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?,?)""",
+           invested, tc_compra, price_override, notes, entry_date, commissions, currency, asset_type,
+           en_broker_desde)
+           VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?,?,?)""",
         (uid, tx.broker, tx.asset_symbol, unit if unit > 0 else None, qty,
          invested, _tc,
-         None, tx.notes, tx.date, fees, lot_currency,
-         (tx.asset_type or None)),
+         None, tx.notes, entry_date, fees, lot_currency,
+         (tx.asset_type or None), en_broker_desde),
     )
     position_id = cur.lastrowid
     cost_total = invested + fees
-    if cost_total > 0:
+    # La llegada de un pase no se pagó: los títulos ya eran del usuario y su plata
+    # salió cuando los compró en el otro broker. Debitarla acá la sacaría dos veces.
+    if cost_total > 0 and not getattr(tx, "traspaso_id", None):
         helpers._adjust_broker_cash(conn, uid, tx.cash_broker or tx.broker, -cost_total)
 
     _link(conn, batch_id, raw_row_id, position_id=position_id)
@@ -750,6 +775,11 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     el P&L ARS a USD-equivalente (mismo patrón que el flow manual con data.tc_venta).
     Para brokers USDT/USD: el cálculo es directo sin conversión.
     """
+    # ¿Es la salida de un pase de títulos a otro broker del usuario? (fila con
+    # `traspaso_id`, la escribe sólo `importing/traspaso_a_mano.py`). Consume los
+    # lotes como cualquier venta, pero no es una venta: ver más abajo.
+    es_pase = bool(getattr(tx, "traspaso_id", None))
+
     # Resolver currency del broker (para cash side y monthly_entries)
     br = conn.execute(
         "SELECT currency FROM brokers WHERE name=? AND user_id=?", (tx.broker, uid)
@@ -836,6 +866,11 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     # (no inventamos ganancia ni pérdida ficticia). Si el user quiere reflejar
     # la pérdida real, puede usar el wizard de "Estado inicial" antes de
     # confirmar para precisar el cost basis.
+    if qty_to_sell > total_avail + 1e-9 and es_pase:
+        # El pase mueve lotes que el usuario VE: la vista previa los eligió de esta
+        # misma tabla. Si acá no alcanzan, algo cambió en el medio, y fabricar un
+        # lote semilla (lo de abajo) inventaría títulos en el broker de destino.
+        raise PersistError(tx.row_index, "No alcanzan los títulos para el pase.")
     if qty_to_sell > total_avail + 1e-9:
         missing_qty = qty_to_sell - total_avail
         seed_price = unit_eff
@@ -908,114 +943,64 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
             continue
         ratio = take / pos_qty if pos_qty > 0 else 0
         pos_buy_commissions = (p["commissions"] if "commissions" in p.keys() else 0) or 0
-        # El costo del lote sale de `fx.costo_del_lote`: si la fila no tiene
-        # `invested` (lote cargado a mano sin ese campo) es precio × cantidad.
-        # Acá decía `(p["invested"] or 0)`: costo CERO, y la rama de pesos de
-        # abajo anotaba todo lo cobrado como ganancia.
-        base_invested = ((costo_del_lote(p["invested"], p["buy_price"], pos_qty) or 0)
-                         + pos_buy_commissions)
-        # El costo de este pedazo en la moneda en que se COMPRÓ (antes de llevarlo a
-        # la de la venta): lo usa el resultado en las dos monedas, más abajo.
-        costo_en_su_moneda = base_invested * ratio
-
-        # Moneda nativa del lote — la guardamos en positions.currency desde
-        # el BUY. Si el lote es viejo (pre-migración) o no la trajo el parser,
-        # asumimos la moneda del broker para back-compat.
-        lot_currency = (p["currency"] if "currency" in p.keys() else None) or currency
-
-        # CROSS-CURRENCY: el SELL es en otra moneda que el BUY → convertimos el
-        # cost basis del lote a la moneda del SELL. Sin esto, un lote comprado por
-        # USD 573 vs SELL en ARS daba P&L de +160000%.
-        # La cuenta vive en `fx.costo_en_moneda_de_venta` — LA misma que usan el
-        # rebuild y la venta manual. Estaba copiada en los tres, y la del
-        # formulario manual no miraba el `fx_version` de la cuenta.
-        base_invested = costo_en_moneda_de_venta(
-            base_invested, lot_currency, currency,
-            conn=conn,
-            entry_date=(p["entry_date"] if "entry_date" in p.keys() else None),
-            tc_venta=tc_venta, tc_blue=tc_blue, historico=_hist)
-
-        entry_invested = base_invested * ratio if base_invested else None
 
         chunk_commission = sell_commissions * (take / qty_to_sell) if qty_to_sell else 0
 
-        if getattr(tx, "transfer_out", False):
-            # RETIRO/TRANSFERENCIA del activo fuera de la cuenta (ej. cripto que
-            # sale de un exchange a una wallet, polvo→BNB): NO es una venta →
-            # cerramos el lote A COSTO (P&L 0) y NO generamos cash (no entró plata).
-            # Sin esto, un retiro bookeaba una pérdida fantasma = costo del lote.
-            if currency == "ARS":
-                invested_usd = (entry_invested or 0) / tc_venta if entry_invested and tc_venta else 0
-            else:
-                invested_usd = entry_invested if entry_invested is not None else ((p["buy_price"] or 0) * take)
-            pnl_usd = 0.0
-            proceeds_native = 0.0
-        elif currency == "ARS":
-            # Mismo modelo que el flow manual con FX-phantom-fix:
-            # cost basis y venta se valúan al MISMO TC (el de venta).
-            pnl_ars_chunk = exit_price * take - (entry_invested or 0) - chunk_commission
-            pnl_usd = pnl_ars_chunk / tc_venta if tc_venta else 0
-            invested_usd = (entry_invested or 0) / tc_venta if entry_invested and tc_venta else 0
-            proceeds_native = exit_price * take - chunk_commission
-        else:
-            cost = entry_invested if entry_invested is not None else ((p["buy_price"] or 0) * take)
-            pnl_usd = (exit_price * take) - cost - chunk_commission
-            invested_usd = cost
-            proceeds_native = exit_price * take - chunk_commission
-
-        # El resultado en pesos y en dólares, cada punta a su dólar: la MISMA cuenta
-        # que la venta a mano y el rebuild (resultado_dual). Dólar de compra: el del
-        # lote (el que usa Cartera); de venta: el de la fecha, también en v1 (donde
-        # `tc_venta` es el dólar del import).
-        # SÓLO EN CUENTAS v2: en las v1 no se escribe ni la regla ni las columnas (ver
-        # main.sell_position_fifo y el docstring de resultado_dual).
-        resultado = None
-        if _hist:
-            resultado = _resultado_dual.resultado_en_dos_monedas(
-                conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
-                fecha_compra=(p["entry_date"] if "entry_date" in p.keys() else None),
-                cobrado=proceeds_native, moneda_venta=sell_currency, fecha_venta=op_date,
-                riel=RIEL_MEP,
-                tc_compra=(p["tc_compra"] if "tc_compra" in p.keys() else None),
-                retiro=bool(getattr(tx, "transfer_out", False)))
-        # El resultado en dólares: cobrado en dólares − costo en dólares (ver
-        # resultado_dual.resultado_en_dolares).
-        _en_dolares = _resultado_dual.resultado_en_dolares(resultado)
-        if _en_dolares:
-            pnl_usd, invested_usd = _en_dolares
+        # El costo y el resultado del tramo: la cuenta vive UNA vez, en
+        # `importing/tramo.py`, y la usan este motor, el rebuild y el pase entre
+        # brokers. Estaba copiada acá y en `rebuild._replay_asset` renglón por
+        # renglón (costo del lote + comisiones → a la moneda de la venta con el MISMO
+        # `tc_venta` que divide el resultado → retiro / pesos / dólares →
+        # resultado_dual). `transfer_out` acá es la marca de la fila: el persister
+        # nunca adivinó retiros por el exchange (eso lo hace el rebuild).
+        _t = _tramo.costo_y_resultado_del_tramo(
+            conn, lote=dict(p), take=take, currency=currency, sell_currency=sell_currency,
+            exit_price=exit_price, chunk_commission=chunk_commission,
+            tc_venta=tc_venta, tc_blue=tc_blue, hist=_hist, op_date=op_date,
+            transfer_out=bool(getattr(tx, "transfer_out", False)))
+        pnl_usd, invested_usd = _t["pnl_usd"], _t["invested_usd"]
+        proceeds_native, resultado = _t["proceeds_native"], _t["resultado"]
 
         total_pnl_usd += pnl_usd
         total_proceeds_native += proceeds_native
         pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd else None
 
-        # currency + fx_to_usd: dejan AUDITABLE en qué moneda ocurrió el trade y
-        # con qué TC se llevó a USD. Sin esto el frontend no sabe reconstruir el
-        # nominal en pesos y cae a buscar el blue de la fecha (que NO es el TC que
-        # usó este cálculo) → el P&L en pesos que muestra no reproduce el real.
-        #
-        # ⚠️ SOLO para ventas en PESOS. En una venta en USD `tc_venta` vale 1.0
-        # (no hubo conversión) y estampar ese 1.0 haría que el front, que lee el
-        # campo como "ARS por USD", muestre un P&L de USD 10.000 como "$10.000"
-        # (~1500× menos). NULL → el front usa el blue de la fecha, que es correcto.
-        fx_stamp = tc_venta if sell_currency == "ARS" else None
-        cur = conn.execute(
-            """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
-               exit_price, quantity, pnl_usd, pnl_pct, entry_date, commissions,
-               currency, fx_to_usd)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (uid, op_date, p["broker"], p["asset"], "Venta",
-             p["buy_price"], exit_price, take,
-             round(pnl_usd, 2),
-             round(pnl_pct, 4) if pnl_pct is not None else None,
-             p["entry_date"] if "entry_date" in p.keys() else None,
-             round(chunk_commission, 4),
-             sell_currency, fx_stamp),
-        )
-        op_id = cur.lastrowid
-        ops_created.append(op_id)
-        _link(conn, batch_id, raw_row_id, operation_id=op_id)
-        if resultado:
-            _resultado_dual.guardar(conn, uid, op_id, resultado)
+        # EL PASE A OTRO BROKER DEL USUARIO NO ES UNA VENTA. Consume los lotes igual
+        # (los títulos se van de esta cuenta), pero no deja fila en `operations`, ni
+        # su vínculo, ni el resultado en dos monedas: no se cerró ningún trade. Si
+        # dejara una 'Venta', el rebuild la borraría y la volvería a escribir en cada
+        # corrida (`_clear_old_state` borra sólo 'Venta'), y las estadísticas de
+        # trades contarían un cierre que no existió. La diferencia entre lo que
+        # valían y lo que costaron la llevan las filas TRASPASO_* (el recálculo).
+        if not es_pase:
+            # currency + fx_to_usd: dejan AUDITABLE en qué moneda ocurrió el trade y
+            # con qué TC se llevó a USD. Sin esto el frontend no sabe reconstruir el
+            # nominal en pesos y cae a buscar el blue de la fecha (que NO es el TC que
+            # usó este cálculo) → el P&L en pesos que muestra no reproduce el real.
+            #
+            # ⚠️ SOLO para ventas en PESOS. En una venta en USD `tc_venta` vale 1.0
+            # (no hubo conversión) y estampar ese 1.0 haría que el front, que lee el
+            # campo como "ARS por USD", muestre un P&L de USD 10.000 como "$10.000"
+            # (~1500× menos). NULL → el front usa el blue de la fecha, que es correcto.
+            fx_stamp = tc_venta if sell_currency == "ARS" else None
+            cur = conn.execute(
+                """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
+                   exit_price, quantity, pnl_usd, pnl_pct, entry_date, commissions,
+                   currency, fx_to_usd)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (uid, op_date, p["broker"], p["asset"], "Venta",
+                 p["buy_price"], exit_price, take,
+                 round(pnl_usd, 2),
+                 round(pnl_pct, 4) if pnl_pct is not None else None,
+                 p["entry_date"] if "entry_date" in p.keys() else None,
+                 round(chunk_commission, 4),
+                 sell_currency, fx_stamp),
+            )
+            op_id = cur.lastrowid
+            ops_created.append(op_id)
+            _link(conn, batch_id, raw_row_id, operation_id=op_id)
+            if resultado:
+                _resultado_dual.guardar(conn, uid, op_id, resultado)
 
         if take >= pos_qty - 1e-9:
             conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (p["id"], uid))
@@ -1032,6 +1017,11 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
 
     if total_proceeds_native > 0:
         helpers._adjust_broker_cash(conn, uid, tx.cash_broker or tx.broker, total_proceeds_native)
+
+    # El pase no realizó nada: sin filas en `operations` no hay resultado que sumar
+    # al mes (el puente V−C lo suma el recálculo desde las filas TRASPASO_*).
+    if es_pase:
+        return ops_created
 
     op_year, op_month = int(op_date[:4]), int(op_date[5:7])
     # El renglón del broker lleva lo mismo que el global: la suma de los `pnl_usd`

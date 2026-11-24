@@ -59,13 +59,14 @@ from datetime import date as _date
 
 from .schema import OP_BUY, OP_SELL, TX_VIVAS
 from .persister import _link, broker_pair, reconciled_unit_price
+# El costo y el resultado de cada tramo de una venta (antes copiados acá y en el
+# persister): ver `importing/tramo.py`.
+from . import tramo as _tramo
 try:
-    from fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
-                    costo_del_lote, RIEL_MEP)
+    from fx import fx_for_date, fx_version, FX_V2
     import resultado_dual as _resultado_dual
 except ImportError:  # pragma: no cover
-    from ..fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
-                      costo_del_lote, RIEL_MEP)
+    from ..fx import fx_for_date, fx_version, FX_V2
     from .. import resultado_dual as _resultado_dual
 from .maturity import is_bond_like_name
 from .normalizer import guess_asset_type
@@ -157,8 +158,14 @@ def _cancel_conduit_pairs(events: List[Dict[str, Any]], *,
                in _CONDUIT_BLOCKED_TYPES for e in events):
             return events
 
-    buys = [e for e in events if e["operation_type"] == OP_BUY]
-    sells = [e for e in events if e["operation_type"] == OP_SELL]
+    # LAS FILAS DE UN PASE ENTRE BROKERS DEL USUARIO (`traspaso_id`) NUNCA SON UN
+    # CONDUCTO. La salida del pase es una SELL a precio 0 y la llegada una BUY con su
+    # costo: si en la ventana hubiera una compra (o una venta) de la misma cantidad en
+    # la otra moneda, este emparejador las cancelaría juntas y el pase desaparecería
+    # del replay —los títulos se quedarían en el broker de origen y la compra de la
+    # otra moneda también—. No pueden ser candidatas de ningún lado.
+    buys = [e for e in events if e["operation_type"] == OP_BUY and not e.get("traspaso_id")]
+    sells = [e for e in events if e["operation_type"] == OP_SELL and not e.get("traspaso_id")]
     cancelled: set = set()
 
     # GATE net-short por moneda (audit 2026-06-26): una venta en la moneda X solo
@@ -239,14 +246,35 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                    use_hist: bool = False) -> Dict[str, List[Dict[str, Any]]]:
     """Replaya los eventos BUY/SELL (ya ordenados cronológicamente, BUY antes
     que SELL el mismo día) de UN (broker, activo) y devuelve:
-      {"operations": [...], "open_lots": [...]}
+      {"operations": [...], "open_lots": [...], "traspasos": {...},
+       "llegadas_de_pases": {...}, "semillas": [...]}
 
     Espeja `_persist_sell_fifo` / `_persist_buy` exactamente, pero EN MEMORIA y
     SIN efectos de cash. Cada dict de salida lleva su origen (batch_id,
     raw_row_id) para re-vincular; None en lotes semilla (igual que el persister,
-    que no linkea las semillas)."""
+    que no linkea las semillas).
+
+    LOS PASES ENTRE BROKERS DEL USUARIO (filas con `traspaso_id`):
+      · la llegada (BUY con `fecha_compra`) abre un lote con su fecha de compra
+        ORIGINAL (`entry_date`) y anota desde qué día está acá (`en_broker_desde`);
+      · la salida (SELL con `traspaso_id`) consume lotes como cualquier venta pero
+        NO es una venta: no deja fila en `operations` y, a cambio, lo que se llevó
+        cada tramo queda en `traspasos[traspaso_id]`.
+    Las otras tres claves sirven para ver si el registro sigue cuadrando con lo que
+    movió cada pase (el detector de desfase, D.5.5 de la especificación):
+      · "traspasos": {traspaso_id: [{entry_date, qty, invested, commissions,
+        currency, batch_id, raw_row_id}, …]}, uno por tramo consumido;
+      · "llegadas_de_pases": {traspaso_id: fecha de llegada};
+      · "semillas": la fecha de cada lote semilla fabricado (una venta sin lotes).
+    Con los datos de hoy (sin pases) las tres vienen vacías y lo demás sale igual."""
     lots: List[Dict[str, Any]] = []   # lotes abiertos, FIFO desde el frente
     operations: List[Dict[str, Any]] = []
+    traspasos: Dict[str, List[Dict[str, Any]]] = {}
+    llegadas_de_pases: Dict[str, str] = {}
+    semillas: List[str] = []
+    # Orden de llegada al replay de cada lote (compras y semillas): desempata el FIFO
+    # entre lotes de la misma fecha de compra, igual que el orden de la lista.
+    seq = 0
     # NO HAY PASS 1. El replay es estrictamente CAUSAL: cada venta decide con los
     # lotes que existen en ESE momento, sin mirar el futuro.
     #
@@ -273,12 +301,20 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                                               ev.get("asset_type")))
             invested = _num(ev["gross_amount"]) if ev["gross_amount"] is not None else unit * qty
             fees = _num(ev["fees"])
+            # La llegada de un pase trae la fecha de compra original aparte: el lote
+            # es el mismo que estaba en el otro broker (ver persister._persist_buy).
+            fecha_compra = ev.get("fecha_compra")
+            if ev.get("traspaso_id"):
+                llegadas_de_pases[ev["traspaso_id"]] = ev["date"]
+            seq += 1
             lots.append({
                 "qty": qty,
                 "invested": invested,
                 "buy_price": unit if unit > 0 else None,
                 "commissions": fees,
-                "entry_date": ev["date"],
+                "entry_date": fecha_compra or ev["date"],
+                "en_broker_desde": ev["date"] if fecha_compra else None,
+                "_seq": seq,
                 "currency": _norm_cur(ev["currency"]),
                 "batch_id": ev["batch_id"],
                 "raw_row_id": ev["raw_row_id"],
@@ -318,9 +354,21 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
 
         total_avail = sum(l["qty"] for l in lots)
 
-        # Lotes en la moneda de la venta vs la OTRA moneda del par.
-        _same = [l for l in lots if (l["currency"] or currency) == currency]
-        _other = [l for l in lots if (l["currency"] or currency) != currency]
+        # Lotes en la moneda de la venta vs la OTRA moneda del par, cada grupo por
+        # FECHA DE COMPRA y, a igual fecha, por orden de llegada (H2 de la
+        # especificación del pase entre brokers). Hasta que existieron los pases la
+        # lista ya venía en ese orden —cada compra entra el día de su fecha— y ordenar
+        # no movía nada. La llegada de un pase rompe esa igualdad: entra el día del
+        # pase con la fecha de compra de 2023, y sin esto una venta posterior en el
+        # broker de destino consumía primero un lote más NUEVO (el persister ya
+        # ordena por `entry_date`, así que además los dos motores no coincidían).
+        # Sólo un `entry_date` que FALTA va al final (nunca pasa: la fecha del
+        # registro es NOT NULL); uno vacío conserva su lugar, como en el SQL.
+        def _fifo(l):
+            ed = l["entry_date"]
+            return (ed if ed is not None else "9999-12-31", l.get("_seq", float("inf")))
+        _same = sorted((l for l in lots if (l["currency"] or currency) == currency), key=_fifo)
+        _other = sorted((l for l in lots if (l["currency"] or currency) != currency), key=_fifo)
         _same_total = sum(l["qty"] for l in _same)
         _other_total = sum(l["qty"] for l in _other)
         oversell_same = qty_to_sell - _same_total   # faltante en la moneda de la venta
@@ -328,15 +376,19 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
         def _seed(qty):
             # Lote semilla history-as-truth al precio de venta (P&L = 0 sobre ese
             # chunk). Vive en el broker/moneda de la venta que lo necesitó.
+            nonlocal seq
+            seq += 1
             seed = {
                 "qty": qty, "invested": qty * exit_price, "buy_price": exit_price,
                 "commissions": 0.0, "entry_date": op_date,
+                "en_broker_desde": None, "_seq": seq,
                 "currency": _norm_cur(ev["currency"]),
                 "batch_id": None, "raw_row_id": None, "is_seed": True,
                 "_broker": ev["broker"], "_asset": ev["asset_symbol"],
                 "_asset_type": ev.get("asset_type"),
             }
             lots.append(seed)
+            semillas.append(op_date)
             return seed
 
         # ── POOL ÚNICO (2026-08-04) ───────────────────────────────────────────
@@ -414,32 +466,6 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 continue
             ratio = take / pos_qty if pos_qty > 0 else 0
             pos_buy_commissions = lot["commissions"] or 0
-            # Misma red que el persister y la venta manual (`fx.costo_del_lote`).
-            # Los lotes de acá nacen de un evento de compra y siempre traen
-            # `invested`; se usa igual para que las tres copias digan lo mismo.
-            base_invested = ((costo_del_lote(lot["invested"], lot["buy_price"], pos_qty) or 0)
-                             + pos_buy_commissions)
-            # En la moneda en que se COMPRÓ: lo usa el resultado en las dos monedas.
-            costo_en_su_moneda = base_invested * ratio
-
-            # Cross-currency: valuar el invested del lote en la moneda de la venta.
-            # La cuenta vive en `fx.costo_en_moneda_de_venta` — LA misma que usan el
-            # persister y la venta manual, donde estaba copiada por tercera vez.
-            #
-            # ⚠️ En la pata USD→ARS el TC TIENE que ser el MISMO que `tc_venta`, no
-            # `tc_blue`: el costo USD se lleva a pesos acá y después `pnl_ars/tc_venta`
-            # lo divide de vuelta, así que el TC se CANCELA y el costo USD se preserva.
-            # Mientras los dos eran `tc_blue` daba igual cuál se usara; con `tc_venta`
-            # siendo el TC histórico de la fecha, dejar `tc_blue` acá los hace divergir
-            # ~5× y mete una pérdida fantasma en TODA operación dólar-MEP — y sólo por
-            # el camino del rebuild (re-import, foto, backfill), o sea invisible en un
-            # test normal. Ese acople es justamente lo que la función única protege.
-            base_invested = costo_en_moneda_de_venta(
-                base_invested, lot_currency, currency,
-                conn=conn, entry_date=lot.get("entry_date"),
-                tc_venta=tc_venta, tc_blue=tc_blue, historico=use_hist)
-
-            entry_invested = base_invested * ratio if base_invested else None
             chunk_commission = sell_commissions * (take / qty_to_sell) if qty_to_sell else 0
 
             # EXCHANGE: una VENTA con proceeds 0 (precio 0 y monto 0) NO es una
@@ -453,68 +479,68 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             # se distingue de un corporate_close aunque ambas sean VENTA a precio 0.
             transfer_out = ((is_exchange or bool(ev.get("transfer_out")))
                             and not exit_price and not _num(ev["gross_amount"]))
-            if transfer_out:
-                if currency == "ARS":
-                    invested_usd = (entry_invested or 0) / tc_venta if entry_invested and tc_venta else 0
-                else:
-                    invested_usd = entry_invested if entry_invested is not None else ((lot["buy_price"] or 0) * take)
-                pnl_usd = 0.0
-            elif currency == "ARS":
-                pnl_ars_chunk = exit_price * take - (entry_invested or 0) - chunk_commission
-                pnl_usd = pnl_ars_chunk / tc_venta if tc_venta else 0
-                invested_usd = (entry_invested or 0) / tc_venta if entry_invested and tc_venta else 0
-            else:
-                cost = entry_invested if entry_invested is not None else ((lot["buy_price"] or 0) * take)
-                pnl_usd = (exit_price * take) - cost - chunk_commission
-                invested_usd = cost
 
-            # El resultado en pesos y en dólares, cada punta a su dólar — la MISMA
-            # cuenta que la venta a mano y el importador (resultado_dual). Si el
-            # rebuild no lo escribiera, cada re-import borraría lo que puso el motor.
-            # Dólar de compra: el del lote, que es el que queda en
-            # `positions.tc_compra` (`_lot_tc_compra`: el del evento o, si no, el de
-            # la fecha) y el que usa Cartera.
-            # SÓLO EN CUENTAS v2: en las v1 no se escribe ni la regla ni las columnas (ver
-            # main.sell_position_fifo y el docstring de resultado_dual).
-            resultado = None
-            if use_hist:
-                resultado = _resultado_dual.resultado_en_dos_monedas(
-                    conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
-                    fecha_compra=lot.get("entry_date"),
-                    cobrado=(0.0 if transfer_out else exit_price * take - chunk_commission),
-                    moneda_venta=currency, fecha_venta=op_date, riel=RIEL_MEP,
-                    tc_compra=lot.get("tc_compra"), retiro=transfer_out)
-            # El resultado en dólares: cobrado en dólares − costo en dólares (ver
-            # resultado_dual.resultado_en_dolares).
-            _en_dolares = _resultado_dual.resultado_en_dolares(resultado)
-            if _en_dolares:
-                pnl_usd, invested_usd = _en_dolares
+            # El costo y el resultado del tramo: la cuenta vive UNA vez, en
+            # `importing/tramo.py` (la usan este motor, el persister y el pase entre
+            # brokers). Estaba copiada acá y en `persister._persist_sell_fifo`. El
+            # dólar de venta que recibe es `tc_venta=tc_venta`, el MISMO que divide
+            # el resultado en pesos: si recibiera `tc_blue`, la conversión del costo
+            # dejaría de cancelarse y aparecería una pérdida fantasma en toda venta
+            # dólar-MEP (`test_fx_for_date.py`).
+            _t = _tramo.costo_y_resultado_del_tramo(
+                conn, lote=lot, take=take, currency=currency, sell_currency=currency,
+                exit_price=exit_price, chunk_commission=chunk_commission,
+                tc_venta=tc_venta, tc_blue=tc_blue, hist=use_hist, op_date=op_date,
+                transfer_out=transfer_out)
+            pnl_usd, invested_usd, resultado = _t["pnl_usd"], _t["invested_usd"], _t["resultado"]
 
             pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd else None
 
-            operations.append({
-                "date": op_date,
-                "broker": ev["broker"],
-                "asset": ev["asset_symbol"],
-                "op_type": "Venta",
-                "entry_price": lot["buy_price"],
-                "exit_price": exit_price,
-                "quantity": take,
-                "pnl_usd": round(pnl_usd, 2),
-                "pnl_pct": round(pnl_pct, 4) if pnl_pct is not None else None,
-                "entry_date": lot["entry_date"],
-                "commissions": round(chunk_commission, 4),
-                # Moneda del trade + TC con el que se llevó a USD → el frontend
-                # puede reconstruir el nominal en pesos sin adivinar. Solo en
-                # ventas ARS: en USD tc_venta es 1.0 y estamparlo colapsaría el
-                # P&L en pesos 1:1 (ver el comentario largo en persister.py).
-                "currency": currency,
-                "fx_to_usd": (tc_venta if currency == "ARS" else None),
-                "resultado": resultado,
-                # origen = la VENTA (para revert / dedup de links)
-                "batch_id": ev["batch_id"],
-                "raw_row_id": ev["raw_row_id"],
-            })
+            if ev.get("traspaso_id"):
+                # LA SALIDA DE UN PASE: no es una venta (ver el docstring). Lo que se
+                # llevó este tramo —con la misma cuenta que achica el lote, abajo—
+                # queda para comparar contra lo que llegó al otro broker.
+                if take >= pos_qty - _EPS:
+                    _inv_ido = lot["invested"]
+                    _com_ido = pos_buy_commissions
+                else:
+                    _inv_ido = ((lot["invested"] - round(lot["invested"] * (1 - ratio), 6))
+                                if lot["invested"] is not None else None)
+                    _com_ido = pos_buy_commissions - round(pos_buy_commissions * (1 - ratio), 6)
+                traspasos.setdefault(ev["traspaso_id"], []).append({
+                    "entry_date": lot["entry_date"],
+                    "qty": take,
+                    "invested": _inv_ido,
+                    "commissions": _com_ido,
+                    "currency": lot_currency,
+                    # origen = la COMPRA del lote que se fue (no la salida del pase)
+                    "batch_id": lot.get("batch_id"),
+                    "raw_row_id": lot.get("raw_row_id"),
+                })
+            else:
+                operations.append({
+                    "date": op_date,
+                    "broker": ev["broker"],
+                    "asset": ev["asset_symbol"],
+                    "op_type": "Venta",
+                    "entry_price": lot["buy_price"],
+                    "exit_price": exit_price,
+                    "quantity": take,
+                    "pnl_usd": round(pnl_usd, 2),
+                    "pnl_pct": round(pnl_pct, 4) if pnl_pct is not None else None,
+                    "entry_date": lot["entry_date"],
+                    "commissions": round(chunk_commission, 4),
+                    # Moneda del trade + TC con el que se llevó a USD → el frontend
+                    # puede reconstruir el nominal en pesos sin adivinar. Solo en
+                    # ventas ARS: en USD tc_venta es 1.0 y estamparlo colapsaría el
+                    # P&L en pesos 1:1 (ver el comentario largo en persister.py).
+                    "currency": currency,
+                    "fx_to_usd": (tc_venta if currency == "ARS" else None),
+                    "resultado": resultado,
+                    # origen = la VENTA (para revert / dedup de links)
+                    "batch_id": ev["batch_id"],
+                    "raw_row_id": ev["raw_row_id"],
+                })
 
             # Consumir el lote
             if take >= pos_qty - _EPS:
@@ -534,7 +560,8 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
         lots = [l for l in lots if l["qty"] > _EPS]
 
     open_lots = [l for l in lots if l["qty"] > _EPS]
-    return {"operations": operations, "open_lots": open_lots}
+    return {"operations": operations, "open_lots": open_lots, "traspasos": traspasos,
+            "llegadas_de_pases": llegadas_de_pases, "semillas": semillas}
 
 
 def _affected_assets(conn, uid: int, batch_id: str) -> List[Dict[str, str]]:
@@ -566,7 +593,7 @@ def _full_events(conn, uid: int, brokers: List[str], asset: str) -> List[Dict[st
         f"""SELECT n.id, n.batch_id, n.raw_row_id, n.date, n.broker, n.asset_symbol,
                   n.asset_name, n.operation_type, n.quantity, n.unit_price, n.gross_amount,
                   n.fees, n.currency, n.asset_type, n.transfer_out, n.created_position_id,
-                  n.tc_compra
+                  n.tc_compra, n.traspaso_id, n.fecha_compra
              FROM {TX_VIVAS}
             WHERE b.user_id = ?
               AND n.broker IN ({_ph})
@@ -819,14 +846,17 @@ def _write_rebuilt(conn, uid: int, replay: Dict[str, List[Dict[str, Any]]]) -> N
         at = lot.get("_asset_type")
         if not at or at == "OTHER":
             at = guess_asset_type(lot["_asset"]) or at
+        # `en_broker_desde`: el lote que llegó por un pase desde otro broker del
+        # usuario conserva desde qué día está acá (su `entry_date` es la compra
+        # original). None para todo lo demás, que es lo que ya había.
         cur = conn.execute(
             """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price,
                    quantity, invested, tc_compra, price_override, notes, entry_date,
-                   commissions, currency, asset_type)
-               VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?,?)""",
+                   commissions, currency, asset_type, en_broker_desde)
+               VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?,?,?)""",
             (uid, lot["_broker"], lot["_asset"], lot["buy_price"], lot["qty"],
              lot["invested"], _lot_tc_compra(conn, lot), None, None, lot["entry_date"],
-             lot["commissions"], lot["currency"], at),
+             lot["commissions"], lot["currency"], at, lot.get("en_broker_desde")),
         )
         position_id = cur.lastrowid
         # Lotes semilla no tienen origen → no se linkean (igual que el persister).
@@ -992,6 +1022,11 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
             consumed = set(old_buy_pos.keys()) - surviving_buys
             if consumed:
                 _write_buy_tombstones(conn, consumed, old_buy_pos)
+            # GANCHO del detector de pases desfasados (D.5.5 de la especificación de
+            # «Mover a otro broker», etapa E10): compara lo que el registro dice que
+            # se llevó cada pase (`replay["traspasos"]`, `replay["semillas"]`) contra
+            # lo que llegó. Va acá, después de escribir, dentro del SAVEPOINT:
+            #   traspaso_a_mano.marcar_desfasados(conn, uid, replay)
 
             conn.execute(f"RELEASE {sp}")
             rebuilt.append({
@@ -1028,7 +1063,7 @@ def rebuild_pair_asset(conn, uid: int, broker: str, asset: str, *,
     (el replay reconstruye los lotes abiertos desde las compras). El caller DEBE
     haber chequeado `_is_safe_to_rebuild` antes (no tocamos data manual).
 
-    Devuelve {"open_lots": n, "sells": n}. Atómico por SAVEPOINT."""
+    Devuelve {"open_lots": n, "sells": n, "traspasos": {...}}. Atómico por SAVEPOINT."""
     pair = broker_pair(conn, uid, broker)
     events = _full_events(conn, uid, pair, asset)
     _use_hist = fx_version(conn, uid) == FX_V2
@@ -1068,9 +1103,15 @@ def rebuild_pair_asset(conn, uid: int, broker: str, asset: str, *,
         consumed = set(old_buy_pos.keys()) - surviving_buys
         if consumed:
             _write_buy_tombstones(conn, consumed, old_buy_pos)
+        # GANCHO del detector de pases desfasados (D.5.5, etapa E10), igual que en
+        # `rebuild_fifo_after_import`:
+        #   traspaso_a_mano.marcar_desfasados(conn, uid, replay)
         conn.execute("RELEASE rebuild_del")
     except Exception:
         conn.execute("ROLLBACK TO rebuild_del")
         conn.execute("RELEASE rebuild_del")
         raise
-    return {"open_lots": len(replay["open_lots"]), "sells": len(replay["operations"])}
+    # "traspasos": lo que cada pase entre brokers se llevó de este (par, activo)
+    # según el registro (ver `_replay_asset`). Lo usa el deshacer de un pase.
+    return {"open_lots": len(replay["open_lots"]), "sells": len(replay["operations"]),
+            "traspasos": replay["traspasos"]}

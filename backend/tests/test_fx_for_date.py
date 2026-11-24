@@ -208,17 +208,34 @@ class MotorUsaElTcDeLaFechaTest(unittest.TestCase):
              `test_cross_currency_rebuild_no_diverge_del_persister`.
           2. la FÓRMULA — la función única sigue multiplicando por
              `(tc_venta or tc_blue)` y no por `tc_blue` a secas.
+
+        SE MUDÓ OTRA VEZ (2026-11, «Mover a otro broker», etapa E2b). La cuenta
+        entera del tramo —costo del lote, esta conversión, el resultado— estaba
+        copiada en el persister y en el rebuild, y el pase entre brokers la
+        necesitaba una tercera vez: pasó a `importing/tramo.py`
+        (`costo_y_resultado_del_tramo`). El call site de la conversión ahora es esa
+        función, y el rebuild le pasa a ella el `tc_venta`. La propiedad es la misma
+        y se mira en los dos saltos: el rebuild le pasa `tc_venta=tc_venta` a la
+        cuenta del tramo, y la cuenta del tramo se lo pasa a la conversión.
         """
         import inspect
         import fx as _fx
+        from importing import tramo as _tramo
 
-        # 1. El call site del rebuild.
+        # 1. El call site del rebuild: le pasa el TC de la venta a la cuenta del tramo…
         src = inspect.getsource(rb._replay_asset)
-        self.assertIn("costo_en_moneda_de_venta(", src,
-                      "el rebuild dejó de usar la conversión única")
+        self.assertIn("costo_y_resultado_del_tramo(", src,
+                      "el rebuild dejó de usar la cuenta única del tramo")
         self.assertIn("tc_venta=tc_venta", src,
-                      "el rebuild le está pasando otro TC a la conversión")
+                      "el rebuild le está pasando otro TC a la cuenta del tramo")
         self.assertNotIn("tc_venta=tc_blue", src)
+        # …y la cuenta del tramo se lo pasa a la conversión.
+        cuenta = inspect.getsource(_tramo.costo_y_resultado_del_tramo)
+        self.assertIn("costo_en_moneda_de_venta(", cuenta,
+                      "la cuenta del tramo dejó de usar la conversión única")
+        self.assertIn("tc_venta=tc_venta", cuenta,
+                      "la cuenta del tramo le está pasando otro TC a la conversión")
+        self.assertNotIn("tc_venta=tc_blue", cuenta)
 
         # 2. La fórmula, ahora en su único lugar. El TC de la venta manda y el
         # `tc_blue` es sólo el respaldo — nunca al revés. (Los dos pasan por un

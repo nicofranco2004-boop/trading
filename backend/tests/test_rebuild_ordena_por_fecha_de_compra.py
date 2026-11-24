@@ -14,9 +14,8 @@ LAS DOS MITADES DE ESTE ARCHIVO:
      anterior al cambio (6f28f2fc). Con los datos de hoy la fecha de compra es la del
      evento, así que ordenar por ella no puede mover nada: si esta mitad se pone en
      rojo, el cambio tocó cuentas que no tenían pases.
-  2. `UnaCompraViejaQueLlegaTarde`: lo nuevo. Hoy falla a propósito
-     (`expectedFailure`). La etapa E2b implementa D.5.2 y tiene que SACAR el
-     marcador: si lo deja, la corrida avisa con «unexpected success».
+  2. `UnaCompraViejaQueLlegaTarde`: lo nuevo (D.5.2). Nació en E2a como
+     `expectedFailure`; la etapa E2b implementó el orden y sacó el marcador.
 
 Los números de la mitad 1 salieron de la corrida real (no de una cuenta a mano). Los
 de la mitad 2 son la especificación: qué lote tiene que consumirse.
@@ -171,8 +170,6 @@ class UnaCompraViejaQueLlegaTarde(unittest.TestCase):
         return rb._replay_asset(_secuencia_con_llegada_de_un_pase(cantidad_vendida), "ARS",
                                 TC_BLUE, conn=None, is_exchange=False, use_hist=False)
 
-    # E2b: sacar este marcador cuando D.5.2 esté implementado.
-    @unittest.expectedFailure
     def test_la_venta_consume_primero_el_lote_mas_viejo(self):
         out = self._replay(7.0)
         ventas = [(o["entry_date"], o["quantity"], o["entry_price"], o["pnl_usd"])
@@ -185,8 +182,6 @@ class UnaCompraViejaQueLlegaTarde(unittest.TestCase):
                  for l in out["open_lots"]]
         self.assertEqual(lotes, [("2024-03-01", 8.0, 8000.0, None)])
 
-    # E2b: sacar este marcador cuando D.5.2 esté implementado.
-    @unittest.expectedFailure
     def test_el_lote_que_llego_guarda_su_compra_y_su_llegada(self):
         out = self._replay(3.0)
         ventas = [(o["entry_date"], o["quantity"]) for o in out["operations"]]
