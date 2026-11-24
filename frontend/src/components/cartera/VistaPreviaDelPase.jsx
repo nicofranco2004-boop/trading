@@ -81,6 +81,9 @@ export function VistaTalCual({ vista = null, hidden = false, error = null }) {
             </ul>
           </div>
           <p>Quedan en {B} como si siempre hubieran estado ahí, con su fecha y su costo de compra. De {A} desaparecen: sin pérdida ni ganancia.</p>
+          {vista.plata_viaja && (
+            <p>La plata con que las pagaste pasa con ellas: en Movimientos vas a ver que sale de {A} y entra en {B} el día de cada compra.</p>
+          )}
           <p className="text-ink-3">No es una venta: no cuenta en tus operaciones cerradas ni en los impuestos.</p>
         </div>
       )}

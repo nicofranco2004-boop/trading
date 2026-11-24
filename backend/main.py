@@ -20777,6 +20777,9 @@ def traspasos_del_usuario(uid: int = Depends(get_effective_user)):
 # idéntico a hacerlo a mano: B la tiene desde el día de compra y A queda como si nunca
 # la hubiera tenido (sin pérdida ni puente). Sólo compras cargadas a mano: las de un
 # archivo dicen en qué broker estaban. Mismo interruptor que el pase.
+# Las compras VIEJAS (cargadas antes del 06/08/2026, sin receta, que el tacho no borra)
+# también pasan: como no se sabe con qué plata se pagaron, la plata pasa con ellas —sale
+# de A y entra en B el día de compra— (`_plata_de_tal_cual`).
 
 class TalCualIn(BaseModel):
     model_config = {"extra": "forbid"}
@@ -20806,11 +20809,13 @@ def _plan_tal_cual(conn, uid: int, body: TalCualIn) -> dict:
         raise _traspaso_a_mano.PaseInvalido(404, f"No encontramos {c.asset} en {c.raiz_a}.")
     en_pases = (_traspaso_a_mano.lotes_en_pases_vivos(conn, uid)
                 | _traspaso_a_mano.lotes_de_pases_vivos(conn, uid))
+    # 'vieja' (cargada antes del 06/08/2026, sin receta) NO frena: se pasa llevándose
+    # su plata (`_delete_manual_position_cascade`). Frenaba, y el 24/11 el primer
+    # usuario que lo probó no pudo pasar ninguna: había cargado todo antes de esa fecha.
     textos = {"cambio": _traspaso_a_mano.MSG_TAL_CUAL_CAMBIO,
-              "vieja": _traspaso_a_mano.MSG_TAL_CUAL_VIEJA,
               "otro_broker": _traspaso_a_mano.MSG_TAL_CUAL_CAMBIO,
               "sin_deposito": _traspaso_a_mano.MSG_TAL_CUAL_SIN_DEPOSITO}
-    freno = None
+    freno, viejas = None, 0
     for l in lotes:
         if l["id"] in en_pases or l.get("en_broker_desde"):
             freno = _traspaso_a_mano.MSG_TAL_CUAL_CON_PASE
@@ -20819,11 +20824,14 @@ def _plan_tal_cual(conn, uid: int, body: TalCualIn) -> dict:
             freno = _traspaso_a_mano.MSG_TAL_CUAL_IMPORTADO
         else:
             f = _freno_del_borrado_manual(conn, uid, l)
+            if f and f[1] == "vieja":
+                viejas += 1
+                f = None
             freno = textos[f[1]] if f else None
         if freno:
             freno = freno.format(asset=c.asset, broker=c.raiz_a)
             break
-    return {"cuentas": c, "lotes": lotes, "freno": freno,
+    return {"cuentas": c, "lotes": lotes, "freno": freno, "viejas": viejas,
             "cantidad": sum(float(l["quantity"] or 0) for l in lotes)}
 
 
@@ -20845,6 +20853,8 @@ def vista_previa_tal_cual(body: TalCualIn, uid: int = Depends(get_effective_user
         c = plan["cuentas"]
         return {"origen": c.raiz_a, "destino": c.raiz_b, "asset": c.asset,
                 "moneda": c.moneda, "cantidad": plan["cantidad"], "freno": plan["freno"],
+                # Hay compras viejas: su plata pasa con ellas (la pantalla lo avisa).
+                "plata_viaja": plan["viejas"] > 0,
                 # Las claves del renglón de lote del pase (`lineaDeLote` en la pantalla).
                 "lotes": [{"fecha_compra": (l.get("entry_date") or "")[:10] or None,
                            "cantidad": float(l["quantity"] or 0),
@@ -20858,6 +20868,41 @@ def _native_ccy_de(lote) -> str:
     return _native_ccy(dict(lote))
 
 
+def _pago_de_la_compra_vieja(conn, uid: int, destino: str, moneda: str, retiro: dict) -> dict:
+    """La plata que salió de A con una compra vieja (`retiro`) entra en B: un depósito
+    del mismo monto, el mismo día y por los mismos dólares, ANTES del alta, así el alta
+    la usa a ella y no la plata que la persona ya tenía en B. Si la caja de B está en
+    rojo (pasa en un broker importado) entra además lo que falta para cubrirla, que es
+    lo que el alta anotaría sola como aporte. Va en la pata de la moneda, donde el alta
+    va a cargar la compra."""
+    pata = _pata_de_la_moneda(conn, uid, destino, moneda)
+    _efectivo.tomar_saldo(conn, uid, pata)
+    caja = _efectivo.caja(conn, uid, pata)
+    hay = float(caja["invested"] or 0) if caja else 0.0
+    monto = round(float(retiro["native"]) + max(0.0, -hay), 6)
+    return _plata_de_tal_cual(conn, uid, pata, "deposit", monto, retiro["fecha"],
+                              origen="autodeposito", tc=retiro["tc"])
+
+
+def _atar_pago_a_la_compra(conn, uid: int, nuevo, pago: dict) -> None:
+    """El depósito de `_pago_de_la_compra_vieja` es el aporte que paga la compra nueva:
+    va a su receta, como el autodepósito de un alta, para que borrarla o pasarla de
+    vuelta se lo lleve (si no, quedaba en B plata que no respalda nada). El alta no
+    tuvo que anotar uno propio —la plata ya estaba—; si lo hizo, la caja no era la que
+    se midió y no se adivina: frena y no se pasa nada."""
+    import json as _json
+    receta = _json.loads(nuevo["undo_meta_json"] or "{}")
+    if receta.get("autodep") or receta.get("broker") is None:
+        raise RuntimeError(f"tal cual: el alta de la compra vieja anotó su propio aporte "
+                           f"(pos {nuevo['id']})")
+    receta["autodep"] = {k: pago[k] for k in ("native", "usd", "ym", "flujo_id")}
+    conn.execute("UPDATE positions SET undo_meta_json=? WHERE id=? AND user_id=?",
+                 (_json.dumps(receta), nuevo["id"], uid))
+    if pago.get("flujo_id"):
+        conn.execute("UPDATE flujos_a_mano SET ref=? WHERE id=? AND user_id=?",
+                     (f"pos:{nuevo['id']}", pago["flujo_id"], uid))
+
+
 @app.post("/api/positions/tal-cual")
 @reintentar_si_trabada
 def pasar_tal_cual(body: TalCualIn, uid: int = Depends(get_effective_user)):
@@ -20865,7 +20910,11 @@ def pasar_tal_cual(body: TalCualIn, uid: int = Depends(get_effective_user)):
     (devuelve su plata y revierte el depósito automático que la pagó, como el tacho)
     y se carga en B con los mismos datos (paga con la caja de B o anota el depósito
     que falta, como el alta). El registro de cada borrado queda marcado `tal_cual`
-    para que no se pueda deshacer suelto. Para volver: lo mismo, de B a A."""
+    para que no se pueda deshacer suelto. Para volver: lo mismo, de B a A.
+
+    Una compra VIEJA (sin receta, cargada antes del 06/08/2026) se lleva su plata: el
+    borrado anota que sale de A y acá entra en B el mismo día, como el aporte que la
+    paga, antes del alta (así el alta no usa la plata que la persona tenía en B)."""
     import json as _json
     with db_abierta() as conn:
         _exigir_interruptor(conn, _traspaso_a_mano.INTERRUPTOR)
@@ -20879,9 +20928,13 @@ def pasar_tal_cual(body: TalCualIn, uid: int = Depends(get_effective_user)):
                 if plan["freno"]:
                     raise HTTPException(409, plan["freno"])
                 for l in plan["lotes"]:
-                    meta = _json.loads(l["undo_meta_json"])
-                    _delete_manual_position_cascade(
+                    meta = _json.loads(l["undo_meta_json"] or "{}")
+                    moneda = l["currency"] or c.moneda
+                    borrado = _delete_manual_position_cascade(
                         conn, uid, l["id"], tal_cual={"a": c.raiz_b})
+                    pago = (_pago_de_la_compra_vieja(conn, uid, c.raiz_b, moneda,
+                                                     borrado["retiro"])
+                            if borrado.get("retiro") else None)
                     nuevo = _insert_manual_position(conn, uid, PositionIn(
                         broker=c.raiz_b, asset=l["asset"], is_cash=False,
                         buy_price=l["buy_price"], quantity=l["quantity"],
@@ -20889,7 +20942,9 @@ def pasar_tal_cual(body: TalCualIn, uid: int = Depends(get_effective_user)):
                         price_override=l["price_override"], notes=l["notes"],
                         entry_date=(l["entry_date"] or "")[:10] or None,
                         commissions=l["commissions"] or 0,
-                        asset_type=l["asset_type"], currency=l["currency"]))
+                        asset_type=l["asset_type"], currency=moneda))
+                    if pago:
+                        _atar_pago_a_la_compra(conn, uid, nuevo, pago)
                     # Lo que el alta no sabe: hasta dónde ya se le aplicaron los splits
                     # (sin esto se le volverían a aplicar) y que la fecha no es de compra.
                     conn.execute("UPDATE positions SET split_adjusted_through=? "
@@ -20910,9 +20965,13 @@ def pasar_tal_cual(body: TalCualIn, uid: int = Depends(get_effective_user)):
             raise HTTPException(500, "No pudimos pasarlos (un error inesperado). No se "
                                      "cambió nada en tu cartera.")
     _ai_cache_invalidate(uid)
-    return {"ok": True, "mensaje": _traspaso_a_mano.MSG_TAL_CUAL_HECHO.format(
+    mensaje = _traspaso_a_mano.MSG_TAL_CUAL_HECHO.format(
         cantidad=_cantidad_corta(plan["cantidad"]), asset=c.asset,
-        origen=c.raiz_a, destino=c.raiz_b)}
+        origen=c.raiz_a, destino=c.raiz_b)
+    if plan["viejas"]:
+        mensaje += " " + _traspaso_a_mano.MSG_TAL_CUAL_PLATA.format(
+            origen=c.raiz_a, destino=c.raiz_b)
+    return {"ok": True, "mensaje": mensaje}
 
 
 # ─── Monthly ─────────────────────────────────────────────────────────────────
@@ -24358,17 +24417,23 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched, 
     return {"aportado": plan}
 
 
+# Las cargas a mano con renglón propio en Movimientos. UNA lista: la leen el listado
+# (`_cargas_sueltas`) y el borrado de un renglón (`_borrar_una_carga_a_mano`), que
+# antes tenían cada uno su copia.
+_ORIGENES_CON_RENGLON = ("efectivo", "conciliacion", "autodeposito", "plazo_fijo", "tal_cual")
+
+
 def _cargas_sueltas(conn, uid: int, broker: str, year: int, month: int,
                     direction: Optional[str] = None) -> list:
     """Las cargas a mano vigentes que tienen su PROPIO renglón en Movimientos (y se
     borran solas, `mf-`): las que la persona hizo como un movimiento —botón de
     efectivo o chat, conciliación de saldo, el aporte automático de una compra o de un
-    plazo fijo—. Lo de /mensual no: es una corrección del total del mes y va con el
-    resto (`mr-`)."""
+    plazo fijo, la plata que salió con una compra pasada «tal cual»—. Lo de /mensual
+    no: es una corrección del total del mes y va con el resto (`mr-`)."""
     sql = ("SELECT * FROM flujos_a_mano WHERE user_id=? AND broker=? AND year=? AND month=? "
            "AND anulado_at IS NULL AND monto_usd > 0 "
-           "AND origen IN ('efectivo', 'conciliacion', 'autodeposito', 'plazo_fijo')")
-    args = [uid, broker, int(year), int(month)]
+           f"AND origen IN ({','.join('?' * len(_ORIGENES_CON_RENGLON))})")
+    args = [uid, broker, int(year), int(month), *_ORIGENES_CON_RENGLON]
     if direction:
         sql += " AND direction=?"
         args.append(direction)
@@ -24382,6 +24447,7 @@ _NOTA_DE_CARGA = {
     ("conciliacion", "withdraw"): "Ajuste del saldo al del broker",
     ("autodeposito", "deposit"): "Aporte automático: compra cargada a mano sin saldo",
     ("plazo_fijo", "deposit"): "Aporte automático: plazo fijo sin saldo en el broker",
+    ("tal_cual", "withdraw"): "Se fue con una compra que pasaste «tal cual» a otro broker",
 }
 
 
@@ -24492,14 +24558,19 @@ def _borrar_una_carga_a_mano(conn, uid: int, mid: str):
         raise HTTPException(400, "id de movimiento inválido")
     f = conn.execute("SELECT * FROM flujos_a_mano WHERE id=? AND user_id=? AND anulado_at IS NULL",
                      (fid, uid)).fetchone()
-    if not f or f["origen"] not in ("efectivo", "conciliacion", "autodeposito", "plazo_fijo") \
-            or float(f["monto_usd"]) <= 0:
+    if not f or f["origen"] not in _ORIGENES_CON_RENGLON or float(f["monto_usd"]) <= 0:
         raise HTTPException(404, "Movimiento no encontrado")
     if f["origen"] == "autodeposito":
         raise HTTPException(409,
             "Este aporte lo generó una compra que cargaste a mano sin saldo (Rendi lo "
             "registra como plata aportada). Borrá esa compra desde Cartera y el aporte "
             "se va con ella.")
+    if f["origen"] == "tal_cual":
+        # Borrarla le devolvería a este broker plata que ya está en el otro, pagando
+        # la compra: la cuenta tendría esa plata dos veces.
+        raise HTTPException(409,
+            "Esta plata se fue con una compra que pasaste «tal cual» a otro broker: "
+            "ahora está allá, pagando esa compra. Por eso no se borra suelta.")
     broker = f["broker"]
     if f["monto_nativo"] is not None:
         native = float(f["monto_nativo"])
@@ -26702,7 +26773,15 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int,
     """Borra una POSICIÓN cargada a mano devolviendo el cash que debitó y revirtiendo
     el AUTODEPÓSITO que haya disparado. Devolver el costo entero cuando hubo
     autodepósito deja cash Y capital aportado fantasma — es el bug que el audit del
-    asesor encontró en el undo grupal, y acá se evita con la foto de `undo_meta_json`."""
+    asesor encontró en el undo grupal, y acá se evita con la foto de `undo_meta_json`.
+
+    `tal_cual` (sólo `pasar_tal_cual`): la compra se borra para cargarla en otro broker.
+    Una compra VIEJA —cargada antes del 06/08/2026, sin receta— el tacho no la borra:
+    no se sabe con qué plata se pagó. El «tal cual» sí, porque no hace falta saberlo: la
+    plata sale con la compra (un retiro de su mismo costo, el día de compra,
+    `_plata_de_tal_cual`) y `pasar_tal_cual` la hace entrar en el otro broker. Este
+    broker queda con su efectivo y sin la ganancia de la compra, que se va con ella.
+    Devuelve ese retiro en `retiro`."""
     import json as _json
 
     _tomar_turno(conn, uid)   # lo que se valida abajo ya no lo cambia otro pedido
@@ -26712,9 +26791,13 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int,
     if not pos:
         raise HTTPException(404, "Posición no encontrada")
     freno = _freno_del_borrado_manual(conn, uid, pos)
-    if freno:
+    vieja = bool(freno) and freno[1] == "vieja" and tal_cual is not None
+    if freno and not vieja:
         raise HTTPException(freno[0], freno[2])
-    meta = _json.loads(pos["undo_meta_json"])
+    meta = ({"cost": _manual_position_cost(pos["invested"], pos["buy_price"],
+                                           pos["quantity"], pos["commissions"]),
+             "autodep": None}
+            if vieja else _json.loads(pos["undo_meta_json"]))
 
     broker = pos["broker"] or ""
     cost = float(meta.get("cost") or 0)
@@ -26740,8 +26823,45 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int,
                      pos["invested"] or 0)).rowcount != 1:
         raise HTTPException(409, "Esa posición cambió o ya se está borrando. "
                                  "Recargá la página para ver cómo quedó.")
-    return _cola_del_borrado_manual(conn, uid, pos_row, broker, cost, autodep,
-                                    autodep_native, since_date, antes, tal_cual=tal_cual)
+    retiro = None
+    if vieja and cost > 0:   # sin costo no hay plata que pase (y el alta no anota receta)
+        # Antes de la cola: su cascada tiene que recalcular el broker con el retiro.
+        retiro = _plata_de_tal_cual(conn, uid, broker, "withdraw", cost,
+                                    since_date or _iso_today(), origen="tal_cual",
+                                    ref=f"pos:{pid}")
+        tal_cual = {**tal_cual, "retiro": retiro}
+    r = _cola_del_borrado_manual(conn, uid, pos_row, broker, cost, autodep,
+                                 autodep_native, since_date, antes, tal_cual=tal_cual)
+    return {**r, "retiro": retiro} if retiro else r
+
+
+def _plata_de_tal_cual(conn, uid: int, broker: str, direction: str, monto: float,
+                       fecha: str, *, origen: str, ref: Optional[str] = None,
+                       tc: Optional[float] = None) -> dict:
+    """La plata de una compra VIEJA (sin receta) que se pasa tal cual: sale del broker
+    donde estaba cargada (retiro, origen 'tal_cual') y entra en el nuevo (depósito,
+    'autodeposito': es el aporte que la paga ahí y queda en su receta, así el tacho o
+    un «tal cual» de vuelta se lo llevan con ella). El MISMO día —el de compra— y los
+    MISMOS dólares en las dos puntas (`tc`: el retiro lo resuelve y el depósito lo
+    reusa): el total de la cuenta no cambia, sólo de qué broker es cada cosa.
+
+    Por las puertas de siempre: el efectivo por `_adjust_broker_cash`, el mes y su
+    renglón en Movimientos por `_registrar_flujo_a_mano`. Dolariza como el
+    autodepósito del alta (`_autodeposit_rate`, el MEP del día de compra).
+    Devuelve {native, usd, ym, flujo_id, fecha, tc}."""
+    br = conn.execute("SELECT currency FROM brokers WHERE user_id=? AND name=?",
+                      (uid, broker)).fetchone()
+    if tc is None:
+        tc = _autodeposit_rate(conn, uid, fecha)
+    usd = (monto / tc) if (br and br["currency"] == "ARS" and tc > 0) else monto
+    y, m = int(fecha[:4]), int(fecha[5:7])
+    _adjust_broker_cash(conn, uid, broker, monto if direction == "deposit" else -monto)
+    fid = _registrar_flujo_a_mano(conn, uid, broker, y, m, direction, usd,
+                                  native_amount=monto, fecha=fecha, origen=origen, ref=ref)
+    _repair_monthly_chain(conn, uid, broker)
+    _repair_monthly_chain(conn, uid, 'global')
+    return {"native": monto, "usd": usd, "ym": f"{y:04d}-{m:02d}", "flujo_id": fid,
+            "fecha": fecha, "tc": tc}
 
 
 def _freno_del_borrado_manual(conn, uid: int, pos):
@@ -26749,7 +26869,8 @@ def _freno_del_borrado_manual(conn, uid: int, pos):
     o None si se puede. SÓLO LEE. Es la misma regla para el tacho y para «tal cual»
     (`_plan_tal_cual`, que borra cada compra en un broker y la carga en otro): su
     vista previa la pregunta acá en vez de copiarla, así no puede prometer un pase
-    que el borrado después frena. Códigos: 'vieja' (sin receta), 'cambio' (vendida en
+    que el borrado después frena. Códigos: 'vieja' (sin receta: el tacho frena, el
+    «tal cual» la pasa igual llevándose su plata), 'cambio' (vendida en
     parte o editada), 'otro_broker' (le cambiaron el broker editándola) y
     'sin_deposito' (se borró aparte el depósito que la pagó)."""
     import json as _json

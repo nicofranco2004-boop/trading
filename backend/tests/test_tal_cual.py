@@ -234,6 +234,179 @@ class TalCual(_Vista):
         self.assertEqual((r.status_code, r.json()["detail"]), (409, texto))
         self.assertEqual(self._tablas(), antes)
 
+    # ── compras VIEJAS: cargadas antes del 06/08/2026, sin receta ────────────────
+    # El 24/11 el usuario del caso no pudo pasar NINGUNA («En todas sale lo mismo»):
+    # había cargado todo antes de esa fecha y el «tal cual» las frenaba como el tacho.
+    # No se sabe con qué plata se pagaron, así que la plata pasa con ellas.
+
+    def _hacer_vieja(self, lote):
+        """Deja una compra como las de antes del 06/08/2026: sin receta, y su depósito
+        automático sin renglón propio (el detalle de cada carga existe desde el 08/10):
+        sólo en la suma del mes. Ninguna puerta las crea ya: se siembran."""
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE positions SET undo_meta_json=NULL WHERE id=? AND user_id=?",
+                         (lote["id"], self.uid))
+            conn.execute("DELETE FROM flujos_a_mano WHERE user_id=? AND ref=?",
+                         (self.uid, f"pos:{lote['id']}"))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _aportado(self, broker):
+        """Depósitos menos retiros de todos los meses de un broker, en dólares, como los
+        da /mensual."""
+        return round(sum(float(f["deposits"] or 0) - float(f["withdrawals"] or 0)
+                         for (b, _, _), f in self._mensual().items() if b == broker), 4)
+
+    def _flujos(self, **donde):
+        conn = main.get_db()
+        try:
+            q = "SELECT * FROM flujos_a_mano WHERE user_id=? AND anulado_at IS NULL"
+            args = [self.uid]
+            for k, v in donde.items():
+                q += f" AND {k}=?"
+                args.append(v)
+            return [dict(r) for r in conn.execute(q + " ORDER BY id", args)]
+        finally:
+            conn.close()
+
+    def _hecho_con_plata(self, origen="Cocos", destino="Balanz", cantidad="20"):
+        return (traspaso_a_mano.MSG_TAL_CUAL_HECHO.format(
+                    cantidad=cantidad, asset="MSFT", origen=origen, destino=destino)
+                + " " + traspaso_a_mano.MSG_TAL_CUAL_PLATA.format(origen=origen, destino=destino))
+
+    def test_compra_vieja_pasa_con_su_plata(self):
+        """El caso del usuario: 20 MSFT cargadas en Cocos antes del 06/08 (Rendi anotó
+        solo el depósito que las pagó). Pasan a Balanz igual que si las hubiera cargado
+        ahí —el lote, el efectivo y el mes de Balanz quedan como en la gemela—; la plata
+        sale de Cocos el día de compra (Cocos: sin compra, sin plata, sin pérdida) y el
+        total aportado de la cuenta no cambia."""
+        gemela = self._como_gemela(
+            lambda: self._lote_a_mano("Balanz", "MSFT", 20, 19200.0, FECHA))
+        self._hacer_vieja(self._lote_a_mano("Cocos", "MSFT", 20, 19200.0, FECHA))
+        total = self._aportado("global")
+        self.assertGreater(total, 300)
+
+        v = self._vista_tc()
+        self.assertEqual(v.status_code, 200, v.text)
+        self.assertEqual((v.json()["freno"], v.json()["plata_viaja"]), (None, True))
+        r = self._pasar()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["mensaje"], self._hecho_con_plata())
+
+        e = self._estado()
+        self.assertEqual(e["Cocos"], [])
+        self.assertEqual(e["Balanz"], gemela["Balanz"])
+        self.assertEqual(e["efectivo"], gemela["efectivo"])
+        self.assertEqual(e["mensual"][("Balanz", 2025, 3)], gemela["mensual"][("Balanz", 2025, 3)])
+        self.assertEqual(self._aportado("Cocos"), 0)
+        self.assertAlmostEqual(self._aportado("global"), total, places=4)
+        # En Movimientos, la salida de Cocos con su motivo y el día de compra.
+        retiro, = self._flujos(origen="tal_cual")
+        self.assertEqual((retiro["broker"], retiro["direction"], retiro["fecha"],
+                          retiro["monto_nativo"]), ("Cocos", "withdraw", FECHA, 384000.0))
+        self.assertTrue(any("Se fue con una compra que pasaste «tal cual»" in repr(m)
+                            for m in e["movimientos"]), e["movimientos"])
+        # El aporte de Balanz quedó en la receta de la compra nueva: se va con ella.
+        lote = self._lote(broker="Balanz", asset="MSFT")
+        dep, = self._flujos(broker="Balanz")
+        self.assertEqual((dep["origen"], dep["ref"], dep["fecha"]),
+                         ("autodeposito", f"pos:{lote['id']}", FECHA))
+        self.assertEqual(main.json.loads(lote["undo_meta_json"])["autodep"]["flujo_id"], dep["id"])
+
+    def test_compra_vieja_ida_y_vuelta(self):
+        """Volver con «tal cual» de Balanz a Cocos deja la compra en Cocos, Balanz limpio
+        y lo aportado de cada broker como estaba."""
+        self._hacer_vieja(self._lote_a_mano("Cocos", "MSFT", 20, 19200.0, FECHA))
+        lotes = self._sin_ids("Cocos", "MSFT")
+        aportado = {b: self._aportado(b) for b in ("Cocos", "Balanz", "global")}
+        self.assertEqual(self._pasar().status_code, 200)
+        r = self._pasar(origen="Balanz", destino="Cocos")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._sin_ids("Cocos", "MSFT"), lotes)
+        self.assertEqual((self._sin_ids("Balanz", "MSFT"), self._efectivo()), ([], {}))
+        for b, antes in aportado.items():
+            self.assertAlmostEqual(self._aportado(b), antes, places=4, msg=b)
+
+    def test_una_vieja_y_una_nueva_del_mismo_activo(self):
+        """Quien cargó antes y después del 06/08 tiene las dos clases en la misma fila de
+        Cartera: pasan juntas, cada una con su regla, y ningún broker queda con plata
+        suelta."""
+        self._hacer_vieja(self._lote_a_mano("Cocos", "MSFT", 20, 19200.0, FECHA))
+        self._lote_a_mano("Cocos", "MSFT", 5, 21000.0, "2025-05-02")
+        lotes = self._sin_ids("Cocos", "MSFT")
+        total = self._aportado("global")
+        r = self._pasar()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["mensaje"], self._hecho_con_plata(cantidad="25"))
+        self.assertEqual(self._sin_ids("Balanz", "MSFT"), lotes)
+        self.assertEqual((self._sin_ids("Cocos", "MSFT"), self._efectivo()), ([], {}))
+        self.assertEqual(self._aportado("Cocos"), 0)
+        self.assertAlmostEqual(self._aportado("global"), total, places=4)
+
+    def test_compra_vieja_borrada_despues_se_lleva_su_plata(self):
+        """Ya pasada, la compra tiene receta: el tacho de Balanz la borra y se lleva el
+        aporte que la pagaba. No queda plata que no respalde nada en ningún broker."""
+        self._hacer_vieja(self._lote_a_mano("Cocos", "MSFT", 20, 19200.0, FECHA))
+        self.assertEqual(self._pasar().status_code, 200)
+        lote = self._lote(broker="Balanz", asset="MSFT")
+        r = self.http.delete(f"/api/positions/{lote['id']}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual(self._efectivo(), {})
+        self.assertEqual((self._aportado("Balanz"), self._aportado("Cocos")), (0, 0))
+
+    def test_compra_vieja_no_usa_la_plata_que_ya_habia_en_el_destino(self):
+        """La compra se paga con la plata que llega con ella, no con la que la persona
+        ya tenía en Balanz."""
+        r = self.http.post("/api/cash/flow", headers=self.h, json={
+            "broker_name": "Balanz", "direction": "deposit", "amount": 500000,
+            "currency": "ARS", "date": "2025-03-01", "tc_blue": 1100})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._hacer_vieja(self._lote_a_mano("Cocos", "MSFT", 20, 19200.0, FECHA))
+        self.assertEqual(self._pasar().status_code, 200)
+        self.assertEqual(self._efectivo(), {"Balanz": 500000.0})
+
+    def test_compra_vieja_con_la_caja_del_destino_en_rojo(self):
+        """Si la caja de Balanz está en rojo (pasa en un broker importado), entra además
+        lo que falta, como lo anotaría el alta: un solo aporte, atado a la compra."""
+        self._hacer_vieja(self._lote_a_mano("Cocos", "MSFT", 20, 19200.0, FECHA))
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity) "
+                         "VALUES (?, 'Balanz', 'ARS', 1, -1000, 0)", (self.uid,))
+            conn.commit()
+        finally:
+            conn.close()
+        r = self._pasar()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._efectivo(), {})
+        dep, = self._flujos(broker="Balanz")
+        self.assertEqual(dep["monto_nativo"], 385000.0)
+        lote = self._lote(broker="Balanz", asset="MSFT")
+        self.assertEqual(main.json.loads(lote["undo_meta_json"])["autodep"]["native"], 385000.0)
+
+    def test_la_salida_del_tal_cual_no_se_borra_suelta(self):
+        """Borrar desde Movimientos la plata que salió de Cocos se la devolvería a Cocos
+        mientras sigue en Balanz pagando la compra: la cuenta la tendría dos veces."""
+        self._hacer_vieja(self._lote_a_mano("Cocos", "MSFT", 20, 19200.0, FECHA))
+        self.assertEqual(self._pasar().status_code, 200)
+        retiro, = self._flujos(origen="tal_cual")
+        antes = self._tablas()
+        r = self.http.delete(f"/api/movements/mf-{retiro['id']}", headers=self.h)
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("pasaste «tal cual»", r.json()["detail"])
+        self.assertEqual(self._tablas(), antes)
+
+    def test_el_tacho_sigue_sin_borrar_una_compra_vieja(self):
+        """Lo nuevo es sólo del «tal cual»: el tacho no sabe con qué plata se pagó."""
+        lote = self._lote_a_mano("Cocos", "MSFT", 20, 19200.0, FECHA)
+        self._hacer_vieja(lote)
+        r = self.http.delete(f"/api/positions/{lote['id']}", headers=self.h)
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(r.json()["detail"], main._MANUAL_LEGACY_MSG)
+
     def test_interruptor_apagado_y_mismo_broker(self):
         self._lote_a_mano("Cocos", "MSFT", 20, 19200.0, FECHA)
         r = self.http.post("/api/positions/tal-cual", json=self._body(destino="Cocos"),

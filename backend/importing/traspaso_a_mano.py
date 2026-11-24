@@ -2254,15 +2254,16 @@ MSG_TAL_CUAL_CON_PASE = ("Parte de estos {asset} ya se movió con un pase. Desha
 MSG_TAL_CUAL_CAMBIO = ("Una compra de {asset} en {broker} tiene una venta anotada o la "
                        "editaste después de cargarla, así que no se puede pasar tal cual. "
                        "Borrá primero la venta (o cargá la compra de nuevo) y volvé a intentar.")
-MSG_TAL_CUAL_VIEJA = ("Una compra de {asset} en {broker} se cargó antes de que Rendi guardara "
-                      "cómo deshacerla, así que no se puede pasar tal cual. Cargala de nuevo "
-                      "en el broker que corresponde.")
 MSG_TAL_CUAL_SIN_DEPOSITO = ("El depósito que pagó una compra de {asset} en {broker} ya no está "
                              "registrado, así que pasarla descuadraría el saldo. Restauralo "
                              "primero.")
 MSG_TAL_CUAL_HECHO = ("Listo: {cantidad} {asset} pasaron de {origen} a {destino} tal cual, con "
                       "su fecha y su costo de compra. {origen} queda como si nunca los "
                       "hubiera tenido.")
+# Compras cargadas antes del 06/08/2026 (sin receta): no se sabe con qué plata se
+# pagaron, así que la plata pasa con ellas. Lo dicen la vista previa y el «Listo».
+MSG_TAL_CUAL_PLATA = ("La plata con que las pagaste pasó con ellas: en Movimientos vas a ver "
+                      "que salió de {origen} y entró en {destino} el día de cada compra.")
 MOTIVO_ASESOR = "se pasó a otro broker: deshacé primero ese pase"
 # C.11, la regla única de lo que cambia la historia anterior a un pase.
 MSG_CAMBIA_UN_PASE = ("Esto cambia la historia de {asset} en {broker} antes de tu pase del "

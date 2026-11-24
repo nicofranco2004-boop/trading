@@ -163,6 +163,12 @@ describe('VistaTalCual', () => {
     expect(html).toContain('20 MSFT · comprados el 29/06/2026 · costo $384.000 ARS')
     expect(html).toContain('Quedan en Galicia como si siempre hubieran estado ahí, con su fecha y su costo de compra. De Santander desaparecen: sin pérdida ni ganancia.')
     expect(html).not.toContain('Valían')
+    expect(html).not.toContain('La plata con que las pagaste')
+  })
+
+  it('compras cargadas antes del 06/08/2026: avisa que su plata pasa con ellas', () => {
+    const html = renderToStaticMarkup(<VistaTalCual vista={{ ...VISTA, plata_viaja: true }} />)
+    expect(html).toContain('La plata con que las pagaste pasa con ellas: en Movimientos vas a ver que sale de Santander y entra en Galicia el día de cada compra.')
   })
 
   it('con el ojito, el costo se tapa y la cantidad y la fecha quedan', () => {
