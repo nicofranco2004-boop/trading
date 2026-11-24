@@ -55,6 +55,14 @@ nada más cambia —ni la venta a precio 0 de A ni las compras de llegada en B, 
 comisión se contaba dos veces—; la compra original de un lote cargado a mano que se
 pasó sigue (`trp-…`). El total de comisiones queda igual (#6, #7).
 
+EL DETECTOR DE DESFASE (E10). Si algo se escapa de las puertas —una fila sembrada
+directo en el registro, o editar en grupo el precio promedio de lo que quedó en A—, el
+próximo rearmado del registro (el rebuild real, un import, un borrado, la migración del
+dólar) marca el pase desfasado; GET /traspasos, Movimientos e Importaciones lo dicen, y
+el deshacer deja la cuenta como antes del pase (#34). Y no marca en falso: cada
+`_rebuild()` de este archivo afirma qué pases quedaron marcados (ninguno, salvo los que
+la prueba desfasó a propósito).
+
 Los números de las pruebas son los de la tabla F.2 de la especificación (#n).
 
 Corre con: cd backend && python3 -m pytest tests/test_mover_entre_brokers.py
@@ -324,12 +332,27 @@ class _Cuenta(unittest.TestCase):
                 "gasto_usd": sum(f["valor_usd"] for f in gasto),
                 "cantidad": reg["cantidad"]}
 
-    def _rebuild(self):
-        """«Después del rebuild» (F.1): el rearmado entero, como el backfill."""
+    def _rebuild(self, *, desfasados=frozenset()):
+        """«Después del rebuild» (F.1): el rearmado entero, como el backfill.
+
+        El rearmado corre el detector de pases desfasados (E10, D.5.5). Por eso cada
+        rebuild de estas pruebas afirma además QUÉ pases quedaron marcados: ninguno
+        salvo `desfasados` (los ids que la prueba desfasó a propósito). Así toda
+        prueba que rearma una cuenta con pases sanos —totales, parciales, con lotes
+        cargados a mano, encadenados, con los archivos de Bull Market y Balanz…— es
+        también una prueba de que el detector no marca en falso. `desfasados=None`
+        no mira."""
         conn = main.get_db()
         try:
             with conn:
                 recompute_user(conn, self.uid, recalc=main._recalc_pnl_realized_from_ops)
+            if desfasados is not None:
+                marcados = {r["id"] for r in conn.execute(
+                    "SELECT id FROM traspasos_a_mano WHERE user_id=? AND deshecho_at IS NULL "
+                    "AND desfasado_at IS NOT NULL", (self.uid,))}
+                self.assertEqual(marcados, set(desfasados),
+                                 "el rebuild marcó desfasado un pase que no lo está (o no marcó "
+                                 "el que sí)")
         finally:
             conn.close()
 
@@ -4843,6 +4866,483 @@ class CsvDeTransacciones(_Movimientos):
             self.assertAlmostEqual(float(f["Cantidad"]) * float(f["Precio unit."]),
                                    float(f["Monto"]), delta=0.01)
         self.assertEqual(self._comisiones(), com_antes)
+
+
+
+# ── E10: el detector de pases desfasados (D.5.5) ───────────────────────────────
+
+class _Desfase(_Deshacer):
+    """Lo que necesitan las pruebas del detector (E10). Las puertas (`pase_que_cambia`,
+    C.11, y las guardas de D.10) frenan lo que reescribiría la historia anterior a un
+    pase vivo; para probar el detector algo tiene que escaparse de verdad: una fila
+    SEMBRADA DIRECTO en el registro de lo importado, que ninguna puerta ve pasar. El
+    detector la ve recién cuando algo rearma el registro (el rebuild real, un import,
+    un borrado, la migración del dólar), que es cuando corre en producción."""
+
+    def _plantar(self, batch_id, broker, op, fecha, asset, cantidad, precio=0.0, monto=0.0,
+                 moneda="ARS", tipo="CEDEAR"):
+        """Una fila en el registro, escrita directo en la base (ni el importador ni otra
+        puerta la ven). Sin plata (precio y monto 0): ninguna caja la explica, así que
+        borrarla después por la puerta de Movimientos tampoco devuelve nada."""
+        conn = main.get_db()
+        try:
+            n = conn.execute("SELECT COUNT(*) AS c FROM import_raw_rows WHERE batch_id=?",
+                             (batch_id,)).fetchone()["c"]
+            raw = conn.execute(
+                "INSERT INTO import_raw_rows (batch_id, row_index, raw_json, status) "
+                "VALUES (?, ?, '{}', 'valid')", (batch_id, 90000 + n)).lastrowid
+            nid = conn.execute(
+                "INSERT INTO import_normalized_tx (batch_id, raw_row_id, date, broker, "
+                "operation_type, asset_symbol, asset_type, quantity, unit_price, gross_amount, "
+                "fees, currency, transfer_out, fingerprint, notes) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,0,?,0,?, 'sembrada directo')",
+                (batch_id, raw, fecha, broker, op, asset, tipo, cantidad, precio, monto, moneda,
+                 f"sembrada-{uuid.uuid4().hex}")).lastrowid
+            conn.commit()
+            return nid
+        finally:
+            conn.close()
+
+    def _arrancar(self, nid):
+        """Saca la fila sembrada `nid` como llegó: directo, sin ninguna puerta."""
+        conn = main.get_db()
+        try:
+            raw = conn.execute("SELECT raw_row_id FROM import_normalized_tx WHERE id=?",
+                               (nid,)).fetchone()["raw_row_id"]
+            conn.execute("DELETE FROM import_op_links WHERE raw_row_id=?", (raw,))
+            conn.execute("DELETE FROM import_normalized_tx WHERE id=?", (nid,))
+            conn.execute("DELETE FROM import_raw_rows WHERE id=?", (raw,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _marca(self, tid):
+        """(desfasado_at, desfasado_motivo) del pase, en la base."""
+        conn = main.get_db()
+        try:
+            r = conn.execute("SELECT desfasado_at, desfasado_motivo FROM traspasos_a_mano "
+                             "WHERE id=? AND user_id=?", (tid, self.uid)).fetchone()
+            return (r["desfasado_at"], r["desfasado_motivo"])
+        finally:
+            conn.close()
+
+    def _desmarcar(self, tid):
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE traspasos_a_mano SET desfasado_at=NULL, desfasado_motivo=NULL "
+                         "WHERE id=? AND user_id=?", (tid, self.uid))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _como_se_ve(self, tid):
+        """El estado del pase en las tres pantallas que lo dicen: GET /traspasos, sus
+        dos patas en Movimientos y sus dos lotes en Importaciones."""
+        t = self._uno(tid)
+        patas = [m["estado"] for m in self._get("/api/movements").json()
+                 if m.get("traspaso_id") == tid and str(m["type"]).startswith("TRASPASO")]
+        lotes = [b["traspaso"]["estado"] for b in self._get("/api/imports").json()
+                 if (b.get("traspaso") or {}).get("id") == tid]
+        return t["estado"], sorted(patas), sorted(lotes)
+
+    def _lotes_cortos(self, broker, asset="NVDA"):
+        return [(l["quantity"], round(float(l["invested"] or 0), 4),
+                 round(float(l["commissions"] or 0), 4), l["ed"], l["desde"])
+                for l in self._lotes(broker, asset)]
+
+
+AVISO_COCOS = ("Cambió la historia de Cocos y este pase quedó desactualizado: deshacelo y "
+               "hacelo de nuevo.")
+AVISO_BALANZ = ("Cambió la historia de Balanz y este pase quedó desactualizado: deshacelo y "
+                "hacelo de nuevo.")
+
+
+class DesfasadoVisibleYDeshacerLoArregla(_Desfase):
+
+    def test_desfasado_visible_y_deshacer_lo_arregla(self):
+        """#34, del lado de A (origen). Pase de 6 de los 10 NVDA de Cocos; el rebuild real
+        dos veces lo deja vivo. Se escapa de las puertas una compra VIEJA en el archivo
+        de Cocos (3 NVDA del 02/01, sembrada directo). El próximo rebuild real rearma
+        Cocos desde el registro: la salida del pase ahora se lleva los 3 sembrados y 3 de
+        los 10, no los 6 que movió el pase → desfasado por «origen». GET /traspasos,
+        Movimientos e Importaciones lo dicen, con el aviso; otro rebuild no lo vuelve a
+        sellar. El deshacer deja Cocos como dice su registro (los 3 sembrados y los 10)
+        y Balanz sin NVDA; sacada la fila que se escapó por la puerta de siempre
+        (Movimientos → borrar), `estado()` (F.1 entero, con las fotos medidas) es el de
+        antes del pase, también después de otro rebuild."""
+        self._historia()
+        self._plantar_fotos()
+        antes = self.estado_completo()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=6)
+        tid = p["traspaso_id"]
+        self._rebuild()
+        self._rebuild()
+        self.assertEqual(self._como_se_ve(tid), ("vivo", ["vivo", "vivo"], ["vivo", "vivo"]))
+
+        fila = self._plantar(self._lote_original("Cocos"), "Cocos", "BUY", "2025-01-02", "NVDA", 3)
+        self.assertEqual(self._marca(tid), (None, None), "control: sembrar no corre el detector")
+        self._rebuild(desfasados={tid})
+        marca = self._marca(tid)
+        self.assertEqual(marca[1], "origen")
+        self.assertEqual(self._como_se_ve(tid),
+                         ("desfasado", ["desfasado", "desfasado"], ["desfasado", "desfasado"]))
+        t = self._uno(tid)
+        self.assertEqual((t["aviso"], t["puede_deshacer"], t["motivo"]), (AVISO_COCOS, True, None))
+        # El rearmado dejó en Cocos lo que dice el registro (la salida se llevó los 3
+        # sembrados y 3 de los 10), no lo que el pase movió (6 de los 10).
+        self.assertEqual([l[0] for l in self._lotes_cortos("Cocos")], [7.0])
+        self._rebuild(desfasados={tid})
+        self.assertEqual(self._marca(tid), marca, "otro rebuild volvió a sellar el desfase")
+
+        self.assertEqual(self._deshacer_ok(tid), "Listo: los 6 NVDA volvieron a Cocos.")
+        self.assertEqual(self._lotes_cortos("Cocos"),
+                         [(3.0, 0.0, 0.0, "2025-01-02", ""),
+                          (10.0, 300000.0, 1500.0, "2025-01-10", "")])
+        self.assertEqual(self._lotes("Balanz"), [])
+        self.assertEqual(self._traspasos()["traspasos"], [])
+        self.assertEqual(self._lotes_del_pase(tid)[0], ["reverted", "reverted"])
+
+        r = self.http.delete(f"/api/movements/tx-{fila}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self._igual(self.estado_completo(), antes)
+        self._rebuild()
+        self._igual(self.estado_completo(), antes)
+
+    def test_desfasado_por_destino(self):
+        """#34, del lado de B (destino). Pase de los 10 NVDA de Cocos a Balanz. Se escapa
+        una VENTA en el archivo de Balanz ANTERIOR a la llegada (2 NVDA del 03/03,
+        sembrada directo): el rebuild real de Balanz la cubre con un lote semilla y deja
+        los 10 que llegaron enteros (títulos de más) → desfasado por «destino», con el
+        aviso de Balanz. El deshacer saca de Balanz lo que llegó y devuelve los 10 a
+        Cocos; sacada la venta que se escapó por la puerta de siempre, `estado()` es el
+        de antes del pase."""
+        self._historia()
+        self._plantar_fotos()
+        antes = self.estado_completo()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE)
+        tid = p["traspaso_id"]
+        fila = self._plantar(self._lote_original("Balanz"), "Balanz", "SELL", "2025-03-03",
+                             "NVDA", 2)
+        self._rebuild(desfasados={tid})
+        self.assertEqual(self._marca(tid)[1], "destino")
+        self.assertEqual(self._como_se_ve(tid),
+                         ("desfasado", ["desfasado", "desfasado"], ["desfasado", "desfasado"]))
+        self.assertEqual(self._uno(tid)["aviso"], AVISO_BALANZ)
+        self.assertEqual(self._lotes_cortos("Balanz"),
+                         [(10.0, 300000.0, 1500.0, "2025-01-10", FECHA_PASE)],
+                         "control: la venta vieja no tocó lo que llegó")
+
+        self.assertEqual(self._deshacer_ok(tid), "Listo: los 10 NVDA volvieron a Cocos.")
+        self.assertEqual(self._lotes("Balanz"), [])
+        r = self.http.delete(f"/api/movements/tx-{fila}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self._igual(self.estado_completo(), antes)
+
+
+class UnaPuertaQueSeEscapa(_Desfase):
+
+    def test_editar_el_precio_promedio_en_a_lo_desfasa(self):
+        """Algo que se escapa de las puertas SIN sembrar nada: editar en grupo el precio
+        promedio de lo que quedó en A (`PATCH /api/positions/group`, que no frena con un
+        pase vivo: la regla de C.11 sólo frena el ticker y el tipo) escala también la
+        COMPRA del archivo de la que salió parte del pase. Pase de 6 de los 10 NVDA de
+        Cocos; promedio de los 4 que quedan: $30.000 → $33.000 (×1,1). La edición no
+        rearma nada (el pase sigue vivo); el próximo rebuild real ve que la salida del
+        pase ahora se lleva $198.000 de costo y el pase movió $180.000 → desfasado por
+        «origen». El deshacer rearma Cocos desde el registro: los 10 con el costo nuevo
+        ($330.000)."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=6)
+        tid = p["traspaso_id"]
+        r = self.http.patch("/api/positions/group", headers=self.h,
+                            json={"broker": "Cocos", "asset": "NVDA", "currency": "ARS",
+                                  "avg_price": 33000})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual(self._lotes_cortos("Cocos"),
+                         [(4.0, 132000.0, 600.0, "2025-01-10", "")])
+        self.assertEqual(self._marca(tid), (None, None), "control: la edición no rearma")
+        self._rebuild(desfasados={tid})
+        self.assertEqual(self._marca(tid)[1], "origen")
+        self.assertEqual(self._uno(tid)["aviso"], AVISO_COCOS)
+        self.assertEqual(self._deshacer_ok(tid), "Listo: los 6 NVDA volvieron a Cocos.")
+        self.assertEqual(self._lotes_cortos("Cocos"),
+                         [(10.0, 330000.0, 1500.0, "2025-01-10", "")])
+        self.assertEqual(self._lotes("Balanz"), [])
+
+
+class DetectorSinFalsos(_Desfase):
+
+    def test_pases_sanos_siguen_vivos_despues_de_varios_rebuilds(self):
+        """Sin nada escapado, el detector no marca nada, por más rebuilds que corran
+        (aparte, cada `_rebuild()` de este archivo lo afirma: ninguna prueba con pases
+        sanos termina con un pase desfasado). Una cuenta con los casos que más fácil
+        podrían dar un falso aviso:
+          · NVDA: un lote cargado a mano viejo + el lote importado ya achicado por una
+            venta (inversión redondeada) + una parte del segundo lote (pase parcial);
+            después Cocos vende más y Balanz vende todo lo que llegó y 2 más (otra
+            semilla, POSTERIOR a la llegada: B vendió de más, no es cosa del pase);
+          · Balanz ya había vendido 2 NVDA el 03/03, ANTES del pase, sin tenerlos (su
+            archivo empieza tarde: el replay pone un lote semilla). Esa semilla anterior
+            a la llegada ya estaba cuando se hizo el pase: no es un desfase;
+          · AAPL: 3 de 7 (una división que no da exacta) a Balanz, y de ahí a IOL (un
+            pase encadenado).
+        Tres rebuilds reales: los tres pases siguen vivos en la base y en las pantallas, y
+        el detector los MIRÓ (no se los salteó): A de los tres y B de los dos cuyo par
+        tiene ventas, todos cuadrando, con la semilla vieja de Balanz a la vista."""
+        self._historia()
+        self._broker("IOL")
+        self._importar("Cocos", [
+            "2025-02-10,COMPRA,Cocos,NVDA,5,32000,160000,,,0,ARS,compra",
+            "2025-02-15,COMPRA,Cocos,AAPL,7,14285.7142857,100000,,,77,ARS,compra",
+            "2025-03-10,VENTA,Cocos,NVDA,3,35000,105000,,,0,ARS,venta"])
+        self._importar("Balanz", ["2025-03-03,VENTA,Balanz,NVDA,2,38000,76000,,,0,ARS,venta"])
+        self._lote_a_mano("Cocos", "NVDA", 2, 28000, "2025-01-02", commissions=280)
+        p1 = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=11)
+        self.assertEqual([(l["origen"], l["parcial"]) for l in p1["receta"]["lotes"]],
+                         [("a_mano", False), ("importado", False), ("importado", True)])
+        p2 = self._fabricar_pase("AAPL", "Cocos", "Balanz", "2025-06-20", 20000.0, cantidad=3)
+        p3 = self._fabricar_pase("AAPL", "Balanz", "IOL", "2025-07-15", 21000.0)
+        self._importar("Cocos", ["2025-08-01,VENTA,Cocos,NVDA,2,41000,82000,,,0,ARS,venta"])
+        self._importar("Balanz", ["2025-09-01,VENTA,Balanz,NVDA,13,42000,546000,,,0,ARS,venta"])
+        tids = {p["traspaso_id"] for p in (p1, p2, p3)}
+
+        vistos = []
+        lados = []
+        real_marcar = traspaso_a_mano.marcar_desfasados
+        real_lados = traspaso_a_mano._lados_que_no_cuadran
+
+        def espia_marcar(conn, uid, replay):
+            vistos.append(replay)
+            return real_marcar(conn, uid, replay)
+
+        def espia_lados(conn, t, salidas, llegadas, replay):
+            out = real_lados(conn, t, salidas, llegadas, replay)
+            lados.append((t["id"], tuple(out[0]), tuple(out[1])))
+            return out
+
+        with mock.patch.object(traspaso_a_mano, "marcar_desfasados", espia_marcar), \
+                mock.patch.object(traspaso_a_mano, "_lados_que_no_cuadran", espia_lados):
+            for _ in range(3):
+                self._rebuild()
+
+        self.assertEqual([l for l in lados if l[1]], [], "un lado no cuadró")
+        mirados = {(tid, lado) for tid, _, buenos in lados for lado in buenos}
+        self.assertEqual(mirados, {(t, "origen") for t in tids}
+                         | {(p1["traspaso_id"], "destino"), (p2["traspaso_id"], "destino")})
+        # Las dos semillas de Balanz —la del 03/03, anterior a la llegada del pase de
+        # NVDA pero que ya estaba cuando se hizo, y la del 01/09, escrita después pero
+        # posterior a la llegada— estuvieron a la vista del detector y no lo marcaron.
+        self.assertTrue(any(
+            p1["traspaso_id"] in (r.get("llegadas_de_pases") or {})
+            and {s["fecha"] for s in r.get("semillas_detalle") or []} == {"2025-03-03",
+                                                                           "2025-09-01"}
+            for r in vistos), "control: las semillas de Balanz no llegaron al detector")
+        for tid in tids:
+            self.assertEqual(self._marca(tid), (None, None))
+            self.assertEqual(self._como_se_ve(tid), ("vivo", ["vivo", "vivo"], ["vivo", "vivo"]))
+
+    def test_un_pase_sano_sigue_vivo_por_cada_puerta_que_rearma(self):
+        """Los mismos escritores que `test_el_detector_corre_en_cada_puerta_que_rearma`
+        (un import posterior, el borrado desde Movimientos, el rebuild real y la migración
+        del dólar), sobre un pase sano: ninguno lo marca."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=6)
+        tid = p["traspaso_id"]
+        self._importar("Cocos", ["2025-08-01,COMPRA,Cocos,NVDA,1,40000,40000,,,0,ARS,compra"])
+        self.assertEqual(self._marca(tid), (None, None), "el import")
+        conn = main.get_db()
+        try:
+            nid = conn.execute(
+                "SELECT n.id FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id "
+                "WHERE b.user_id=? AND n.date='2025-08-01' AND n.operation_type='BUY'",
+                (self.uid,)).fetchone()["id"]
+        finally:
+            conn.close()
+        r = self.http.delete(f"/api/movements/tx-{nid}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual(self._marca(tid), (None, None), "el borrado")
+        self._rebuild()
+        conn = main.get_db()
+        try:
+            fx.set_fx_version(conn, self.uid, "v1")
+            conn.commit()
+        finally:
+            conn.close()
+        r = self.http.post("/api/admin/fx-migrate-user", headers=self.h,
+                           params={"user_id": self.uid, "apply": "true", "force": "true"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json().get("ok"), r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual(self._marca(tid), (None, None), "la migración del dólar")
+        self.assertEqual(self._como_se_ve(tid), ("vivo", ["vivo", "vivo"], ["vivo", "vivo"]))
+
+    def test_sin_pases_no_consulta_nada(self):
+        """La enorme mayoría de los rearmados no tiene pases: el detector vuelve sin
+        tocar la base (acá ni siquiera hay conexión)."""
+        self.assertEqual(traspaso_a_mano.marcar_desfasados(
+            None, self.uid, {"operations": [], "open_lots": [], "traspasos": {},
+                             "llegadas_de_pases": {}, "semillas": ["2025-03-03"],
+                             "semillas_detalle": [{"fecha": "2025-03-03", "fila": 9,
+                                                   "traspaso_id": None, "cantidad": 1.0}]}),
+            {})
+
+
+class SiElDetectorFalla(_Desfase):
+
+    def test_si_el_detector_falla_la_reconstruccion_sigue(self):
+        """El detector es un aviso: si se rompe (acá, una consulta que la base rechaza
+        adentro de él), la reconstrucción que lo llamó sigue y escribe los lotes. Corre en
+        su propio punto de guardado: en Postgres un error de SQL aborta la transacción
+        entera, y sin el punto de guardado la sentencia siguiente del rearmado (y el
+        commit) caían con él. Un import y un borrado desde Movimientos de un activo con
+        un pase vivo, con el detector roto: los dos terminan bien."""
+        self._historia()
+        self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=6)
+
+        def roto(conn, *a, **k):
+            conn.execute("SELECT columna_que_no_existe FROM traspasos_a_mano")
+
+        with mock.patch.object(traspaso_a_mano, "_lados_que_no_cuadran", roto):
+            self._importar("Cocos", ["2025-08-01,COMPRA,Cocos,NVDA,1,40000,40000,,,0,ARS,compra"])
+            self.assertEqual([l[0] for l in self._lotes_cortos("Cocos")], [4.0, 1.0])
+            conn = main.get_db()
+            try:
+                nid = conn.execute(
+                    "SELECT n.id FROM import_normalized_tx n JOIN import_batches b "
+                    "ON b.id=n.batch_id WHERE b.user_id=? AND n.date='2025-08-01'",
+                    (self.uid,)).fetchone()["id"]
+            finally:
+                conn.close()
+            r = self.http.delete(f"/api/movements/tx-{nid}", headers=self.h)
+            self.assertEqual(r.status_code, 200, r.text)
+            self._esperar_reconstruccion()
+        self.assertEqual([l[0] for l in self._lotes_cortos("Cocos")], [4.0])
+
+
+class DesfaseQueVuelveACuadrar(_Desfase):
+
+    def test_vuelve_a_cuadrar_y_se_desmarca_solo_su_lado(self):
+        """D.5.5: si el registro vuelve a cuadrar, el próximo rearmado desmarca el pase,
+        pero sólo si el motivo era el lado que acaba de mirar. Se siembra la compra vieja
+        en Cocos (desfasado por «origen») y se arranca igual que llegó: el rebuild real lo
+        deja vivo otra vez, con Cocos en los 4 que le quedaban. Marcado a mano por
+        «destino», un rebuild que sólo rearma Cocos no lo toca; un import de Balanz (una
+        venta posterior a la llegada, que pasa por las puertas) rearma Balanz, ve que
+        cuadra y lo desmarca."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=6)
+        tid = p["traspaso_id"]
+        fila = self._plantar(self._lote_original("Cocos"), "Cocos", "BUY", "2025-01-02", "NVDA", 3)
+        self._rebuild(desfasados={tid})
+        self.assertEqual(self._marca(tid)[1], "origen")
+        self._arrancar(fila)
+        self._rebuild()
+        self.assertEqual(self._marca(tid), (None, None))
+        self.assertEqual(self._como_se_ve(tid), ("vivo", ["vivo", "vivo"], ["vivo", "vivo"]))
+        self.assertEqual([l[0] for l in self._lotes_cortos("Cocos")], [4.0])
+
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE traspasos_a_mano SET desfasado_at=datetime('now'), "
+                         "desfasado_motivo='destino' WHERE id=?", (tid,))
+            conn.commit()
+        finally:
+            conn.close()
+        self._rebuild(desfasados={tid})
+        self.assertEqual(self._marca(tid)[1], "destino", "el lado de A desmarcó el de B")
+        self._importar("Balanz", ["2025-09-01,VENTA,Balanz,NVDA,1,42000,42000,,,0,ARS,venta"])
+        self.assertEqual(self._marca(tid), (None, None))
+
+
+class ElDetectorCorreEnCadaPuerta(_Desfase):
+
+    def test_el_detector_corre_en_cada_puerta_que_rearma(self):
+        """Todos los escritores que rearman lotes desde el registro pasan por las dos
+        reconstrucciones, y el detector corre en las dos. Con la compra vieja sembrada
+        en Cocos, cada uno marca el pase (se desmarca a mano entre uno y otro):
+          · un import posterior del activo en Cocos (`rebuild_fifo_after_import`);
+          · borrar esa compra desde Movimientos (la cascada: `rebuild_pair_asset`);
+          · el rebuild real (`recompute_user`, como el backfill);
+          · la migración del dólar de una cuenta v1 (`migrate_user_fx`, por el panel de
+            admin, que rearma lote por lote)."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=6)
+        tid = p["traspaso_id"]
+        self._plantar(self._lote_original("Cocos"), "Cocos", "BUY", "2025-01-02", "NVDA", 3)
+        self.assertEqual(self._marca(tid), (None, None))
+
+        self._importar("Cocos", ["2025-08-01,COMPRA,Cocos,NVDA,1,40000,40000,,,0,ARS,compra"])
+        self.assertEqual(self._marca(tid)[1], "origen", "el import no corrió el detector")
+        self._desmarcar(tid)
+
+        conn = main.get_db()
+        try:
+            nid = conn.execute(
+                "SELECT n.id FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id "
+                "WHERE b.user_id=? AND n.date='2025-08-01' AND n.operation_type='BUY'",
+                (self.uid,)).fetchone()["id"]
+        finally:
+            conn.close()
+        r = self.http.delete(f"/api/movements/tx-{nid}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual(self._marca(tid)[1], "origen", "el borrado no corrió el detector")
+        self._desmarcar(tid)
+
+        self._rebuild(desfasados={tid})
+        self._desmarcar(tid)
+
+        conn = main.get_db()
+        try:
+            fx.set_fx_version(conn, self.uid, "v1")
+            conn.commit()
+        finally:
+            conn.close()
+        r = self.http.post("/api/admin/fx-migrate-user", headers=self.h,
+                           params={"user_id": self.uid, "apply": "true", "force": "true"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json().get("ok"), r.text)
+        self._esperar_reconstruccion()
+        self.assertEqual(self._marca(tid)[1], "origen", "la migración del dólar no corrió el detector")
+
+
+class DeshacerUnDesfasadoSinPoderRearmar(_Desfase):
+
+    def test_desfasado_con_a_no_reconstruible_frena_con_la_salida(self):
+        """C.8 con un pase desfasado por «origen»: los lotes de A son los que dejó el
+        REGISTRO. Si después se carga a mano un lote del activo en A, A ya no se puede
+        rearmar y el deshacer por el vínculo devolvería los lotes de la receta encima
+        (otros costos y fechas). Frena (409, también en GET: `puede_deshacer` falso, con el
+        motivo) sin tocar nada; borrado el lote cargado a mano, el deshacer rearma A
+        desde el registro."""
+        self._historia()
+        p = self._fabricar_pase("NVDA", "Cocos", "Balanz", FECHA_PASE, PRECIO_PASE, cantidad=6)
+        tid = p["traspaso_id"]
+        self._plantar(self._lote_original("Cocos"), "Cocos", "BUY", "2025-01-02", "NVDA", 3)
+        self._rebuild(desfasados={tid})
+        lote = self._lote_a_mano("Cocos", "NVDA", 1, 41000, "2025-09-01")
+        texto = traspaso_a_mano.MSG_DESFASADO_CON_A_MANO.format(A="Cocos", asset="NVDA")
+        self.assertEqual(texto, "Este pase quedó desactualizado y en Cocos tenés NVDA cargados a "
+                                "mano, así que Rendi no puede rearmar Cocos desde tus archivos para "
+                                "devolverle bien los títulos. Borrá en Cocos lo que cargaste a mano "
+                                "de NVDA, deshacé el pase y después volvé a cargarlo.")
+        t = self._uno(tid)
+        self.assertEqual((t["estado"], t["puede_deshacer"], t["motivo"]), ("desfasado", False, texto))
+        tablas = self._tablas()
+        self._no_deshace(tid, 409, texto)
+        self.assertEqual(self._tablas(), tablas)
+
+        r = self.http.delete(f"/api/positions/{lote['id']}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._esperar_reconstruccion()
+        self._deshacer_ok(tid)
+        self.assertEqual([l[:4] for l in self._lotes_cortos("Cocos")],
+                         [(3.0, 0.0, 0.0, "2025-01-02"), (10.0, 300000.0, 1500.0, "2025-01-10")])
+        self.assertEqual(self._lotes("Balanz"), [])
 
 
 if __name__ == "__main__":

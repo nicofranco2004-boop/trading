@@ -62,6 +62,11 @@ from .persister import _link, broker_pair, reconciled_unit_price
 # El costo y el resultado de cada tramo de una venta (antes copiados acá y en el
 # persister): ver `importing/tramo.py`.
 from . import tramo as _tramo
+# El detector de pases entre brokers desfasados (`marcar_desfasados`, D.5.5): corre
+# en las dos reconstrucciones, que son las únicas que reescriben lotes desde el
+# registro (las llaman el import, el backfill, la migración del dólar, los borrados
+# y el deshacer de un pase). `traspaso_a_mano` no importa este módulo al cargar.
+from . import traspaso_a_mano as _traspaso_a_mano
 try:
     from fx import fx_for_date, fx_version, FX_V2
     import resultado_dual as _resultado_dual
@@ -286,18 +291,25 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
       · la salida (SELL con `traspaso_id`) consume lotes como cualquier venta pero
         NO es una venta: no deja fila en `operations` y, a cambio, lo que se llevó
         cada tramo queda en `traspasos[traspaso_id]`.
-    Las otras tres claves sirven para ver si el registro sigue cuadrando con lo que
+    Las otras cuatro claves sirven para ver si el registro sigue cuadrando con lo que
     movió cada pase (el detector de desfase, D.5.5 de la especificación):
       · "traspasos": {traspaso_id: [{entry_date, qty, invested, commissions,
         currency, batch_id, raw_row_id}, …]}, uno por tramo consumido;
       · "llegadas_de_pases": {traspaso_id: fecha de llegada};
-      · "semillas": la fecha de cada lote semilla fabricado (una venta sin lotes).
-    Con los datos de hoy (sin pases) las tres vienen vacías y lo demás sale igual."""
+      · "semillas": la fecha de cada lote semilla fabricado (una venta sin lotes);
+      · "semillas_detalle": lo mismo, una por semilla y en el mismo orden, con la
+        venta que la necesitó: {fecha, fila (el `n.id` de esa venta), traspaso_id,
+        cantidad}. El detector la usa para no confundir una semilla que YA estaba
+        cuando se hizo el pase (un archivo de B con la historia cortada) con una
+        venta anterior a la llegada que se escribió DESPUÉS del pase: una fila con
+        id mayor que las del pase se escribió después.
+    Con los datos de hoy (sin pases) vienen vacías y lo demás sale igual."""
     lots: List[Dict[str, Any]] = []   # lotes abiertos, FIFO desde el frente
     operations: List[Dict[str, Any]] = []
     traspasos: Dict[str, List[Dict[str, Any]]] = {}
     llegadas_de_pases: Dict[str, str] = {}
     semillas: List[str] = []
+    semillas_detalle: List[Dict[str, Any]] = []
     # Orden de llegada al replay de cada lote (compras y semillas): desempata el FIFO
     # entre lotes de la misma fecha de compra, igual que el orden de la lista.
     seq = 0
@@ -415,6 +427,8 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             }
             lots.append(seed)
             semillas.append(op_date)
+            semillas_detalle.append({"fecha": op_date, "fila": ev.get("id"),
+                                     "traspaso_id": ev.get("traspaso_id"), "cantidad": qty})
             return seed
 
         # ── POOL ÚNICO (2026-08-04) ───────────────────────────────────────────
@@ -600,7 +614,8 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
 
     open_lots = [l for l in lots if l["qty"] > _EPS]
     return {"operations": operations, "open_lots": open_lots, "traspasos": traspasos,
-            "llegadas_de_pases": llegadas_de_pases, "semillas": semillas}
+            "llegadas_de_pases": llegadas_de_pases, "semillas": semillas,
+            "semillas_detalle": semillas_detalle}
 
 
 def _moneda_del_par(conn, uid: int, pair: List[str]) -> str:
@@ -1081,11 +1096,14 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
             consumed = set(old_buy_pos.keys()) - surviving_buys
             if consumed:
                 _write_buy_tombstones(conn, consumed, old_buy_pos)
-            # GANCHO del detector de pases desfasados (D.5.5 de la especificación de
-            # «Mover a otro broker», etapa E10): compara lo que el registro dice que
-            # se llevó cada pase (`replay["traspasos"]`, `replay["semillas"]`) contra
-            # lo que llegó. Va acá, después de escribir, dentro del SAVEPOINT:
-            #   traspaso_a_mano.marcar_desfasados(conn, uid, replay)
+            # El detector de pases desfasados (D.5.5 de la especificación de «Mover a
+            # otro broker»): compara lo que el registro dice que se llevó cada pase
+            # (`replay["traspasos"]`) con lo que el pase movió, y mira si apareció una
+            # venta anterior a una llegada (`replay["semillas_detalle"]`). Va acá,
+            # después de escribir y dentro del SAVEPOINT: marca (o desmarca) el pase
+            # en la misma transacción que reescribió los lotes. Sin pases no hace
+            # ninguna consulta; si algo le falla, no tumba la reconstrucción.
+            _traspaso_a_mano.marcar_desfasados(conn, uid, replay)
 
             conn.execute(f"RELEASE {sp}")
             rebuilt.append({
@@ -1151,9 +1169,9 @@ def rebuild_pair_asset(conn, uid: int, broker: str, asset: str, *,
         consumed = set(old_buy_pos.keys()) - surviving_buys
         if consumed:
             _write_buy_tombstones(conn, consumed, old_buy_pos)
-        # GANCHO del detector de pases desfasados (D.5.5, etapa E10), igual que en
-        # `rebuild_fifo_after_import`:
-        #   traspaso_a_mano.marcar_desfasados(conn, uid, replay)
+        # El detector de pases desfasados (D.5.5), igual que en
+        # `rebuild_fifo_after_import`.
+        _traspaso_a_mano.marcar_desfasados(conn, uid, replay)
         conn.execute("RELEASE rebuild_del")
     except Exception:
         conn.execute("ROLLBACK TO rebuild_del")

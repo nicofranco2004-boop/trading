@@ -6,7 +6,7 @@ fecha de compra. Cada pase escribe dos lotes de import confirmados
 (`parser_format = FORMATO`, uno por broker) y una fila en `traspasos_a_mano` que
 los une y guarda la receta para deshacerlo (especificación, secciones A.1–A.7).
 
-QUÉ HAY ACÁ HOY (etapas E3 a E9).
+QUÉ HAY ACÁ HOY (etapas E3 a E10).
 
   · E5 («Armar el pase»): cómo se arma un pase ANTES de escribirlo —
     las validaciones de la sección B.6, qué lotes se mueven, a qué pata de B va
@@ -36,6 +36,11 @@ QUÉ HAY ACÁ HOY (etapas E3 a E9).
     compras y ventas internas (`es_fila_interna_del_pase`, `lados_de_los_pases`,
     `contraparte_de_la_pata`, `monto_de_la_pata`, `nota_csv_de_la_pata`,
     `nota_de_compra_pasada`).
+  · E10, al final («El detector de pases desfasados»): si algo se escapó de las
+    puertas y el registro ya no cuadra con lo que movió un pase, el próximo rearmado
+    lo marca desfasado (`marcar_desfasados`, lo llaman las dos reconstrucciones de
+    `importing/rebuild.py`); GET /traspasos, Movimientos e Importaciones lo dicen, y
+    el deshacer lo arregla.
 
 Las LECTURAS que necesitan los que leen el
 registro: el capital, el resultado del mes y los reportes (E4, abajo, «Las patas
@@ -51,8 +56,7 @@ que cambió de broker:
     venta posterior en B guarda la fecha de compra original; sin el día de
     llegada, la historia lo contaba en B también en los meses en que estaba en A.
 
-El resto del módulo (el detector de pases desfasados y la revaluación de las patas
-en la migración del dólar) lo agregan las etapas siguientes.
+Falta la revaluación de las patas en la migración del dólar (C.10, etapa E11).
 
 Todas las lecturas del registro usan `TX_VIVAS` (import confirmado y sin lápida):
 un pase deshecho deja sus dos lotes en `reverted`, así que deja de contar solo.
@@ -2014,9 +2018,15 @@ MSG_B_VENDIO = ("Los {asset} que llegaron a {B} ya no están como llegaron: vend
                 "{n}. Para deshacer el pase, primero borrá esa venta.")
 MSG_B_EDITADO = ("Los {asset} que llegaron a {B} ya no están como llegaron: los editaste. "
                  "Volvé a dejarlos como llegaron ({como}) para poder deshacer el pase.")
-# B.5: el pase quedó desactualizado (lo marca el detector de E10).
+# B.5: el pase quedó desactualizado (lo marca el detector, `marcar_desfasados`).
 MSG_DESFASADO = ("Cambió la historia de {broker} y este pase quedó desactualizado: deshacelo y "
                  "hacelo de nuevo.")
+# C.8: deshacer un pase desfasado del lado de A cuando A ya no se puede rearmar desde
+# los archivos (ver `_por_que_no_se_deshace`).
+MSG_DESFASADO_CON_A_MANO = ("Este pase quedó desactualizado y en {A} tenés {asset} cargados a "
+                            "mano, así que Rendi no puede rearmar {A} desde tus archivos para "
+                            "devolverle bien los títulos. Borrá en {A} lo que cargaste a mano "
+                            "de {asset}, deshacé el pase y después volvé a cargarlo.")
 
 # Dónde se deshace un pase, en la pantalla de Rendi (no es un menú de un broker:
 # `tests/test_caminos.py` lo sabe por su nombre). Una sola vez: lo nombran todos los
@@ -2181,12 +2191,18 @@ def _canon(asset) -> str:
     return str(asset or "").strip().upper()
 
 
-def _ids_de_las_filas_del_pase(conn, reg: Registro, lote: str) -> int:
-    """El id más alto de las filas del pase en su lote (que sigue confirmado: lo
-    pregunta quien llama). Lo escrito después tiene un id mayor."""
+def _id_mas_alto_del_pase(conn, lote: str, traspaso_id: str) -> int:
+    """El id más alto de las filas del pase `traspaso_id` en su lote `lote` (que sigue
+    confirmado: lo pregunta quien llama). Lo escrito DESPUÉS del pase tiene un id
+    mayor: la regla de «posterior al pase» del deshacer (C.8 #3) y del detector de
+    desfase (`marcar_desfasados`, lado B)."""
     r = conn.execute(f"SELECT MAX(n.id) AS m FROM {TX_VIVAS} WHERE n.batch_id=? "
-                     f"AND n.traspaso_id=?", (lote, reg.id)).fetchone()
+                     f"AND n.traspaso_id=?", (lote, traspaso_id)).fetchone()
     return int(r["m"] or 0) if r else 0
+
+
+def _ids_de_las_filas_del_pase(conn, reg: Registro, lote: str) -> int:
+    return _id_mas_alto_del_pase(conn, lote, reg.id)
 
 
 def _salida_de_a_despues(conn, uid: int, reg: Registro):
@@ -2308,6 +2324,19 @@ def _por_que_no_se_deshace(conn, uid: int, reg: Registro) -> Optional[str]:
                 f"{_monto(ll['fila']['unit_price'], ll['fila']['currency'])}"
                 for ll in llegadas)
             return MSG_B_EDITADO.format(asset=reg.asset, B=reg.raiz_b, como=como)
+    # Desfasado del lado de A y A ya no se puede rearmar. El detector marca «origen»
+    # sólo al rearmar A desde el registro: desde ese rearmado, los lotes de A son los
+    # que dejó el REGISTRO (la salida del pase se llevó otros lotes que los de la
+    # receta: por eso se marcó). Deshacer por el vínculo (C.8 paso 3 b) devolvería los
+    # de la receta encima: la misma cantidad pero con otros costos y fechas, y un lote
+    # con más títulos que su compra. Rearmar no se puede (hay algo cargado a mano que
+    # el rearmado borraría). Se frena con la salida: sacar lo cargado a mano deja A a
+    # salvo y el deshacer la rearma desde el registro (paso 3 a), que es lo correcto.
+    if reg.a_vivo and reg.desfasado_at and reg.desfasado_motivo == "origen" \
+            and reg.lotes("importado"):
+        from importing.rebuild import _is_safe_to_rebuild
+        if not _is_safe_to_rebuild(conn, uid, reg.patas_a, reg.asset):
+            return MSG_DESFASADO_CON_A_MANO.format(A=reg.raiz_a, asset=reg.asset)
     return None
 
 
@@ -2943,3 +2972,121 @@ def nota_de_compra_pasada(lote: Dict[str, Any], lado: Optional[Dict[str, Any]], 
     destino = (lado or {}).get("destino") or "otro broker tuyo"
     nota = NOTA_COMPRA_PASADA.format(B=destino, fecha=_ddmmaaaa(lote.get("fecha_pase")))
     return f"{nota} · {lote['notes']}" if (con_notas and lote.get("notes")) else nota
+
+
+# ── E10: el detector de pases desfasados (D.5.5) ───────────────────────────────
+#
+# Las puertas (`pase_que_cambia`, C.11, y las guardas de D.10) frenan lo que
+# reescribiría la historia anterior a un pase vivo. Si algo se les escapa —una fila
+# escrita por un camino que no las pasa, un script, una edición que no estaba en la
+# lista—, el próximo rearmado del registro lo hace visible: el pase queda
+# «desfasado», GET /traspasos y Movimientos lo dicen con el aviso, y el deshacer
+# deja la cuenta como si el pase no hubiera existido.
+#
+# Corre en las DOS reconstrucciones (`rebuild.rebuild_fifo_after_import` y
+# `rebuild.rebuild_pair_asset`, después de escribir y dentro de su SAVEPOINT), que
+# son las únicas que reescriben lotes desde el registro: las llaman el import, el
+# backfill (`recompute_user`), la migración del dólar (`migrate_user_fx`), los
+# borrados de operaciones e historial y el deshacer de un pase. Cada llamada mira
+# UN (par de brokers, activo): el lado de A de los pases cuya salida está en ese par
+# y el lado de B de los que llegaron a él.
+
+
+def _lo_que_movio_de_archivos(receta: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Los lotes IMPORTADOS que movió el pase, en la forma que compara `_coinciden`:
+    fecha de compra, cantidad, inversión y comisiones movidas. Son los mismos números
+    que el confirmar escribió en las COMPRAS de llegada de B (C.6) y los que comparó
+    la comprobación en seco antes de escribir (C.2.6): por eso la receta sirve también
+    cuando B ya no existe. Los cargados a mano no están: salieron por `positions`, no
+    por la salida del registro."""
+    return [{"entry_date": _dia((l.get("foto") or {}).get("entry_date")) or "",
+             "qty": _num(l.get("cantidad")), "invested": _num(l.get("invested")),
+             "commissions": _num(l.get("commissions"))}
+            for l in (receta.get("lotes") or [])
+            if isinstance(l, dict) and l.get("origen") == "importado"]
+
+
+def _ventas_nuevas_sin_lotes(replay, llegada: str, ultimo: int) -> List[Dict[str, Any]]:
+    """Las semillas del replay de B anteriores a la llegada del pase que fabricó una
+    venta (no de otro pase) escrita DESPUÉS del pase (su fila tiene un id mayor que
+    las del pase). Una que ya estaba cuando se hizo el pase —un archivo de B con la
+    historia cortada vendió títulos de antes— es dato normal: el pase se armó con
+    ella a la vista (B.6 sólo frena las ventas de B desde el día del pase)."""
+    return [s for s in (replay.get("semillas_detalle") or [])
+            if (_dia(s.get("fecha")) or "") < llegada and not s.get("traspaso_id")
+            and int(s.get("fila") or 0) > ultimo]
+
+
+def _lados_que_no_cuadran(conn, t, salidas, llegadas, replay):
+    """(lados que no cuadran, lados que sí) del pase `t` (fila de `traspasos_a_mano`)
+    según este replay. Un pase aparece en un replay de un solo lado: A y B nunca son
+    el mismo par (B.6 #3)."""
+    tid = t["id"]
+    malos, buenos = [], []
+    if tid in salidas:
+        try:
+            receta = json.loads(t["receta_json"] or "{}") or {}
+        except (TypeError, ValueError):
+            receta = {}
+        # LADO A (origen): lo que la salida del pase se llevó del registro tiene que
+        # ser justo lo que el pase movió de archivos. Es la MISMA comparación que la
+        # comprobación en seco antes de escribir (`_comprobar_con_el_registro`): si
+        # cuadró entonces, un registro que nadie tocó cuadra en cada rearmado.
+        (buenos if _coinciden(_lo_que_movio_de_archivos(receta), salidas[tid])
+         else malos).append("origen")
+    if tid in llegadas:
+        # LADO B (destino): una venta anterior a la llegada que encontró B sin títulos
+        # (el replay fabricó una semilla y dejó los que llegaron enteros: B queda con
+        # títulos de más) y que se escribió después del pase.
+        ultimo = _id_mas_alto_del_pase(conn, t["lote_entrada"], tid)
+        (malos if _ventas_nuevas_sin_lotes(replay, _dia(llegadas[tid]) or "", ultimo)
+         else buenos).append("destino")
+    return malos, buenos
+
+
+def marcar_desfasados(conn, uid: int, replay) -> Dict[str, Optional[str]]:
+    """D.5.5. Con el replay de UN (par, activo) recién escrito, marca o desmarca los
+    pases vivos que pasan por él:
+      · si un lado no cuadra y el pase no estaba marcado → `desfasado_at` = ahora y
+        `desfasado_motivo` = ese lado ('origen' | 'destino');
+      · si el lado vuelve a cuadrar y el motivo era ese lado → los dos a NULL.
+    Devuelve {traspaso_id: motivo puesto | None si se desmarcó}, sólo los cambios.
+
+    Sin pases en el replay no hace ninguna consulta (la enorme mayoría de los
+    rearmados). No tumba la reconstrucción: corre en su propio punto de guardado y,
+    si algo le falla, lo deshace, lo anota en el log y sigue (el aviso es un aviso;
+    los lotes ya están bien escritos)."""
+    salidas = (replay or {}).get("traspasos") or {}
+    llegadas = (replay or {}).get("llegadas_de_pases") or {}
+    tids = sorted(set(salidas) | set(llegadas))
+    if not tids:
+        return {}
+    import pgsesion
+    try:
+        with pgsesion.si_falla_se_deshace_solo_esto(conn, "marcar_desfasados"):
+            return _marcar_desfasados(conn, uid, tids, salidas, llegadas, replay)
+    except Exception:
+        log.exception("traspaso_a_mano: el detector de desfase falló (user=%s, pases=%s)",
+                      uid, tids)
+        return {}
+
+
+def _marcar_desfasados(conn, uid, tids, salidas, llegadas, replay):
+    cambios: Dict[str, Optional[str]] = {}
+    for t in conn.execute(
+            f"SELECT id, lote_entrada, receta_json, desfasado_at, desfasado_motivo "
+            f"FROM traspasos_a_mano WHERE user_id = ? AND deshecho_at IS NULL "
+            f"AND id IN ({_ph(tids)})", (uid, *tids)).fetchall():
+        malos, buenos = _lados_que_no_cuadran(conn, t, salidas, llegadas, replay)
+        if malos and not t["desfasado_at"]:
+            conn.execute("UPDATE traspasos_a_mano SET desfasado_at=datetime('now'), "
+                         "desfasado_motivo=? WHERE id=? AND user_id=? AND desfasado_at IS NULL",
+                         (malos[0], t["id"], uid))
+            cambios[t["id"]] = malos[0]
+            log.warning("traspaso_a_mano: el pase %s (user=%s) quedó desfasado por %s",
+                        t["id"], uid, malos[0])
+        elif t["desfasado_at"] and not malos and t["desfasado_motivo"] in buenos:
+            conn.execute("UPDATE traspasos_a_mano SET desfasado_at=NULL, desfasado_motivo=NULL "
+                         "WHERE id=? AND user_id=?", (t["id"], uid))
+            cambios[t["id"]] = None
+    return cambios

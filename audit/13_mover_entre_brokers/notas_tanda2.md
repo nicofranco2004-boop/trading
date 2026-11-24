@@ -147,3 +147,44 @@ Pendientes que deja:
 - **E10**: Movimientos ya pasa `estado = 'desfasado'` si `desfasado_at` está puesto.
 - **E11**: Movimientos y el CSV leen `valor_usd`/`valor_ars`/`costo_usd` de las filas:
   `revaluar_patas` tiene que reescribir las dos patas (nada que cambiar acá).
+
+## De E10 (el detector de pases desfasados)
+Hecho: `traspaso_a_mano.marcar_desfasados(conn, uid, replay)` corre en las DOS
+reconstrucciones (`rebuild_fifo_after_import` y `rebuild_pair_asset`, después de
+escribir, dentro de su SAVEPOINT y en un punto de guardado propio: si falla, lo
+anota y la reconstrucción sigue). Todos los escritores que rearman lotes pasan por
+ellas: el confirm del importador y Wallbit, `recompute_user` (backfill),
+`migrate_user_fx`, los borrados (`_delete_operation_cascade`,
+`_delete_position_cascade`, `_delete_asset_history_cascade` y sus deshacer) y el
+deshacer del pase. Sin pases en el replay no consulta nada.
+- **Lado A ('origen')**: lo que la salida del pase se llevó del registro
+  (`replay["traspasos"][tid]`) contra los lotes IMPORTADOS de la receta, con la MISMA
+  comparación que la comprobación en seco antes de escribir (`_coinciden`, C.2.6).
+  Desvío de la spec: compara contra la receta y no contra las COMPRAS del lote de B
+  (son los mismos números; la receta sirve también con B borrado, donde las compras de
+  B ya no están vivas y la regla literal marcaba en falso).
+- **Lado B ('destino')**: una semilla del replay de B ANTERIOR a la llegada, fabricada
+  por una venta (no de otro pase) ESCRITA DESPUÉS del pase (id de su fila mayor que el
+  de las filas del pase, la misma regla de «posterior» que C.8 #3). Desvío de la spec:
+  la regla literal («una semilla anterior a la llegada») marcaba en falso a quien ya
+  tenía, ANTES de hacer el pase, una venta de B sin compras (archivo de B que empieza
+  tarde). El replay suma `semillas_detalle` (`semillas` queda igual).
+- Desmarca sólo si el lado que acaba de mirar vuelve a cuadrar y el motivo era ese lado.
+- Deshacer un desfasado por 'origen' con A no reconstruible (se cargó algo a mano del
+  activo en A después) frena con `MSG_DESFASADO_CON_A_MANO` (la salida: borrar lo
+  cargado a mano; con A a salvo el deshacer la rearma desde el registro).
+- Las pruebas: `_rebuild()` del arnés afirma qué pases quedaron marcados (ninguno salvo
+  los que la prueba desfasó): toda prueba que rearma con pases sanos es también una
+  prueba de que no hay falsos.
+Pendientes que deja:
+- **E11**: `revaluar_patas` no cambia lo que compara el detector (cantidades y montos en
+  la moneda de los lotes, no en dólares). Un `tc_mode` en la edición de grupo de A
+  reescribe `tc_compra` de la compra del archivo: C (en dólares) de las patas queda con
+  el dólar viejo y el detector NO lo ve (no compara dólares). Si `revaluar_patas`
+  recalcula C desde la receta, usa el `tc_compra` de la foto (el viejo).
+- Un pase desfasado por un lado que después también deja de cuadrar del otro queda con
+  el primer motivo; si el primero vuelve a cuadrar, se desmarca y el otro lado se
+  marca recién en el próximo rearmado de ESE par.
+- El lado B sólo se mira cuando el par de B tiene alguna venta (`rebuild_fifo_after_import`
+  saltea los pares sin ventas; `rebuild_pair_asset` corre siempre). Sin ventas en B no
+  hay semillas, así que no se pierde nada.
