@@ -1462,20 +1462,45 @@ def parse_ppi_tenencia(rows) -> TenenciaSnapshot:
 #     USD;2,03;1;USD;2,03                          → saldo en dólares → cash
 _COCOS_TEN_HEADER = ("instrumento", "cantidad", "precio", "moneda", "total")
 
+# Columnas que sólo trae el archivo de MOVIMIENTOS de Cocos. Su header también
+# contiene las 5 de la foto (nroTicket;…;instrumento;…;cantidad;precio;…;total):
+# estas son las que lo distinguen.
+_COCOS_MOVIMIENTOS_MARCAS = ("nroticket", "fechaejecucion", "tipooperacion")
+
+
+def _celdas_del_header_cocos(line: str) -> List[str]:
+    return [_deaccent(x).strip().lower() for x in (line or "").split(";")]
+
 
 def looks_like_cocos_tenencia(text: str) -> bool:
-    """Heurística para el Estado de Cuenta de Cocos (CSV ';' con el header
-    instrumento;cantidad;precio;moneda;total)."""
+    """¿Es el Estado de Cuenta / portfolio_report de Cocos? (CSV ';').
+
+    Se reconoce por TENER las 5 columnas de la foto y NO tener ninguna de las que
+    sólo trae el archivo de Movimientos. No por tener EXACTAMENTE esas 5: el
+    24/11/2026 Cocos le sumó al export `precioAsOf`, `usedFallbackPrice` y
+    `missingPrice`, y el match exacto dejó de reconocerlo — el asistente lo tomó por
+    otro archivo de Movimientos y lo rechazó por «header distinto». Una columna nueva
+    de Cocos no tiene que volver a romper la carga.
+
+    UN SOLO dueño de esta regla: la pantalla le pregunta al servidor
+    (/api/imports/classify-tenencia) en vez de tener su copia."""
     for raw in (text or "").splitlines():
         line = raw.strip()
         if not line:
             continue
-        # Match EXACTO (set igual, no subconjunto): el header de Movimientos de
-        # Cocos (nroTicket;…;instrumento;…;cantidad;precio;…;total) CONTIENE estos
-        # 5 tokens → un chequeo de subconjunto confundiría Movimientos con la foto.
-        cells = set(c for c in (_deaccent(x).strip().lower() for x in line.split(";")) if c)
-        return cells == set(_COCOS_TEN_HEADER)
+        cells = set(c for c in _celdas_del_header_cocos(line) if c)
+        if cells & set(_COCOS_MOVIMIENTOS_MARCAS):
+            return False
+        return set(_COCOS_TEN_HEADER) <= cells
     return False
+
+
+def _columnas_de_la_foto_cocos(header_line: str) -> Dict[str, int]:
+    """{columna: posición} de la foto de Cocos, leídas del header. Cocos agregó
+    columnas en el medio (`precioAsOf` quedó entre precio y moneda): leer por
+    posición fija tomaba la fecha por la moneda y la moneda por el total."""
+    pos = {c: i for i, c in enumerate(_celdas_del_header_cocos(header_line)) if c}
+    return {c: pos[c] for c in _COCOS_TEN_HEADER if c in pos}
 
 
 def parse_cocos_tenencia(text: str) -> TenenciaSnapshot:
@@ -1495,17 +1520,34 @@ def parse_cocos_tenencia(text: str) -> TenenciaSnapshot:
     cash_usd = 0.0
     saw_cash_row = False   # ¿el archivo lista el EFECTIVO? (señal de completitud)
     seen = set()
+    # Dónde está cada dato: lo dice el header (ver `_columnas_de_la_foto_cocos`).
+    # Sin header reconocible, el orden de siempre.
+    clasico = dict(zip(_COCOS_TEN_HEADER, range(len(_COCOS_TEN_HEADER))))
+    col = clasico
     for raw in (text or "").splitlines():
         line = raw.strip()
         if not line:
             continue
         cells = [c.strip() for c in line.split(";")]
-        if len(cells) < 5:
+        if cells and cells[0].upper() == "INSTRUMENTO":   # header
+            leidas = _columnas_de_la_foto_cocos(line)
+            if len(leidas) == len(_COCOS_TEN_HEADER):
+                col = leidas
             continue
-        instr, qty_s, _price_s, moneda, total_s = cells[0], cells[1], cells[2], cells[3], cells[4]
+        # Cada fila con SU forma: en el export del 24/11/2026 los activos traen las
+        # 8 columnas del header nuevo, pero las filas de EFECTIVO (ARS / USD) siguen
+        # con las 5 de siempre (instrumento;cantidad;precio;moneda;total). Leerlas con
+        # el header nuevo las descartaba por cortas: la foto quedaba «sin efectivo»
+        # → incompleta, sin ajuste de caja y sin dar por vendido lo que ya no está.
+        if len(cells) > max(col.values()):
+            c = col
+        elif len(cells) >= len(_COCOS_TEN_HEADER):
+            c = clasico
+        else:
+            continue
+        instr, qty_s, moneda, total_s = (cells[c["instrumento"]], cells[c["cantidad"]],
+                                         cells[c["moneda"]], cells[c["total"]])
         iu = instr.upper().strip()
-        if iu == "INSTRUMENTO":            # header
-            continue
         # Filas de CASH: el instrumento ES la moneda ('ARS' / 'USD'), sin ticker.
         if iu in ("ARS", "PESOS", "PESO ARGENTINO", "$"):
             cash_ars += num(qty_s); saw_cash_row = True; continue

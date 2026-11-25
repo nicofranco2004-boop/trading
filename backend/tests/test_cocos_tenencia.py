@@ -69,6 +69,73 @@ class CocosTenenciaTest(unittest.TestCase):
         self.assertAlmostEqual(snap.cash_ars, 48763.5)
         self.assertAlmostEqual(snap.cash_usd, 2.03 + 0.18, places=2)
 
+    # ── El formato del 24/11/2026 ────────────────────────────────────────────
+    # Cocos le sumó al export tres columnas, una de ellas EN EL MEDIO (precioAsOf
+    # entre precio y moneda). Un usuario subió Movimientos + portfolio y el
+    # asistente lo rechazó por «header distinto»: el reconocimiento pedía las 5
+    # columnas EXACTAS, y el lector leía por posición (la fecha como moneda).
+    _CSV_NUEVO = (
+        "instrumento;cantidad;precio;precioAsOf;moneda;total;usedFallbackPrice;missingPrice\n"
+        "CEDEAR NVIDIA CORPORATION (NVDA);28;12450;2026-11-24;ARS;348600;0;0\n"
+        "BANCO MACRO S.A. B  1 V. ESCRIT (BMA);39;14110;2026-11-24;ARS;550290;0;0\n"
+        "FCI COCOS RENDIMIENTO CL. A $ ESC (COCORMA);1000,5;1,05;2026-11-24;ARS;1050525;0;0\n"
+        # Así viene de verdad (archivo real del 24/11): las filas de EFECTIVO
+        # conservan las 5 columnas viejas aunque el header tenga 8.
+        "ARS;48763,5;1;ARS;48763,5\n"
+        "USD;2,03;1;USD;2,03\n"
+    )
+
+    def test_el_efectivo_en_filas_de_5_columnas_cuenta_y_la_foto_queda_completa(self):
+        snap = parse_cocos_tenencia(self._CSV_NUEVO)
+        self.assertAlmostEqual(snap.cash_ars, 48763.5)
+        self.assertAlmostEqual(snap.cash_usd, 2.03, places=2)
+        self.assertEqual(snap.warnings, [], "con el efectivo a la vista la foto es completa")
+
+    def test_tambien_si_el_efectivo_viene_con_las_8_columnas(self):
+        csv = self._CSV_NUEVO.replace("ARS;48763,5;1;ARS;48763,5\n", "ARS;48763,5;1;2026-11-24;ARS;48763,5;0;0\n")
+        snap = parse_cocos_tenencia(csv)
+        self.assertAlmostEqual(snap.cash_ars, 48763.5)
+        self.assertEqual(snap.warnings, [])
+
+    def test_reconoce_el_formato_nuevo_con_columnas_de_mas(self):
+        self.assertTrue(looks_like_cocos_tenencia(self._CSV_NUEVO))
+        # Y si mañana agregan otra columna, tampoco se rompe.
+        self.assertTrue(looks_like_cocos_tenencia(
+            "instrumento;cantidad;precio;moneda;total;algoNuevo\nX;1;1;ARS;1;z\n"))
+
+    def test_movimientos_sigue_sin_confundirse_con_la_foto_aunque_le_agreguen_columnas(self):
+        mov = ("nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;tipoOperacion;"
+               "instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;otros;total;precioAsOf")
+        self.assertFalse(looks_like_cocos_tenencia(mov))
+        # Ni con una sola de las marcas de Movimientos.
+        self.assertFalse(looks_like_cocos_tenencia("instrumento;cantidad;precio;moneda;total;nroTicket"))
+
+    def test_lee_el_formato_nuevo_por_nombre_de_columna(self):
+        snap = parse_cocos_tenencia(self._CSV_NUEVO)
+        by = {h.ticker: h for h in snap.holdings}
+        self.assertEqual(set(by), {"NVDA", "BMA", self._FCI})
+        self.assertAlmostEqual(by["NVDA"].quantity, 28)
+        self.assertAlmostEqual(by["NVDA"].value, 348600)            # no la fecha, no la moneda
+        self.assertEqual(by["NVDA"].currency, "ARS")
+        self.assertAlmostEqual(by["NVDA"].price_per1, 348600 / 28, places=2)
+        self.assertEqual(by["NVDA"].asset_type, "CEDEAR")
+        self.assertAlmostEqual(snap.cash_ars, 48763.5)
+        self.assertAlmostEqual(snap.cash_usd, 2.03, places=2)
+
+    def test_el_formato_nuevo_da_lo_mismo_que_el_viejo(self):
+        """Los mismos datos en los dos formatos tienen que dar la misma foto."""
+        viejo = parse_cocos_tenencia(
+            "instrumento;cantidad;precio;moneda;total\n"
+            "CEDEAR NVIDIA CORPORATION (NVDA);28;12450;ARS;348600\n"
+            "BANCO MACRO S.A. B  1 V. ESCRIT (BMA);39;14110;ARS;550290\n"
+            "FCI COCOS RENDIMIENTO CL. A $ ESC (COCORMA);1000,5;1,05;ARS;1050525\n"
+            "ARS;48763,5;1;ARS;48763,5\n"
+            "USD;2,03;1;USD;2,03\n")
+        nuevo = parse_cocos_tenencia(self._CSV_NUEVO)
+        fila = lambda s: sorted((h.ticker, h.quantity, h.value, h.currency, h.asset_type) for h in s.holdings)
+        self.assertEqual(fila(viejo), fila(nuevo))
+        self.assertEqual((viejo.cash_ars, viejo.cash_usd), (nuevo.cash_ars, nuevo.cash_usd))
+
     def test_reconcile_matched(self):
         snap = parse_cocos_tenencia(_CSV)
         # 'current' usa el símbolo canónico (así lo guarda el normalizer de Movimientos).

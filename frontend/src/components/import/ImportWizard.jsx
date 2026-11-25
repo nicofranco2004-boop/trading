@@ -125,18 +125,6 @@ const PLATFORM_BASE_CURRENCY = {
   balanz_internacional: 'USD',
 }
 
-// Estado de Cuenta de Cocos (foto de tenencia) — header del CSV. Lo detectamos
-// por CONTENIDO para apartarlo de los Movimientos (ambos son CSV) y rutearlo al
-// flujo de tenencia, igual que el PDF de Bull Market. Reconcilia, no duplica.
-// Match EXACTO (set igual, no subconjunto): el header de Movimientos
-// (nroTicket;…;instrumento;…;cantidad;precio;…;total) CONTIENE estos 5 tokens
-// → un chequeo de subconjunto lo confundiría y rutearía mal los Movimientos.
-function looksLikeCocosTenenciaCsv(headerLine) {
-  const cells = new Set(String(headerLine || '').toLowerCase().split(';').map(c => c.trim()).filter(Boolean))
-  const want = ['instrumento', 'cantidad', 'precio', 'moneda', 'total']
-  return cells.size === want.length && want.every(t => cells.has(t))
-}
-
 /**
  * ¿Hay que sugerirle a esta persona que suba la foto de tenencia?
  *
@@ -382,6 +370,51 @@ const OP_LABELS = {
 // 'wallbit' = la integración: queda en el Paso 0 con «Integración con broker»
 // elegida, que es donde se pega la clave de Wallbit (no hay archivo). Sin la
 // prop, el asistente arranca en el Paso 0 como siempre.
+/**
+ * De los archivos que subió la persona, ¿cuál es la FOTO de tenencia (Estado de
+ * Cuenta / Portfolio) y cuáles son Movimientos? La foto se aparta y se aplica
+ * DESPUÉS de los Movimientos (la reconciliación necesita las posiciones creadas).
+ *
+ *  · Bull Market: la foto es el único PDF → se reconoce acá, por la extensión.
+ *  · Cocos, PPI, IEB e inviu: se lo pregunta al SERVIDOR (/imports/classify-tenencia),
+ *    el dueño de esa regla. Cocos tenía acá su propia copia, que pedía las 5
+ *    columnas EXACTAS del portfolio: el 24/11/2026 Cocos le agregó tres
+ *    (precioAsOf, usedFallbackPrice, missingPrice) y la copia dejó de reconocerlo
+ *    — el archivo iba como Movimientos y el servidor lo rechazaba por «header
+ *    distinto». En Cocos se pregunta aun con un solo archivo, para poder avisar
+ *    «falta el de Movimientos»; en los otros, con dos o más (con uno solo no hay
+ *    nada que separar).
+ *  · Si la pregunta falla, todo va como Movimientos (best-effort: no rompe).
+ *
+ * `clasificar(formData)` hace el pedido; se inyecta para poder probarla.
+ * @returns {Promise<{tenFile: File|null, tenFmt: string|null, ccFiles: File[]}>}
+ */
+export async function separarLaFoto(files, format, clasificar) {
+  let tenFile = null, tenFmt = null
+  let ccFiles = []
+  for (const f of files) {
+    if (/\.pdf$/i.test(f.name || '')) { tenFile = f; tenFmt = null; continue }  // Bull Market
+    ccFiles.push(f)
+  }
+  const minimo = format === 'cocos' ? 1 : 2
+  if (!tenFile && ['cocos', 'ppi', 'ieb', 'inviu'].includes(format) && ccFiles.length >= minimo) {
+    try {
+      const cfd = new FormData()
+      ccFiles.forEach(f => cfd.append('files', f))
+      const cls = await clasificar(cfd)
+      if (cls?.file_name) {
+        const foto = ccFiles.find(f => (f.name || '') === cls.file_name)
+        if (foto) {
+          tenFile = foto
+          tenFmt = cls.format || 'ppi'
+          ccFiles = ccFiles.filter(f => f !== foto)
+        }
+      }
+    } catch (e) { /* sin foto → importa solo Movimientos, no rompe */ }
+  }
+  return { tenFile, tenFmt, ccFiles }
+}
+
 export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected, initialPreview = null, redoBanner = null, plataformaInicial = null }) {
   const [step, setStep] = useState(initialPreview ? STEP_PREVIEW : STEP_INTRO)
   // Con `plataformaInicial`, hasta que llega la lista de brokers no se sabe a
@@ -662,39 +695,9 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
       if (isSpecificParser) {
         // Apartamos la FOTO de tenencia y la aplicamos DESPUÉS de los Movimientos
         // (la reconciliación necesita las posiciones ya creadas). Bull Market = el
-        // PDF; Cocos = el CSV del Estado de Cuenta (otro header → lo detectamos por
-        // contenido). Al preview de Movimientos va solo el resto.
-        let tenFile = null, tenFmt = null
-        let ccFiles = []
-        for (const f of files) {
-          if (/\.pdf$/i.test(f.name || '')) { tenFile = f; tenFmt = null; continue }  // Bull Market
-          if (format === 'cocos' && /\.csv$/i.test(f.name || '')) {
-            let head = ''
-            try { head = await f.slice(0, 4096).text() } catch { head = '' }
-            const firstLine = head.split(/\r?\n/).find(l => l.trim()) || ''
-            if (looksLikeCocosTenenciaCsv(firstLine)) { tenFile = f; tenFmt = 'cocos'; continue }
-          }
-          ccFiles.push(f)
-        }
-        // PPI, IEB e inviu: la foto (Estado de Cuenta / Portafolio / Tenencias) es
-        // xlsx IGUAL que los Movimientos → el browser no puede mirar adentro para
-        // distinguirlas. Si no apartamos foto client-side y hay ≥2 archivos, le
-        // preguntamos al backend cuál es la foto (classify-tenencia). Best-effort.
-        if (!tenFile && (format === 'ppi' || format === 'ieb' || format === 'inviu') && ccFiles.length >= 2) {
-          try {
-            const cfd = new FormData()
-            ccFiles.forEach(f => cfd.append('files', f))
-            const cls = await api.upload('/imports/classify-tenencia', cfd)
-            if (cls?.file_name) {
-              const foto = ccFiles.find(f => (f.name || '') === cls.file_name)
-              if (foto) {
-                tenFile = foto
-                tenFmt = cls.format || 'ppi'
-                ccFiles = ccFiles.filter(f => f !== foto)
-              }
-            }
-          } catch (e) { /* sin foto → importa solo Movimientos, no rompe */ }
-        }
+        // PDF; Cocos, PPI, IEB e inviu = lo dice el servidor (ver `separarLaFoto`).
+        // Al preview de Movimientos va solo el resto.
+        const { tenFile, tenFmt, ccFiles } = await separarLaFoto(files, format, (fd) => api.upload('/imports/classify-tenencia', fd))
         setTenenciaFile(tenFile)
         setTenenciaFormat(tenFmt)
         if (tenFile && ccFiles.length === 0) {
