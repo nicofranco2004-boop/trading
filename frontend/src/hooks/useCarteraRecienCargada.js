@@ -19,6 +19,7 @@ import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, cryptoCostInUs
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { groupBrokersIntoAccounts } from '../utils/brokerAccounts'
+import { cedearEspecieBase } from '../utils/tickers'
 
 export function useCarteraRecienCargada() {
   const { valuationDollar, costBasis } = useCurrency()
@@ -77,6 +78,7 @@ export function useCarteraRecienCargada() {
     const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
     const exchangeBrokers = new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name))
     const byAsset = new Map()
+    const porEspecie = new Map()
     for (const p of positions) {
       if (p.is_cash) continue
       const isARS = arsBrokers.has(p.broker)
@@ -147,7 +149,18 @@ export function useCarteraRecienCargada() {
       cur.pnl_usd += pnlUsd
       cur.value_usd += (valueUsd || 0)
       byAsset.set(p.asset, cur)
+      // Cuánto vale cada ACTIVO (no cada lote): la entrada que piden los
+      // hallazgos de concentración de utils/diagnostics.js (`pieData`). En
+      // Argentina la pata en pesos y la en dólares del mismo CEDEAR son UN activo:
+      // se juntan por su especie, como hace Diagnóstico (pages/Insights.jsx).
+      const enBolsaAr = isARS || isArUsdBroker(p.broker) || costInPesos(p)
+      const especie = enBolsaAr ? cedearEspecieBase(p.asset) : (p.asset || '').toUpperCase()
+      porEspecie.set(especie, (porEspecie.get(especie) || 0) + (valueUsd || 0))
     }
+    const pieData = [...porEspecie.entries()]
+      .map(([name, v]) => ({ name, value: +v.toFixed(2) }))
+      .filter(x => x.value > 0)
+      .sort((a, b) => b.value - a.value)
     const arr = Array.from(byAsset.values())
     arr.sort((a, b) => b.pnl_usd - a.pnl_usd)
     const best = arr[0] || null
@@ -159,8 +172,10 @@ export function useCarteraRecienCargada() {
     // que Cartera (utils/brokerAccounts.js).
     const brokerCount = groupBrokersIntoAccounts(brokers).length
 
-    return { value, invested, pnl, pnlPct, best, worst, positionCount, brokerCount }
+    return { value, invested, pnl, pnlPct, best, worst, positionCount, brokerCount, pieData }
   }, [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis])
 
-  return { loading, stats }
+  // positions, brokers y tcValuacion van afuera para los hallazgos que los miran
+  // (el efectivo de utils/diagnostics.js): los mismos con los que se valuó.
+  return { loading, stats, positions, brokers, tcValuacion }
 }

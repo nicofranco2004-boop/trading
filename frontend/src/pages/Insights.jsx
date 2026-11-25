@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { rutaParaImportar } from '../utils/navegacion'
 import { ArrowRight } from 'lucide-react'
 import EmptyState from '../components/EmptyState'
+import DiagnosticText from '../components/DiagnosticText'
 import {
   PieChart, Pie, Cell, Legend, Tooltip, LineChart, Line,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer, ReferenceLine,
@@ -4257,22 +4258,8 @@ export function ContribList({ tone, title, items, fmt, visto = true, escala = 0,
   )
 }
 
-// DiagnosticText — renderiza bullets de diagnóstico con `**...**` en negrita.
-// Mantenemos la sintaxis simple (no es markdown completo): split por **,
-// cada índice impar va en <strong>.
-function DiagnosticText({ text }) {
-  if (!text) return null
-  const parts = text.split('**')
-  return (
-    <>
-      {parts.map((part, i) => (
-        i % 2 === 1
-          ? <strong key={i} className="font-semibold text-ink-0 dark:text-white">{part}</strong>
-          : <span key={i}>{part}</span>
-      ))}
-    </>
-  )
-}
+// DiagnosticText (los `**...**` en negrita) vive en components/DiagnosticText:
+// lo usa también el resumen de «tu cartera» de la bienvenida.
 
 // Título corto de un item de diagnóstico para el preview colapsado del acordeón.
 // Mismo parseo que DiagnosisCard/FeaturedFinding: quita markdown bold y toma la

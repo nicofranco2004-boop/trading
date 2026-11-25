@@ -122,6 +122,7 @@ export const EVENTOS = {
   bienvenida_subir_abierto: { label: 'Abrió la subida del archivo', donde: 'Bienvenida' },
   bienvenida_historial_cargado: { label: 'Confirmó su primer archivo', donde: 'Bienvenida' },
   bienvenida_cartera_vista: { label: 'Vio «tu cartera vale…»', donde: 'Bienvenida', tipo: 'vista' },
+  bienvenida_hallazgos_vistos: { label: 'Vio el resumen de lo que Mervall-E encontró en su cartera', donde: 'Bienvenida', tipo: 'vista' },
   bienvenida_perfil_hecho: { label: 'Completó el perfil de inversor', donde: 'Bienvenida' },
   bienvenida_perfil_despues: { label: 'Dejó el perfil para más tarde', donde: 'Bienvenida' },
   bienvenida_celular_hecho: { label: 'Tocó «Mostrame cómo» (Rendi en el celular)', donde: 'Bienvenida' },

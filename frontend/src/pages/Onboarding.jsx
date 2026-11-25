@@ -46,9 +46,9 @@
 // Medición: cada paso tiene su evento propio (`bienvenida_*`, utils/usoCatalogo):
 // el panel de uso guarda sólo el nombre, y es la forma de ver dónde se va la gente.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowRight, Check, ChevronLeft, Copy, Download, FileSpreadsheet, LogOut, Plug, Smartphone, Upload } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Check, ChevronLeft, Copy, Download, FileSpreadsheet, Lightbulb, LogOut, Plug, Smartphone, TrendingDown, TrendingUp, Upload } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import PageMeta from '../components/PageMeta'
 import MervallE from '../components/ai/MervallE'
@@ -59,6 +59,7 @@ import BrokerInstructions, { BROKER_GUIDES } from '../components/import/BrokerIn
 import InvestorProfileForm from '../components/InvestorProfileForm'
 import InstalarAppModal from '../components/InstalarAppModal'
 import AnimatedNumber from '../components/AnimatedNumber'
+import DiagnosticText from '../components/DiagnosticText'
 import { useAuth } from '../contexts/AuthContext'
 import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
@@ -70,6 +71,7 @@ import { fmtUsd } from '../utils/format'
 import { whatsappUrl } from '../utils/support'
 import { faltaConfigurar, marcarRecienConfigurado } from '../utils/bienvenidaObligatoria'
 import { descargarPlantilla, PLANILLA_DE_RENDI } from '../utils/descargarPlantilla'
+import { hallazgosDeLaBienvenida } from '../utils/hallazgosDeLaBienvenida'
 import { esCelular, plataformaDe, yaInstalada, hayInstalador, instalarAhora } from '../utils/instalarApp'
 import { guardar as guardarEnAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
@@ -822,9 +824,13 @@ function PasoPlanilla({ n, titulo, children }) {
 
 function PasoCartera({ setCara, onSeguir }) {
   // El MISMO cálculo que /bienvenida (pages/FirstInsight.jsx).
-  const { loading, stats } = useCarteraRecienCargada()
+  const { loading, stats, positions, brokers, tcValuacion } = useCarteraRecienCargada()
   const { hidden: oculto } = usePrivacy()
   const conValor = !!stats && stats.value > 0
+  // Lo que Mervall-E encontró: 3 o 4 cosas, no sólo el total (utils/hallazgosDeLaBienvenida).
+  const hallazgos = useMemo(
+    () => (conValor ? hallazgosDeLaBienvenida({ stats, positions, brokers, tcValuacion, oculto }) : []),
+    [conValor, stats, positions, brokers, tcValuacion, oculto])
 
   // «Vio "tu cartera vale…"» recién cuando el valor está a la vista: mientras
   // dice «estoy sumando todo…» todavía no lo vio, y sin precios no lo ve.
@@ -833,7 +839,8 @@ function PasoCartera({ setCara, onSeguir }) {
     if (loading || !conValor || contada.current) return
     contada.current = true
     track('bienvenida_cartera_vista')
-  }, [loading, conValor])
+    if (hallazgos.length) track('bienvenida_hallazgos_vistos')
+  }, [loading, conValor, hallazgos.length])
 
   useEffect(() => {
     if (loading) { setCara('cargando'); return }
@@ -846,7 +853,9 @@ function PasoCartera({ setCara, onSeguir }) {
   const texto = loading
     ? ['Dame un segundo, estoy sumando todo…']
     : conValor
-      ? ['¡Listo! Esto es lo que tenés hoy.']
+      ? (hallazgos.length
+          ? ['¡Listo! Leí todo tu historial.', 'Esto es lo que encontré en tu cartera:']
+          : ['¡Listo! Esto es lo que tenés hoy.'])
       : ['¡Listo, ya tengo tu historial!', 'Todavía no tengo los precios para ponerle un valor a tu cartera: seguimos y lo ves en Inicio.']
 
   return (
@@ -871,14 +880,48 @@ function PasoCartera({ setCara, onSeguir }) {
         <div className="h-[150px] rounded-xl border border-line bg-bg-1/60 esqueleto" aria-hidden="true" />
       )}
 
+      {!loading && hallazgos.length > 0 && (
+        <ul className="space-y-2.5" aria-label="Lo que encontré en tu cartera">
+          {hallazgos.map((h, i) => (
+            <Hallazgo key={h.id} hallazgo={h} demora={ENTRADA_HALLAZGOS_MS + i * ENTRE_HALLAZGOS_MS} />
+          ))}
+        </ul>
+      )}
+
       {!loading && (
-        <div className="bv-entra" style={{ '--d': '500ms' }}>
+        <div className="bv-entra" style={{ '--d': `${hallazgos.length ? ENTRADA_HALLAZGOS_MS + hallazgos.length * ENTRE_HALLAZGOS_MS : 500}ms` }}>
           <button type="button" onClick={onSeguir} className={`${BOTON_1} w-full sm:w-auto`}>
             Seguir <ArrowRight size={17} strokeWidth={2} aria-hidden="true" />
           </button>
         </div>
       )}
     </div>
+  )
+}
+
+// Los hallazgos entran de a uno, después de que el total terminó de contar: es
+// Mervall-E contando lo que vio, no una tabla que aparece de golpe. Con
+// «reducir movimiento», `bv-entra` no anima y aparecen todos juntos.
+const ENTRADA_HALLAZGOS_MS = 900
+const ENTRE_HALLAZGOS_MS = 450
+const CARA_DEL_HALLAZGO = {
+  pos: { Icono: TrendingUp, color: 'text-rendi-pos', fondo: 'bg-rendi-pos/10' },
+  neg: { Icono: TrendingDown, color: 'text-rendi-neg', fondo: 'bg-rendi-neg/10' },
+  atencion: { Icono: AlertTriangle, color: 'text-rendi-warn', fondo: 'bg-rendi-warn/10' },
+  info: { Icono: Lightbulb, color: 'text-data-violet', fondo: 'bg-data-violet/10' },
+}
+
+function Hallazgo({ hallazgo, demora }) {
+  const { Icono, color, fondo } = CARA_DEL_HALLAZGO[hallazgo.tono] || CARA_DEL_HALLAZGO.info
+  return (
+    <li className="bv-entra flex items-start gap-3 rounded-xl border border-line bg-bg-1 px-4 py-3.5" style={{ '--d': `${demora}ms` }}>
+      <span className={`w-8 h-8 rounded-lg ${fondo} ${color} flex items-center justify-center flex-shrink-0`}>
+        <Icono size={16} strokeWidth={2} aria-hidden="true" />
+      </span>
+      <p className="min-w-0 flex-1 text-[14px] sm:text-[15px] text-ink-1 leading-snug pt-1">
+        <DiagnosticText text={hallazgo.texto} />
+      </p>
+    </li>
   )
 }
 

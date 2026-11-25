@@ -316,10 +316,16 @@ describe('4 · al confirmar el archivo: «tu cartera vale…»', () => {
     await tocar('wizard-cerrar')
     await vueltas(10)
     expect(donde.ahora).toBe('/onboarding')
-    expect(todo()).toContain('¡Listo! Esto es lo que tenés hoy.')
+    expect(todo()).toContain('Esto es lo que encontré en tu cartera')
     expect(todo()).toContain('Tu cartera hoy')
     expect(todo()).toContain('1 posición en 1 broker')
+    // El resumen: no sólo el total. AAPL costó 1000 y vale 2000 (10 × 200), y es
+    // todo lo que hay: cómo viene, el mejor activo y la concentración.
+    expect(todo()).toContain('Lo que tenés hoy vale USD 1.000 más de lo que pagaste')
+    expect(todo()).toContain('Tu mejor activo es AAPL')
+    expect(todo()).toContain('representa el 100% de tu cartera')
     expect(eventos).toContain('bienvenida_cartera_vista')
+    expect(eventos).toContain('bienvenida_hallazgos_vistos')
     expect(atributo('data-mervalle')).toBe('festejo')
   })
 })
