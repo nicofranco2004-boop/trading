@@ -6173,10 +6173,11 @@ def me(request: Request, uid: int = Depends(get_effective_user)):
         # sólo a quien paga de verdad. Quien está en la prueba tiene tier
         # 'pro'/'plus' igual que quien paga, así que la regla no puede ser el
         # tier: ver `subscriptions.debe_ver_aviso_precios`.
-        # ⚠️ Va por el uid AUTENTICADO y no por el resuelto: si un asesor está
-        # mirando la cuenta de un cliente, `uid` es el del CLIENTE, y el aviso
-        # —más el click que lo marca como visto— le corresponde al asesor. Mismo
-        # patrón que usa `/api/plan/features` para el estado de la prueba.
+        # Va por quien inició sesión. En /auth/me `uid` ya es ése: el encabezado
+        # X-Rendi-Client-Id se ignora en `/api/auth` (CLIENT_CTX_EXEMPT_PREFIXES),
+        # así que con un asesor mirando a un cliente el aviso es del asesor. El
+        # `rendi_auth_uid` es un cinturón por si `/api/auth` deja de estar exento
+        # (en `/api/plan/features`, que no es exenta, sí hace falta).
         try:
             from billing import subscriptions as _subs
             _yo = getattr(request.state, "rendi_auth_uid", uid)
@@ -6275,8 +6276,12 @@ def me(request: Request, uid: int = Depends(get_effective_user)):
 
         # ¿Tiene que pasar por la bienvenida (subir su primer archivo) antes de
         # ver Rendi? La regla entera vive en `bienvenida.falta_cargar_historial`;
-        # acá sólo se pregunta. Por el uid AUTENTICADO, como `aviso_precios`: con
-        # un asesor mirando a un cliente, la bienvenida no le toca al cliente.
+        # acá sólo se pregunta. En /auth/me `uid` es siempre el de quien inició
+        # sesión: el encabezado X-Rendi-Client-Id se ignora en `/api/auth`
+        # (CLIENT_CTX_EXEMPT_PREFIXES), así que un asesor mirando a un cliente
+        # recibe su propio valor (lo prueba AsesorMirandoAUnCliente). El
+        # `rendi_auth_uid` es un cinturón, como en `aviso_precios`: si un día
+        # `/api/auth` deja de estar exento, el campo sigue siendo del asesor.
         # Va al final a propósito: es la última lectura del pedido, así que ni
         # siquiera un error suyo puede dejar a medias los campos de arriba (y
         # ante un error la función ya devuelve False sola: falla abierta).
@@ -15384,12 +15389,11 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
     # Auto-fill entry_date a hoy (ARGENTINO) si no viene del cliente. Con UTC,
     # una posición dada de alta a las 22:00 nacía fechada mañana.
     entry_date = p.entry_date or _iso_today()
-    # ⚠️ Sin fecha, `entry_date` dice cuándo se CARGÓ, no cuándo se compró: el
-    # formulario de bienvenida (PositionStep, «la posición que tenés») no manda
-    # fecha. Queda anotado en la receta de la fila (`sin_fecha_de_compra`) para que
-    # «qué se movió hoy» (`_lote_comprado_hoy`) no lo cuente como comprado hoy: con
-    # el promedio de hace años, el mapa decía «Hoy tu cartera +116 %» (auditoría
-    # 31/10, A1).
+    # ⚠️ Sin fecha, `entry_date` dice cuándo se CARGÓ, no cuándo se compró (un
+    # pedido que no manda fecha de compra). Queda anotado en la receta de la fila
+    # (`sin_fecha_de_compra`) para que «qué se movió hoy» (`_lote_comprado_hoy`) no
+    # lo cuente como comprado hoy: con el promedio de hace años, el mapa decía «Hoy
+    # tu cartera +116 %» (auditoría 31/10, A1).
     sin_fecha_de_compra = not p.entry_date
     # La pata de la cuenta que corresponde a la moneda: una compra en dólares
     # "en Cocos" vive en 'Cocos · USD', que es donde están sus dólares. De acá

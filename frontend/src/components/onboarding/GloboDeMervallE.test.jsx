@@ -55,6 +55,16 @@ describe('las piezas puras', () => {
     expect(esperaDespuesDe('.')).toBeGreaterThan(esperaDespuesDe('a'))
     expect(esperaDespuesDe(',')).toBeGreaterThan(esperaDespuesDe('a'))
   })
+  it('el saludo entero se escribe en menos de 5 s (antes tardaba ~7 y la persona esperaba parada)', () => {
+    // ~15–18 ms por letra y pausas cortas entre frases.
+    expect(esperaDespuesDe('a')).toBeGreaterThanOrEqual(15)
+    expect(esperaDespuesDe('a')).toBeLessThanOrEqual(18)
+    const saludo = '¡Hola, Ana! Soy Mervall-E, y te voy a ayudar a armar tu Rendi.'
+      + 'Arrancás con 10 días de Rendi Pro y después 10 de Plus, gratis y sin tarjeta.'
+      + 'Para mostrarte tu plata necesito tu historial. Son un par de minutos.'
+    const total = [...saludo].reduce((ms, c) => ms + esperaDespuesDe(c), 0)
+    expect(total).toBeLessThan(5000)
+  })
 })
 
 describe('el globo', () => {

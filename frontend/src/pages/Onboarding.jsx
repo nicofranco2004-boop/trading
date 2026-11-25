@@ -7,11 +7,13 @@
 // utils/bienvenidaObligatoria.js; la puerta que manda acá está en App.jsx
 // (Layout), igual que el muro de plan. Esta página se dibuja SIN el armazón de
 // la app (sin menú, sin barras del celular, sin la barra de la prueba): sólo
-// ella y el botón de WhatsApp.
+// ella y el botón de WhatsApp, con links chicos al pie a lo que la puerta deja
+// a la vista (Planes, Privacidad, Términos).
 //
 // Mervall-E guía todo hablando en un globo (GloboDeMervallE). Los pasos:
 //   Configurá tu Rendi   1 hola      — saludo + la prueba gratis (días del servidor)
-//                        2 broker    — la misma lista que el Paso 0 del importador
+//                        2 broker    — la misma lista que el Paso 0 del importador,
+//                                      más Wallbit (se conecta, no sube archivo)
 //                        3 historial — cómo bajar el archivo + el importador
 //   Últimos detalles     4 cartera   — «esto es lo que tenés hoy» (el momento wow)
 //                        5 perfil    — opcional, con «Más tarde»
@@ -26,12 +28,27 @@
 // servidor ya dice que cargó (pasa justo al confirmar el archivo), la página
 // sigue con sus pasos hasta el final.
 //
+// EL PASO VA EN LA DIRECCIÓN (`/onboarding?paso=broker`), y cada paso nuevo
+// AGREGA una entrada al historial: el «atrás» del celular (o deslizar para
+// volver en el iPhone) vuelve al paso anterior en vez de irse de la página.
+// Abrir el importador también agrega una (`&subiendo=1`), así «atrás» lo
+// CIERRA. Lo que se escriba a mano en la dirección se corrige (pasoQueVa): un
+// paso de después de cargar, sin haber cargado, va a «broker»; uno de antes,
+// ya cargado, va a «tu cartera».
+//
+// QUÉ CUENTA COMO «YA CARGÓ»: lo que diga el servidor (`falta_cargar_historial`
+// en false), venga de un archivo, de Wallbit o de lo que exista mañana. Al
+// confirmar (o conectar Wallbit) se le pregunta enseguida; al cerrarse el
+// importador sin una carga a la vista, se le pregunta igual. El cierre del
+// recorrido (las marcas de «se acaba de configurar» y de «ya importó») se hace
+// en el momento de la carga: si sale por «atrás» después de cargar, queda hecho.
+//
 // Medición: cada paso tiene su evento propio (`bienvenida_*`, utils/usoCatalogo):
 // el panel de uso guarda sólo el nombre, y es la forma de ver dónde se va la gente.
 
 import { useEffect, useRef, useState } from 'react'
-import { Navigate, useNavigate } from 'react-router-dom'
-import { ArrowRight, ChevronLeft, FileSpreadsheet, LogOut, Smartphone, Upload } from 'lucide-react'
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { ArrowRight, ChevronLeft, FileSpreadsheet, LogOut, Plug, Smartphone, Upload } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import PageMeta from '../components/PageMeta'
 import MervallE from '../components/ai/MervallE'
@@ -58,6 +75,61 @@ import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 const TRAMO_1 = { titulo: 'Configurá tu Rendi', pasos: ['hola', 'broker', 'historial'], nombres: ['Hola', 'Tu broker', 'Tu historial'] }
 const TRAMO_2 = { titulo: 'Últimos detalles', pasos: ['cartera', 'perfil', 'celular'], nombres: ['Tu cartera', 'Tu perfil', 'Tu celular'] }
+const PASOS = [...TRAMO_1.pasos, ...TRAMO_2.pasos]
+// Los pasos cortos se centran en la pantalla de la compu; los largos (la
+// grilla de brokers, las instrucciones, el perfil) arrancan arriba.
+const PASOS_CORTOS = ['hola', 'cartera', 'celular']
+
+/** La dirección de un paso. «hola» es la bienvenida pelada. */
+export function urlDe(paso, { subiendo = false } = {}) {
+  if (paso === 'hola') return '/onboarding'
+  return `/onboarding?paso=${paso}${subiendo ? '&subiendo=1' : ''}`
+}
+
+/** Qué paso se muestra, a partir del que pide la dirección (`?paso=`). La
+ *  dirección la puede escribir cualquiera o traerla el «atrás»: lo que no tiene
+ *  sentido se corrige acá, en un solo lugar.
+ *   · sin paso (o uno que no existe)            → hola
+ *   · uno de después de cargar, sin haber cargado → broker
+ *   · uno de antes de cargar, ya cargado         → tu cartera (salvo el
+ *     historial con el importador abierto: está mirando lo que importó)
+ *   · el historial sin broker elegido (recargó)  → broker
+ *   · el celular cuando ese paso no va           → perfil */
+export function pasoQueVa(pedido, { yaCargo = false, conBroker = false, conPasoCelular = false, subiendo = false } = {}) {
+  if (!PASOS.includes(pedido)) return 'hola'
+  const antes = TRAMO_1.pasos.includes(pedido)
+  if (yaCargo && antes) return pedido === 'historial' && subiendo && conBroker ? 'historial' : 'cartera'
+  if (!yaCargo && !antes) return 'broker'
+  if (pedido === 'historial' && !conBroker) return 'broker'
+  if (pedido === 'celular' && !conPasoCelular) return 'perfil'
+  return pedido
+}
+
+// El orden de la grilla de brokers: primero los argentinos más usados. Lo que
+// el servidor devuelva y no esté acá va después, en el orden en que vino; la
+// tarjeta «Otro / mi broker no está» siempre va al final (aparte).
+export const ORDEN_DE_BROKERS = ['cocos', 'balanz', 'iol', 'bullmarket', 'ppi', 'ieb', 'inviu', 'wallbit', 'balanz_internacional', 'schwab', 'binance']
+
+// Wallbit no es un lector de archivos (no viene en /imports/parsers/grouped):
+// se conecta con una clave de solo lectura, en la rama «Integración con broker»
+// del MISMO importador (WallbitConnect). Tiene tarjeta propia para que quien
+// invierte ahí no tenga que adivinar que está escondido debajo de «Otro».
+const WALLBIT = { platform: 'wallbit', platform_label: 'Wallbit', integracion: true }
+
+/** La grilla de la bienvenida: la MISMA lista que el Paso 0 del importador
+ *  (withBlockedPlatforms + brokersParaElegir), más Wallbit, en ORDEN_DE_BROKERS. */
+export function brokersDeLaBienvenida(grupos) {
+  const lista = brokersParaElegir(withBlockedPlatforms(grupos))
+  if (!lista.some(g => g.platform === WALLBIT.platform)) lista.push(WALLBIT)
+  const lugar = (g) => {
+    const i = ORDEN_DE_BROKERS.indexOf(g.platform)
+    return i === -1 ? ORDEN_DE_BROKERS.length : i
+  }
+  return lista
+    .map((g, i) => ({ g, i }))
+    .sort((a, b) => lugar(a.g) - lugar(b.g) || a.i - b.i)
+    .map(x => x.g)
+}
 
 // Cuánto saluda Mervall-E al llegar antes de empezar a hablar.
 const MS_SALUDO = 1300
@@ -124,42 +196,141 @@ export default function Onboarding() {
 }
 
 function Recorrido() {
-  const { user, refreshUser, logout } = useAuth()
+  const { user, refreshUser, updateUser, logout } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const [params] = useSearchParams()
   const isMobile = useIsMobile()
   // En el teléfono (no por el ancho de la ventana): el paso de agregar Rendi al
   // inicio y el aviso de «bajalo desde la compu» son del aparato.
   const [enCelular] = useState(() => esCelular(typeof navigator === 'undefined' ? 'otro' : plataformaDe(navigator)))
   const [conPasoCelular] = useState(() => enCelular && !yaInstalada())
 
-  const [paso, setPaso] = useState('hola')
   const [cara, setCara] = useState('saludo')
-  const [broker, setBroker] = useState(null)        // { platform, nombre, guia } · platform 'personal' = la planilla
-  const cargo = useRef(false)
+  const [broker, setBroker] = useState(null)        // { platform, nombre, guia, integracion } · platform 'personal' = la planilla
+  const [cargo, setCargo] = useState(false)
+  const cargoRef = useRef(false)
   const refrescado = useRef(false)
 
+  // ¿Ya cargó? Lo que vio esta página (confirmó un archivo, conectó Wallbit) o
+  // lo que dice el servidor, venga de donde venga.
+  const yaCargo = cargo || user?.falta_cargar_historial === false
+  const pedido = params.get('paso')
+  const subiendo = params.get('subiendo') === '1'
+  const paso = pasoQueVa(pedido, { yaCargo, conBroker: !!broker, conPasoCelular, subiendo })
+  const abierto = paso === 'historial' && subiendo
+
   useEffect(() => { track('bienvenida_hola') }, [])
+
+  // Si la dirección pedía otra cosa (escrita a mano, un «atrás» a un paso que
+  // ya no va), se corrige SIN agregar entrada: lo que se ve ya es el paso bueno.
+  useEffect(() => {
+    if (pedido !== (paso === 'hola' ? null : paso) || (subiendo && !abierto)) {
+      navigate(urlDe(paso), { replace: true })
+    }
+  }, [pedido, paso, subiendo, abierto, navigate])
 
   const tramo = TRAMO_1.pasos.includes(paso) ? TRAMO_1 : TRAMO_2
   const pasosDelTramo = tramo.pasos.filter(p => p !== 'celular' || conPasoCelular)
   const nombres = pasosDelTramo.map(p => tramo.nombres[tramo.pasos.indexOf(p)])
+  const nombreDelPaso = tramo.nombres[tramo.pasos.indexOf(paso)]
 
+  // El foco del teclado y del lector de pantalla: al cambiar de paso, o al
+  // cerrarse el importador, el botón que tenía el foco ya no existe y el foco
+  // caía en la página entera (el lector volvía a leer desde arriba). Va al
+  // título del paso, que dice dónde está. El globo se anuncia aparte.
+  const tituloRef = useRef(null)
+  const vista = `${paso}|${abierto}`
+  const vistaAnterior = useRef(vista)
+  const pasoAnterior = useRef(paso)
+  useEffect(() => {
+    if (vistaAnterior.current === vista) return
+    vistaAnterior.current = vista
+    if (pasoAnterior.current !== paso) {
+      pasoAnterior.current = paso
+      if (typeof window !== 'undefined') window.scrollTo?.(0, 0)
+    }
+    if (!abierto) tituloRef.current?.focus?.({ preventScroll: true })
+  }, [vista, paso, abierto])
+
+  /** Un paso nuevo: AGREGA una entrada al historial («atrás» vuelve acá). */
   function ir(siguiente) {
-    setPaso(siguiente)
-    if (typeof window !== 'undefined') window.scrollTo?.(0, 0)
+    navigate(urlDe(siguiente))
   }
 
   async function asegurarUsuarioAlDia() {
-    if (refrescado.current) return
-    try { await refreshUser(); refrescado.current = true } catch { /* se reintenta al terminar */ }
+    if (refrescado.current) return true
+    try { await refreshUser(); refrescado.current = true; return true } catch { return false }
   }
+
+  // El cierre del recorrido, en UN lugar: que el tutorial de novedades no
+  // arranque en esta misma visita, y que el próximo import (desde Importar o
+  // Configuración) no lo mande a la primera lectura otra vez (esa pantalla ya
+  // la vio acá, en «tu cartera»).
+  function cerrarElRecorrido() {
+    marcarRecienConfigurado()
+    try { guardarEnAlmacen(CATALOGO.primeraImportacion, '1') } catch { /* sin almacenamiento: a lo sumo la ve una vez */ }
+  }
+
+  // Ya cargó. Se cierra el recorrido ACÁ y no recién al final: si sale por
+  // «atrás» después de cargar, el cierre igual queda hecho.
+  function registrarCarga() {
+    if (cargoRef.current) return
+    cargoRef.current = true
+    setCargo(true)
+    track('bienvenida_historial_cargado')
+    cerrarElRecorrido()
+  }
+
+  // Confirmó un archivo o conectó Wallbit.
+  async function onCargado() {
+    registrarCarga()
+    // Si el pedido falla (corte de señal, un reinicio del servidor), se marca
+    // acá: la confirmación ya probó lo que mira el servidor. Sin esto, la
+    // puerta lo devolvía al «¡Hola!» con el usuario viejo. El próximo
+    // /auth/me pone el valor real.
+    if (!(await asegurarUsuarioAlDia())) updateUser?.({ falta_cargar_historial: false })
+  }
+
+  // Lo que diga el servidor, venga de donde venga (otra pestaña, un refresco).
+  useEffect(() => {
+    if (user && user.falta_cargar_historial === false) registrarCarga()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.falta_cargar_historial])
+
+  // Abrir el importador AGREGA una entrada: «atrás» lo cierra.
+  function abrirSubida() {
+    navigate(urlDe('historial', { subiendo: true }), { state: { subida: true } })
+  }
+  // Cerrarlo con su botón: con la carga hecha, a «tu cartera» (en lugar de la
+  // entrada del importador); sin carga, se saca esa entrada.
+  function cerrarSubida() {
+    if (cargoRef.current || user?.falta_cargar_historial === false) {
+      navigate(urlDe('cartera'), { replace: true })
+    } else if (location.state?.subida) {
+      navigate(-1)
+    } else {
+      navigate(urlDe('historial'), { replace: true })
+    }
+  }
+
+  // Se cerró el importador (con su botón o con «atrás») sin una carga a la
+  // vista: se le pregunta al servidor. Quien conectó Wallbit, o cargó por un
+  // camino que esta página no escucha, pasa a «tu cartera» igual.
+  const estabaAbierto = useRef(false)
+  useEffect(() => {
+    const antes = estabaAbierto.current
+    estabaAbierto.current = abierto
+    if (!antes || abierto || cargoRef.current) return
+    refreshUser()
+      .then(u => { if (u && u.falta_cargar_historial === false) { refrescado.current = true; registrarCarga() } })
+      .catch(() => { /* sin respuesta: se queda acá, esperando */ })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [abierto])
 
   async function terminar() {
     track('bienvenida_terminada')
-    marcarRecienConfigurado()
-    // El próximo import (desde Importar o Configuración) no lo manda a la
-    // primera lectura otra vez: esa pantalla ya la vio acá, en «tu cartera».
-    try { guardarEnAlmacen(CATALOGO.primeraImportacion, '1') } catch { /* sin almacenamiento: a lo sumo la ve una vez */ }
+    cerrarElRecorrido()
     await asegurarUsuarioAlDia()
     navigate('/', { replace: true })
   }
@@ -170,14 +341,16 @@ function Recorrido() {
   else if (paso === 'broker') contenido = <PasoBroker {...props} onElegir={(b) => { setBroker(b); ir('historial') }} />
   else if (paso === 'historial') {
     contenido = (
-      <PasoHistorial {...props} enCelular={enCelular}
-        onCargado={() => { cargo.current = true; track('bienvenida_historial_cargado'); asegurarUsuarioAlDia() }}
-        onCerrado={() => { if (!cargo.current) return false; ir('cartera'); return true }} />
+      <PasoHistorial {...props} enCelular={enCelular} abierto={abierto}
+        onAbrir={abrirSubida} onCerrar={cerrarSubida} onCargado={onCargado} />
     )
   } else if (paso === 'cartera') contenido = <PasoCartera {...props} onSeguir={() => ir('perfil')} />
   else if (paso === 'perfil') {
     contenido = <PasoPerfil {...props} onSeguir={() => (conPasoCelular ? ir('celular') : terminar())} />
   } else if (paso === 'celular') contenido = <PasoCelular {...props} onSeguir={terminar} />
+
+  const centrado = PASOS_CORTOS.includes(paso)
+  const LINK_PIE = 'hover:text-ink-1 transition-colors underline-offset-2 hover:underline'
 
   return (
     <div className="min-h-[100dvh] bg-bg-0 bv-fondo text-ink-0 flex flex-col">
@@ -188,7 +361,7 @@ function Recorrido() {
         noindex={true}
       />
 
-      <header className="max-w-5xl w-full mx-auto px-4 sm:px-6 pt-4 sm:pt-6 flex items-center justify-between gap-4">
+      <header className="max-w-4xl w-full mx-auto px-4 sm:px-6 pt-4 sm:pt-6 flex items-center justify-between gap-4">
         <div className="flex items-center gap-2 flex-shrink-0">
           <RendiLogo size={26} />
           <span className="font-semibold text-[17px] tracking-tight">rendi</span>
@@ -198,14 +371,19 @@ function Recorrido() {
         </div>
       </header>
 
-      <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 pt-5 sm:pt-10 md:pt-14 pb-24 md:pb-16">
-        <div className="grid grid-cols-1 md:grid-cols-[176px_minmax(0,1fr)] gap-3 md:gap-8 items-start">
+      {/* En la compu la escena va centrada, con un ancho cómodo, y los pasos
+          cortos bajan hasta el medio de la pantalla (`my-auto` en una columna
+          flexible: si el contenido es largo, el margen se hace cero y arranca
+          arriba, como debe). En el celular, una columna. */}
+      <main className="flex-1 w-full max-w-4xl mx-auto px-4 sm:px-6 pt-5 sm:pt-10 md:pt-12 pb-24 md:pb-16 flex flex-col">
+        <h1 ref={tituloRef} tabIndex={-1} className="sr-only">{`${tramo.titulo}: ${nombreDelPaso}`}</h1>
+        <div className={`w-full grid grid-cols-1 md:grid-cols-[232px_minmax(0,1fr)] gap-3 md:gap-10 ${centrado ? 'items-start md:items-center md:my-auto' : 'items-start'}`}>
           {/* Mervall-E: un solo personaje en movimiento en toda la pantalla. No se
               vuelve a crear entre pasos (cambia de cara), así no «reaparece». */}
-          <div className="flex md:justify-center">
+          <div className="flex justify-center">
             <div className="relative bv-aparece">
-              <MervallE size={isMobile ? 96 : 164} estado={cara} />
-              <span aria-hidden="true" className="hidden md:block absolute left-1/2 -translate-x-1/2 -bottom-2 w-28 h-4 rounded-full bv-piso" />
+              <MervallE size={isMobile ? 96 : 232} estado={cara} />
+              <span aria-hidden="true" className="hidden md:block absolute left-1/2 -translate-x-1/2 -bottom-2 w-40 h-5 rounded-full bv-piso" />
             </div>
           </div>
           <div className="min-w-0">
@@ -214,12 +392,18 @@ function Recorrido() {
         </div>
       </main>
 
-      {/* A la derecha queda lugar para el botón flotante de WhatsApp. */}
-      <footer className="max-w-5xl w-full mx-auto pl-4 pr-20 sm:pl-6 sm:pr-24 pb-6 flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px] text-ink-3">
+      {/* A la derecha queda lugar para el botón flotante de WhatsApp. Lo que
+          la puerta deja a la vista (planes, lo legal) tiene su link acá: sin
+          menú, era la única forma de llegar sin escribir la dirección. Lo legal
+          abre aparte, para no perder el paso en que está. */}
+      <footer className="max-w-4xl w-full mx-auto pl-4 pr-20 sm:pl-6 sm:pr-24 pb-6 flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px] text-ink-3">
         <a href={whatsappUrl('Hola, estoy armando mi Rendi y tengo una consulta: ')} target="_blank" rel="noopener noreferrer"
-          className="hover:text-ink-1 transition-colors underline-offset-2 hover:underline">
+          className={LINK_PIE}>
           ¿Dudas? Escribinos por WhatsApp
         </a>
+        <Link to="/planes" className={LINK_PIE}>Planes</Link>
+        <Link to="/privacidad" target="_blank" rel="noopener noreferrer" className={LINK_PIE}>Privacidad</Link>
+        <Link to="/terminos" target="_blank" rel="noopener noreferrer" className={LINK_PIE}>Términos</Link>
         <button type="button" onClick={logout} className="inline-flex items-center gap-1.5 hover:text-ink-1 transition-colors">
           <LogOut size={13} strokeWidth={1.75} aria-hidden="true" /> Cerrar sesión
         </button>
@@ -270,9 +454,10 @@ function PasoHola({ setCara, ir, nombre }) {
 function PasoBroker({ setCara, onElegir }) {
   // La MISMA lista que el Paso 0 del importador (ImportWizard): los lectores
   // del servidor + las plataformas bloqueadas, que se muestran pero van a la
-  // planilla. NO se crea el broker acá (POST /brokers): el importador lo crea
-  // solo con el nombre que reconoce ('Cocos', 'Bull Market'…), y crear
-  // «Cocos Capital» antes dejaba dos.
+  // planilla. Más Wallbit, que se conecta en vez de subir un archivo
+  // (brokersDeLaBienvenida). NO se crea el broker acá (POST /brokers): el
+  // importador lo crea solo con el nombre que reconoce ('Cocos', 'Bull
+  // Market'…), y crear «Cocos Capital» antes dejaba dos.
   const [grupos, setGrupos] = useState(null)
   const [fallo, setFallo] = useState(false)
   const [vuelta, setVuelta] = useState(0)
@@ -280,8 +465,10 @@ function PasoBroker({ setCara, onElegir }) {
     let vivo = true
     setFallo(false)
     api.get('/imports/parsers/grouped')
-      .then(g => { if (vivo) setGrupos(brokersParaElegir(withBlockedPlatforms(g))) })
-      .catch(() => { if (vivo) { setGrupos([]); setFallo(true) } })
+      .then(g => { if (vivo) setGrupos(brokersDeLaBienvenida(g)) })
+      // Sin la lista del servidor queda lo que no depende de ella (Wallbit y
+      // «Otro»), y la opción de probar de nuevo.
+      .catch(() => { if (vivo) { setGrupos(brokersDeLaBienvenida([])); setFallo(true) } })
     return () => { vivo = false }
   }, [vuelta])
 
@@ -292,6 +479,8 @@ function PasoBroker({ setCara, onElegir }) {
     setCara('contento')
     if (!grupo) { onElegir({ platform: 'personal', nombre: null }); return }
     const nombre = nombreCorto(grupo)
+    // Wallbit: el importador abre en la integración, donde se pega la clave.
+    if (grupo.integracion) { onElegir({ platform: grupo.platform, nombre, integracion: true }); return }
     // Una plataforma bloqueada se encuentra por nombre pero todavía no se lee:
     // va a la planilla, diciendo cuál era.
     if (grupo.bloqueada) { onElegir({ platform: 'personal', nombre, bloqueada: true }); return }
@@ -338,24 +527,27 @@ function TarjetaBroker({ grupo, i, onClick }) {
   const Logo = BROKER_GUIDES.find(b => b.id === grupo.platform)?.Logo
   return (
     <button type="button" onClick={onClick}
-      className="bv-entra group flex items-center gap-3 min-h-[60px] text-left px-3.5 py-3 rounded-xl border border-line bg-bg-1 hover:border-data-violet/60 hover:bg-data-violet/[0.04] hover:-translate-y-px transition-all"
+      className="bv-entra group flex items-center gap-2.5 sm:gap-3 min-w-0 min-h-[60px] text-left px-3 sm:px-3.5 py-3 rounded-xl border border-line bg-bg-1 hover:border-data-violet/60 hover:bg-data-violet/[0.04] hover:-translate-y-px transition-all"
       style={{ '--d': `${Math.min(i, 12) * 40}ms` }}>
       <span className="flex-shrink-0 w-7 h-7 grid place-items-center" aria-hidden="true">
         {Logo
           ? <Logo size={26} />
           : <span className="w-7 h-7 rounded-lg bg-data-violet/15 text-data-violet text-[13px] font-semibold grid place-items-center">{nombreCorto(grupo).slice(0, 1)}</span>}
       </span>
-      <span className="text-[14px] font-medium text-ink-0 leading-tight">{grupo.platform_label}</span>
+      {/* A 320 px «(InvertirOnline)» o «Internacional» no entran en media
+          pantalla: se cortan (con guion, si el navegador sabe castellano)
+          adentro de la tarjeta en vez de salirse por el borde. */}
+      <span className="min-w-0 text-[14px] font-medium text-ink-0 leading-tight hyphens-auto [overflow-wrap:anywhere]">{grupo.platform_label}</span>
     </button>
   )
 }
 
 // ── 3. Historial ────────────────────────────────────────────────────────────
 
-function PasoHistorial({ setCara, ir, broker, enCelular, onCargado, onCerrado }) {
-  const [abierto, setAbierto] = useState(false)
+function PasoHistorial({ setCara, ir, broker, enCelular, abierto, onAbrir, onCerrar, onCargado }) {
   const [volvio, setVolvio] = useState(false)       // cerró el importador sin cargar
   const planilla = broker?.platform === 'personal'
+  const integracion = !!broker?.integracion        // Wallbit: se conecta, no hay archivo
 
   // Recién eligió: festeja un instante y después explica.
   useEffect(() => {
@@ -364,20 +556,31 @@ function PasoHistorial({ setCara, ir, broker, enCelular, onCargado, onCerrado })
     return () => clearTimeout(t)
   }, [setCara])
 
+  // El importador se cerró (con su botón o con «atrás») y la página sigue acá:
+  // no hubo carga. Mervall-E espera. (Si hubo, la página ya pasó a «tu cartera».)
+  const estabaAbierto = useRef(abierto)
+  useEffect(() => {
+    if (estabaAbierto.current && !abierto) { setVolvio(true); setCara('atento') }
+    estabaAbierto.current = abierto
+  }, [abierto, setCara])
+
   const texto = volvio
-    ? ['Cuando tengas el archivo, acá estoy.']
-    : planilla
-      ? [broker?.bloqueada
-          ? `${broker.nombre} todavía no lo leo directo, así que usamos la planilla de Rendi.`
-          : '¡Dale! Usamos la planilla de Rendi.',
-        'Es un Excel simple: una fila por cada compra o venta. En el próximo paso elegís la moneda, le ponés nombre a tu broker y te dejo la planilla de ejemplo.']
-      : [`¡${broker?.nombre}, buenísimo!`,
-        `Necesito el archivo con tus movimientos. Abajo te dejo cómo bajarlo de ${broker?.nombre}; cuando lo tengas, subilo acá.`]
+    ? [integracion ? 'Cuando tengas la clave, acá estoy.' : 'Cuando tengas el archivo, acá estoy.']
+    : integracion
+      ? [`¡${broker?.nombre}, buenísimo!`,
+        'Con Wallbit no hace falta ningún archivo: pegás una clave de solo lectura de tu cuenta y yo traigo tus operaciones.']
+      : planilla
+        ? [broker?.bloqueada
+            ? `${broker.nombre} todavía no lo leo directo, así que usamos la planilla de Rendi.`
+            : '¡Dale! Usamos la planilla de Rendi.',
+          'Es un Excel simple: una fila por cada compra o venta. En el próximo paso elegís la moneda, le ponés nombre a tu broker y te dejo la planilla de ejemplo.']
+        : [`¡${broker?.nombre}, buenísimo!`,
+          `Necesito el archivo con tus movimientos. Abajo te dejo cómo bajarlo de ${broker?.nombre}; cuando lo tengas, subilo acá.`]
 
   function abrir() {
     track('bienvenida_subir_abierto')
     setCara('reposo')
-    setAbierto(true)
+    onAbrir()
   }
 
   return (
@@ -387,9 +590,11 @@ function PasoHistorial({ setCara, ir, broker, enCelular, onCargado, onCerrado })
 
       <div className="bv-entra rounded-xl border border-line bg-bg-1 p-4 sm:p-5 space-y-3" style={{ '--d': '300ms' }}>
         <button type="button" onClick={abrir} className={`${BOTON_1} w-full sm:w-auto`}>
-          <Upload size={17} strokeWidth={2} aria-hidden="true" /> Subir el archivo
+          {integracion
+            ? <><Plug size={17} strokeWidth={2} aria-hidden="true" /> Conectar {broker?.nombre}</>
+            : <><Upload size={17} strokeWidth={2} aria-hidden="true" /> Subir el archivo</>}
         </button>
-        {enCelular && (
+        {enCelular && !integracion && (
           <p className="flex items-start gap-2 text-[13px] text-ink-2 leading-snug">
             <Smartphone size={15} strokeWidth={1.75} className="flex-shrink-0 mt-0.5 text-data-violet" aria-hidden="true" />
             <span>La mayoría de los brokers deja bajar este archivo sólo desde su página web. Si estás en el celular, entrá a rendi.finance desde la compu: te espero acá.</span>
@@ -401,24 +606,21 @@ function PasoHistorial({ setCara, ir, broker, enCelular, onCargado, onCerrado })
         </button>
       </div>
 
-      {!planilla && broker?.guia && (
+      {!planilla && !integracion && broker?.guia && (
         <div className="bv-entra" style={{ '--d': '450ms' }}>
           <BrokerInstructions lockBrokerId={broker.platform} />
         </div>
       )}
 
+      {/* Abierto o cerrado lo dice la dirección (`&subiendo=1`): así el «atrás»
+          del celular cierra el importador en vez de irse de la página.
+          Confirmar un archivo y conectar Wallbit cuentan igual: ya cargó. */}
       {abierto && (
         <ImportWizard
           plataformaInicial={broker?.platform}
           onConfirmed={() => onCargado()}
-          onClose={() => {
-            setAbierto(false)
-            // Con el archivo confirmado sigue a «tu cartera». Lo cerró sin
-            // confirmar nada: se queda acá, esperando.
-            if (onCerrado()) return
-            setVolvio(true)
-            setCara('atento')
-          }}
+          onWallbitConnected={() => onCargado()}
+          onClose={onCerrar}
         />
       )}
     </div>
@@ -433,7 +635,14 @@ function PasoCartera({ setCara, onSeguir }) {
   const { hidden: oculto } = usePrivacy()
   const conValor = !!stats && stats.value > 0
 
-  useEffect(() => { track('bienvenida_cartera_vista') }, [])
+  // «Vio "tu cartera vale…"» recién cuando el valor está a la vista: mientras
+  // dice «estoy sumando todo…» todavía no lo vio, y sin precios no lo ve.
+  const contada = useRef(false)
+  useEffect(() => {
+    if (loading || !conValor || contada.current) return
+    contada.current = true
+    track('bienvenida_cartera_vista')
+  }, [loading, conValor])
 
   useEffect(() => {
     if (loading) { setCara('cargando'); return }
@@ -486,7 +695,10 @@ function PasoCartera({ setCara, onSeguir }) {
 
 function PasoPerfil({ setCara, onSeguir }) {
   useEffect(() => { setCara('hablando') }, [setCara])
-  function listo() { track('bienvenida_perfil_hecho'); onSeguir() }
+  // «Listo» sin ninguna respuesta no es un perfil hecho: cuenta como «más
+  // tarde» (y la lista de Inicio lo sigue mostrando pendiente, como debe).
+  const [respondidas, setRespondidas] = useState(0)
+  function listo() { track(respondidas > 0 ? 'bienvenida_perfil_hecho' : 'bienvenida_perfil_despues'); onSeguir() }
   function despues() { track('bienvenida_perfil_despues'); onSeguir() }
   return (
     <div className="space-y-5">
@@ -494,7 +706,7 @@ function PasoPerfil({ setCara, onSeguir }) {
         texto={['Contame un poco cómo invertís, así lo que te diga es para vos.', 'Son unos toques. Si preferís, lo dejamos para más tarde.']}
         onTermino={() => setCara(c => (c === 'hablando' ? 'reposo' : c))} />
       <div className="bv-entra rounded-xl border border-line bg-bg-1" style={{ '--d': '250ms' }}>
-        <InvestorProfileForm />
+        <InvestorProfileForm onCambio={setRespondidas} />
       </div>
       {/* Pegados abajo: el formulario es largo y «Más tarde» no puede quedar
           escondido al final. A la derecha queda lugar para WhatsApp, que

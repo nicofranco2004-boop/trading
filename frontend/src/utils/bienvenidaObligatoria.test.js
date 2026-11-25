@@ -52,6 +52,30 @@ describe('bienvenidaTapaLaPantalla', () => {
       expect(regla.bienvenidaTapaLaPantalla(NUEVO, r), r).toBe(false)
     }
   })
+  it('deja a la vista lo que llega por un link de mail: el pedido de acceso del asesor y su informe', () => {
+    // Si la puerta los tapara, el token del link se perdía: no había forma de
+    // aceptar (ni rechazar) al asesor sin antes subir un archivo.
+    for (const r of ['/acceso', '/i/abc123']) {
+      expect(regla.bienvenidaTapaLaPantalla(NUEVO, r), r).toBe(false)
+    }
+  })
+  it('deja a la vista la guía pública', () => {
+    for (const r of ['/guia', '/guia/empezar', '/guia/cuenta-y-planes']) {
+      expect(regla.bienvenidaTapaLaPantalla(NUEVO, r), r).toBe(false)
+    }
+  })
+  it('«/i/» es el informe, no cualquier cosa que empiece con i: Importar sigue tapado', () => {
+    expect(regla.bienvenidaTapaLaPantalla(NUEVO, '/imports')).toBe(true)
+    expect(regla.bienvenidaTapaLaPantalla(NUEVO, '/i')).toBe(true)
+  })
+  it('la lista es la del muro de plan más lo propio: lo que se sume al muro queda a la vista acá también', async () => {
+    const muro = await import('./muroDePlan')
+    expect(muro.SIEMPRE_A_LA_VISTA.length).toBeGreaterThan(0)
+    for (const r of muro.SIEMPRE_A_LA_VISTA) {
+      expect(regla.SIEMPRE_A_LA_VISTA, r).toContain(r)
+      expect(regla.bienvenidaTapaLaPantalla(NUEVO, r), r).toBe(false)
+    }
+  })
   it('a quien no le falta, no le tapa nada', () => {
     expect(regla.bienvenidaTapaLaPantalla({ email: 'x@prueba.test' }, '/')).toBe(false)
     expect(regla.bienvenidaTapaLaPantalla({ ...NUEVO, cuenta_en_pausa: true }, '/')).toBe(false)

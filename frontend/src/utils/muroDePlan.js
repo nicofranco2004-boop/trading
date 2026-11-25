@@ -9,7 +9,11 @@
 // /api/billing/subscribe). Tampoco lo que /planes dice que aceptás al
 // suscribirte: los Términos y la Política de Reembolso (y la de Privacidad).
 // Antes el muro los tapaba: te pedía aceptar algo que no te dejaba leer.
-const SIEMPRE_A_LA_VISTA = ['/planes', '/billing', '/terminos', '/reembolso', '/privacidad']
+//
+// Exportada: la bienvenida obligatoria (utils/bienvenidaObligatoria.js) arma su
+// lista sobre ÉSTA, no sobre una copia. Lo que se sume acá (una pantalla de
+// baja, de soporte) queda a la vista también para la cuenta nueva.
+export const SIEMPRE_A_LA_VISTA = ['/planes', '/billing', '/terminos', '/reembolso', '/privacidad']
 export function muroTapaLaPantalla(user, pathname = '') {
   if (!user?.cuenta_en_pausa) return false
   return !SIEMPRE_A_LA_VISTA.some(r => pathname.startsWith(r))

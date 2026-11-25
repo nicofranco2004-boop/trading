@@ -1,10 +1,12 @@
 // GloboDeMervallE — lo que dice Mervall-E en la bienvenida, en un globo de
-// historieta con la punta hacia él (arriba en el celular, a la izquierda en la
-// compu, donde él está parado al costado).
+// historieta con la punta hacia él (arriba y al medio en el celular, donde él
+// está centrado encima; a la izquierda en la compu, donde está parado al costado).
 // ═══════════════════════════════════════════════════════════════════════════
-// El texto se escribe solo, letra por letra (~28 ms, un respiro después de un
-// punto o una coma), con el cursor que parpadea mientras escribe. Tocar el
-// globo lo completa al instante. Con «reducir movimiento» aparece entero.
+// El texto se escribe solo, letra por letra (~16 ms, un respiro corto después
+// de un punto o una coma), con el cursor que parpadea mientras escribe. Tocar
+// el globo lo completa al instante. Con «reducir movimiento» aparece entero.
+// La velocidad está medida: con 28 ms y pausas largas el saludo entero tardaba
+// ~7 s, y quien lo mira espera parado. Ahora son ~4 s.
 //
 // Tres decisiones que no se ven y que importan:
 //   · EL GLOBO NO CRECE MIENTRAS ESCRIBE. El texto entero va debajo, invisible,
@@ -25,9 +27,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import CursorEscribiendo from '../ai/CursorEscribiendo'
 import { prefiereSinMovimiento } from '../../utils/movimiento'
 
-const MS_POR_LETRA = 28
+const MS_POR_LETRA = 16
 // Después de un punto el ojo descansa; después de una coma, un poco.
-const PAUSA = { '.': 260, '!': 260, '?': 260, ',': 110, ':': 140, '…': 260 }
+const PAUSA = { '.': 160, '!': 160, '?': 160, ',': 70, ':': 90, '…': 160 }
 
 /** Cuánto esperar después de escribir la letra `c`. */
 export function esperaDespuesDe(c) {
@@ -87,14 +89,15 @@ export default function GloboDeMervallE({ texto, onTermino, className = '', demo
       style={{ '--d': `${Math.max(0, demora - 200)}ms` }}
     >
       {/* La punta: un cuadrado girado con el mismo fondo y borde que el globo
-          (como el cartel de Tour.jsx). Celular: arriba, hacia Mervall-E que está
-          encima. Compu: a la izquierda, hacia Mervall-E parado al costado. */}
+          (como el cartel de Tour.jsx). Celular: arriba y al medio, hacia
+          Mervall-E que está centrado encima. Compu: a la izquierda, hacia
+          Mervall-E parado al costado. */}
       <span
         aria-hidden="true"
-        className="absolute w-3.5 h-3.5 rotate-45 bg-bg-1 border-data-violet/30 border-l border-t left-8 -top-[7.5px] md:-left-[7.5px] md:top-7 md:border-t-0 md:border-b"
+        className="absolute w-3.5 h-3.5 rotate-45 bg-bg-1 border-data-violet/30 border-l border-t left-1/2 -ml-[7px] -top-[7.5px] md:ml-0 md:-left-[7.5px] md:top-7 md:border-t-0 md:border-b"
       />
       <p className="sr-only" aria-live="polite">{anuncio}</p>
-      <div aria-hidden="true" className="grid text-[15.5px] sm:text-base leading-relaxed text-ink-0">
+      <div aria-hidden="true" className="grid text-[15.5px] sm:text-base md:text-lg leading-relaxed text-ink-0">
         {/* Debajo: el texto entero, invisible, que le da al globo su tamaño final. */}
         <div className="invisible col-start-1 row-start-1 space-y-2">
           {parrafos.map((p, i) => <p key={i}>{p}</p>)}

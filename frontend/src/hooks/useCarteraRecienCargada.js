@@ -1,6 +1,7 @@
 // useCarteraRecienCargada — «esto es lo que tenés hoy», justo después del
 // primer archivo: el valor de la cartera a precios de mercado, lo invertido, la
-// ganancia, cuántas posiciones en cuántos brokers y el mejor y el peor activo.
+// ganancia, cuántas posiciones en cuántas cuentas de broker y el mejor y el
+// peor activo.
 // ═══════════════════════════════════════════════════════════════════════════
 // UN cálculo, dos pantallas: /bienvenida (pages/FirstInsight.jsx, el primer
 // import de una cuenta vieja) y el paso «tu cartera» de la bienvenida
@@ -17,6 +18,7 @@ import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
+import { groupBrokersIntoAccounts } from '../utils/brokerAccounts'
 
 export function useCarteraRecienCargada() {
   const { valuationDollar, costBasis } = useCurrency()
@@ -151,7 +153,11 @@ export function useCarteraRecienCargada() {
     const best = arr[0] || null
     const worst = arr[arr.length - 1] || null
     const positionCount = positions.filter(p => !p.is_cash).length
-    const brokerCount = brokers.length
+    // CUENTAS, no filas de `brokers`: al subir el archivo de Cocos el importador
+    // crea solo la pata «Cocos · USD» (compras de MEP, depósitos en dólares) y
+    // contar filas decía «en 2 brokers» después de subir UNO. El mismo criterio
+    // que Cartera (utils/brokerAccounts.js).
+    const brokerCount = groupBrokersIntoAccounts(brokers).length
 
     return { value, invested, pnl, pnlPct, best, worst, positionCount, brokerCount }
   }, [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis])

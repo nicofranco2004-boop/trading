@@ -63,6 +63,10 @@ export const EVENTOS = {
   ai_followup_blocked_cap: { label: 'Llegó al tope de repreguntas', donde: 'Análisis IA', tipo: 'vista' },
   ai_discovery_banner_shown: { label: 'Vio el cartel de la IA', donde: 'Inicio', tipo: 'vista' },
   ai_discovery_banner_dismissed: { label: 'Cerró el cartel de la IA', donde: 'Inicio' },
+  // Estos dos son de /bienvenida (pages/FirstInsight.jsx), la primera lectura
+  // después del primer import. Desde el 25/11 las cuentas nuevas ven su primera
+  // cartera en `bienvenida_cartera_vista` (la bienvenida obligatoria) y ya no
+  // pasan por acá: que bajen desde esa fecha es eso, no que la pantalla se rompió.
   first_insight_viewed: { label: 'Vio su primer diagnóstico', donde: 'Bienvenida', tipo: 'vista' },
   first_insight_coach_cta: { label: 'Fue a la IA desde la bienvenida', donde: 'Bienvenida' },
 

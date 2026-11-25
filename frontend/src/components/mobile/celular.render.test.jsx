@@ -207,6 +207,14 @@ describe('páginas públicas con la sesión abierta', () => {
   it('son por lo menos las 21 de hoy (Guía, Blog, landings de búsqueda, legales)', () => {
     expect(paginas.length).toBeGreaterThanOrEqual(21)
   })
+  // Las que SÓLO existen con la sesión abierta: la regla de arriba las toma
+  // porque se parecen a un encabezado copiado a mano, pero no lo son.
+  //   · Onboarding (la bienvenida obligatoria): se dibuja sin el armazón de la
+  //     app (App.jsx, Layout), así que lleva su propio logo arriba, y al pie un
+  //     link a Planes (lo que la puerta deja a la vista). Sin sesión no existe:
+  //     Layout manda cualquier dirección desconocida al login. Se le sigue
+  //     exigiendo lo de «con sesión»; el encabezado público, no.
+  const SOLO_CON_SESION = new Set(['Onboarding'])
   for (const [nombre, archivo] of paginas) {
     it(`${nombre}: con sesión, nada para visitantes; sin sesión, su encabezado`, () => {
       const Pagina = modulos[archivo]
@@ -215,7 +223,7 @@ describe('páginas públicas con la sesión abierta', () => {
       for (const oferta of OFERTAS) expect(adentro, String(oferta)).not.toMatch(oferta)
       // Por destino, no sólo por texto: un "Crear mi cuenta" también cuenta.
       expect(rutas(adentro).filter(r => r.startsWith('/login') || r.includes('demo=1'))).toEqual([])
-      expect(dibujar(Pagina, { u: null, c: null })).toMatch(cabecera)
+      if (!SOLO_CON_SESION.has(nombre)) expect(dibujar(Pagina, { u: null, c: null })).toMatch(cabecera)
     })
   }
   it('con sesión, la Guía no queda con una frase cortada ("Andá a . Te pedimos…")', () => {

@@ -386,19 +386,33 @@ class QuienesQuedanAfuera(_Base):
 class AsesorMirandoAUnCliente(_Base):
 
     def test_el_campo_responde_por_el_asesor(self):
-        """Con un asesor mirando la cuenta de un cliente vacío (encabezado
-        X-Rendi-Client-Id, como lo manda la app), el campo es del asesor. El cliente
-        es una persona que se registró sola y le dio acceso (vínculo 'linked', por
-        SQL: el pedido de acceso tiene su propio ida y vuelta de mails): a ELLA sí le
-        toca la bienvenida, y eso no puede tapar la pantalla del asesor."""
+        """Con un asesor mirando la cuenta de un cliente vacío, la app manda el
+        encabezado X-Rendi-Client-Id en TODOS los pedidos, `/api/auth/me` incluido.
+        Ahí el servidor lo ignora (`/api/auth` está en CLIENT_CTX_EXEMPT_PREFIXES):
+        `/auth/me` contesta siempre por quien inició sesión. Eso es lo que esta prueba
+        protege: con el encabezado del cliente, la respuesta es la del ASESOR —su
+        `id` y su `falta_cargar_historial`—, no la del cliente.
+
+        El cliente es una persona que se registró sola y le dio acceso (vínculo
+        'linked', por SQL: el pedido de acceso tiene su propio ida y vuelta de
+        mails): a ELLA sí le toca la bienvenida, y eso no puede tapar la pantalla del
+        asesor. Si alguien saca `/api/auth` de la lista de exentos, `/auth/me`
+        empieza a contestar con el `id` del cliente y esta prueba se pone en rojo.
+        (Que la pantalla no muestre la bienvenida mientras el asesor mira a un
+        cliente lo decide además `clientCtx` en utils/bienvenidaObligatoria.js.)"""
         asesor, h_asesor = self._registrarse("Asesora")
         self._dar_plan_asesor(asesor)
         cliente, h_cliente = self._registrarse("Juan")
         self._sql("INSERT INTO advisor_clients (advisor_uid, client_uid, link_type, permission, "
                   "status) VALUES (?, ?, 'linked', 'read_write', 'active')", (asesor, cliente))
         self.assertTrue(self._falta(h_cliente), "control: al cliente, en su cuenta, le toca")
-        self.assertFalse(self._falta({**h_asesor, "X-Rendi-Client-Id": str(cliente)}))
-        self.assertFalse(self._falta(h_asesor))
+        propio = self._me(h_asesor)
+        self.assertEqual(propio["id"], asesor)
+        self.assertFalse(propio["falta_cargar_historial"], "control: al asesor no le toca")
+        mirando = self._me({**h_asesor, "X-Rendi-Client-Id": str(cliente)})
+        self.assertEqual(mirando["id"], asesor,
+                         "/auth/me contestó por el cliente: el encabezado ya no se ignora ahí")
+        self.assertEqual(mirando["falta_cargar_historial"], propio["falta_cargar_historial"])
 
 
 

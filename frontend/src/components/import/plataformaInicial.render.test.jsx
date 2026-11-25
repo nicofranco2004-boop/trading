@@ -28,7 +28,8 @@ vi.mock('../../utils/api', async (o) => ({
     post: vi.fn(async () => ({})),
   },
 }))
-vi.mock('./WallbitConnect', () => ({ default: () => null }))
+// La conexión de Wallbit: una marca, para ver cuándo aparece.
+vi.mock('./WallbitConnect', () => ({ default: () => h('div', null, 'conectar-wallbit') }))
 
 let ImportWizard
 beforeAll(async () => {
@@ -67,6 +68,19 @@ describe('ImportWizard con plataformaInicial', () => {
     const t = await abrir({ plataformaInicial: 'personal' })
     expect(t).toContain('¿En qué moneda están las operaciones?')
     expect(t).not.toContain(SUBIDA)
+  })
+
+  it('con Wallbit: queda en el Paso 0 con la integración elegida, donde se pega la clave (no hay archivo)', async () => {
+    const t = await abrir({ plataformaInicial: 'wallbit' })
+    expect(t).toContain(PASO_0)
+    expect(t).toContain('conectar-wallbit')
+    expect(t).not.toContain(SUBIDA)
+    expect(t).not.toContain('¿De dónde viene este archivo?')
+  })
+
+  it('sin la prop, la integración no está elegida de entrada', async () => {
+    const t = await abrir()
+    expect(t).not.toContain('conectar-wallbit')
   })
 
   it('si la lista de brokers no llega, no se queda colgado: muestra el Paso 0', async () => {

@@ -20,15 +20,22 @@
 // compu) o soltar a quien todavía no, y parpadear. La puerta pregunta
 // `bootstrapped` antes de mandar a nadie a ningún lado.
 //
-// Lo que siempre queda a la vista aunque falte configurar: la propia
-// bienvenida, los planes y el pago (por donde se sale de una pausa) y lo que
-// /planes dice que aceptás (términos, reembolso, privacidad). Es la misma
-// lista que la del muro de plan (utils/muroDePlan.js), más /onboarding.
+// Lo que siempre queda a la vista aunque falte configurar:
+//   · la lista del muro de plan (utils/muroDePlan.js, una sola, importada acá):
+//     los planes y el pago (por donde se sale de una pausa) y lo que /planes
+//     dice que aceptás (términos, reembolso, privacidad);
+//   · la propia bienvenida;
+//   · las pantallas sueltas que llegan por un link de mail y no muestran la
+//     cartera de la persona: el pedido de acceso de un asesor (/acceso?token=…)
+//     y el informe que le mandó (/i/:token). Si la puerta las tapara, el token
+//     se perdía y no había forma de contestarle al asesor;
+//   · la guía pública (/guia), que también se lee antes de registrarse.
 
 import { guardar, leer } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
+import { SIEMPRE_A_LA_VISTA as LO_QUE_EL_MURO_DEJA_VER } from './muroDePlan'
 
-const SIEMPRE_A_LA_VISTA = ['/onboarding', '/planes', '/billing', '/terminos', '/reembolso', '/privacidad']
+export const SIEMPRE_A_LA_VISTA = ['/onboarding', '/acceso', '/i/', '/guia', ...LO_QUE_EL_MURO_DEJA_VER]
 
 /** ¿Le falta cargar su historial para ver Rendi? */
 export function faltaConfigurar(user, { isDemo = false, clientCtx = null } = {}) {

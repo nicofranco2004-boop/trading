@@ -107,6 +107,10 @@ export function track(event, props = {}) {
         'position_add_completed', 'position_sold',
         'operation_added',
         'first_insight_viewed',
+        // La bienvenida obligatoria (desde el 25/11): las cuentas nuevas ya no
+        // pasan por onboarding_* ni por first_insight_viewed. Sin éstos, el
+        // embudo de activación de GA4 se cortaba en el registro.
+        'bienvenida_historial_cargado', 'bienvenida_terminada',
         'report_generated', 'report_shared',
       ])
       if (FORWARD_TO_GA4.has(event)) {

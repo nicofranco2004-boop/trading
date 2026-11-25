@@ -45,6 +45,8 @@ vi.mock('../components/tour/TourNovedades', () => ({ default: () => null }))
 vi.mock('../components/tour/TourTecnico', () => ({ default: () => null }))
 vi.mock('../utils/autoUpdate', () => ({ useAutoUpdate: () => {} }))
 vi.mock('./Home', () => ({ default: marca('inicio') }))
+vi.mock('./AdvisorAccessRequest', () => ({ default: marca('pedido-de-acceso') }))
+vi.mock('./ReportPublic', () => ({ default: marca('informe') }))
 vi.mock('./Onboarding', () => ({ default: marca('bienvenida') }))
 vi.mock('../paginasPublicas', () => ({
   COMPONENTES_PUBLICOS: new Proxy({}, { get: (_, ruta) => marca(`publica:${String(ruta)}`) }),
@@ -119,6 +121,24 @@ describe('la puerta: a quien le falta cargar su historial', () => {
       await abrir(ruta)
       expect(donde.ahora, ruta).toBe(ruta)
       expect(piezas().has(`publica:${ruta}`), ruta).toBe(true)
+      // Se ve con el armazón, pero sin la isla de Mervall-E ni sus tutoriales:
+      // presentarían una app que todavía no puede ver. (Que ⌘K no se abra lo
+      // prueba components/buscadorRapido.bienvenida.render.test.jsx, con el
+      // buscador de verdad: acá está reemplazado por una marca.)
+      expect(piezas().has('isla'), ruta).toBe(false)
+      await montado.desmontar(); montado = null
+    }
+  })
+
+  it('lo que llega por un link de mail queda a la vista: el pedido de acceso del asesor, su informe y la guía', async () => {
+    // Antes la puerta los mandaba a /onboarding y el token del link se perdía:
+    // no había forma de aceptar (o rechazar) al asesor sin subir un archivo.
+    auth.user = NUEVA
+    for (const [ruta, pieza] of [['/acceso', 'pedido-de-acceso'], ['/i/tok123', 'informe'], ['/guia/empezar', 'publica:/guia/empezar']]) {
+      await abrir(ruta)
+      expect(donde.ahora, ruta).toBe(ruta)
+      expect(piezas().has(pieza), ruta).toBe(true)
+      expect(piezas().has('isla'), ruta).toBe(false)
       await montado.desmontar(); montado = null
     }
   })

@@ -8,8 +8,12 @@
 // UX: pills clickeables, no dropdowns. Una pregunta por bloque, con eyebrow
 // uppercase pequeño + opciones en flex-wrap. Guardado optimista — si falla
 // el POST mostramos error inline.
+//
+// `onCambio(respondidas)` (opcional): avisa cuántas preguntas tienen respuesta,
+// al cargar y en cada toque. Lo usa la bienvenida (pages/Onboarding.jsx) para
+// no contar «Listo» con 0 respuestas como un perfil hecho. Config no lo pasa.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../utils/api'
 import { Sparkles, Check } from 'lucide-react'
 
@@ -96,7 +100,7 @@ const QUESTIONS = [
   },
 ]
 
-export default function InvestorProfileForm() {
+export default function InvestorProfileForm({ onCambio } = {}) {
   const [profile, setProfile] = useState({})
   const [loading, setLoading] = useState(true)
   const [saveState, setSaveState] = useState({ saving: false, error: '', justSaved: false })
@@ -124,6 +128,12 @@ export default function InvestorProfileForm() {
   }
 
   const answered = QUESTIONS.filter(q => profile[q.id]).length
+
+  const onCambioRef = useRef(onCambio)
+  onCambioRef.current = onCambio
+  useEffect(() => {
+    if (!loading) onCambioRef.current?.(answered)
+  }, [answered, loading])
 
   return (
     <div className="px-4 py-4 space-y-5">

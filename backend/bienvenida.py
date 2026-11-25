@@ -63,8 +63,9 @@ _CORTE = _normalizar_fecha(BIENVENIDA_OBLIGATORIA_DESDE)
 def falta_cargar_historial(conn, uid) -> bool:
     """True sólo si esta cuenta tiene que pasar por la bienvenida (ver arriba).
 
-    `uid` es el de la persona que INICIÓ SESIÓN: con un asesor mirando la cuenta
-    de un cliente, la bienvenida no le corresponde al cliente que se mira."""
+    `uid` es el de la persona que INICIÓ SESIÓN. `/api/auth/me` nunca contesta por
+    el cliente que mira un asesor (ignora el encabezado X-Rendi-Client-Id: `/api/auth`
+    es una ruta exenta), así que ahí el asesor recibe su propio valor."""
     try:
         row = conn.execute(
             "SELECT is_admin, managed_by, created_at FROM users WHERE id=?",

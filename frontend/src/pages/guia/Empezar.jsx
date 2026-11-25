@@ -19,10 +19,10 @@ export default function Empezar() {
     <GuidePage
       n={1}
       title="Empezar con Rendi"
-      intro="Crear tu cuenta, agregar tu primer broker y cargar tu primera operación. En 10 minutos tenés tu cartera lista."
+      intro="Crear tu cuenta, subir el historial de tu broker con la ayuda de Mervall-E y ver tu cartera. Suele llevar unos minutos."
       next={{ to: '/guia/cartera-y-operaciones', label: 'Cartera y operaciones' }}
       metaTitle="Empezar con Rendi — Guía"
-      metaDescription="Cómo crear cuenta en Rendi, agregar tu primer broker (Cocos, IOL, Schwab, Binance) y cargar tu primera operación. Setup en 10 minutos."
+      metaDescription="Cómo crear tu cuenta en Rendi y subir el historial de tu broker (Cocos, Balanz, IOL, Schwab, Binance) con la ayuda de Mervall-E, y después sumar lo que falte."
       canonicalPath="/guia/empezar"
     >
       <AdvisorNote>
@@ -71,58 +71,66 @@ export default function Empezar() {
       <SoloVisitantes>
       <p>
         Antes de cargar tu data real, podés <a href="/?demo=1">probar la demo</a>{' '}
-        — es Rendi con datos de un inversor ficticio. Vez todo sin riesgo de
+        — es Rendi con datos de un inversor ficticio. Ves todo sin riesgo de
         ensuciar tu cuenta.
       </p>
       </SoloVisitantes>
 
-      <h2>2. Agregar tu primer broker</h2>
+      {/* Desde el 25/11 una cuenta nueva no entra a Rendi hasta subir el
+          historial de su broker (pages/Onboarding.jsx): la guía no puede
+          mandarla primero a Posiciones ni ofrecerle la carga a mano como
+          primer paso, porque la app no la deja. */}
+      <h2>2. Elegir tu broker y subir su historial</h2>
       <p>
-        Andá a <strong>Posiciones</strong> y abrí el panel de brokers (botón
-        "Gestionar brokers"). Agregá uno con:
+        Apenas verificás el mail te recibe <strong>Mervall-E</strong> y, antes de mostrarte
+        tu plata, te pide una sola cosa: tu historial. Elegís con qué broker invertís
+        (Cocos, Balanz, IOL, Bull Market, PPI y otros) y te explica cómo bajar el archivo
+        de movimientos de ese broker. Lo subís, mirás la vista previa y confirmás.
+      </p>
+      <p>
+        La mayoría de los brokers deja bajar ese archivo sólo desde su página web, así que
+        este paso suele ser más cómodo desde la compu.
       </p>
       <ul>
-        <li><strong>Nombre</strong>: como vos lo identifiques (ej. "Cocos", "IOL", "Binance").</li>
-        <li><strong>Moneda</strong>: ARS (Cocos, IOL, Balanz, Bull), USD (Schwab, IBKR) o USDT (Binance, exchanges crypto).</li>
+        <li>
+          <strong>Si tu broker no está en la lista</strong> (Interactive Brokers, Lemon,
+          Mercado Pago…): elegís «Otro / mi broker no está» y usás la{' '}
+          <strong>planilla de Rendi</strong>, un Excel simple con una fila por cada compra
+          o venta.
+        </li>
+        <li>
+          <strong>Si invertís con Wallbit</strong>: no hace falta ningún archivo. Pegás una
+          clave de solo lectura de tu cuenta y se traen tus operaciones.
+        </li>
       </ul>
       <p>
-        Plus permite {brokersDe(PLUS_FEATURES)} brokers y Pro, {brokersDe(PRO_FEATURES)}.
+        Cuando confirmás, Mervall-E te muestra lo que tenés hoy. Después te ofrece dos cosas
+        opcionales que podés dejar para más tarde: el perfil de inversor y, si estás en el
+        celular, agregar Rendi a la pantalla de inicio.
       </p>
 
-      <h2>3. Cargar tu primera operación</h2>
+      <h2>3. Sumar otros brokers y lo que falte</h2>
       <p>
-        Tenés dos caminos según cuánta data tengas:
-      </p>
-
-      <h3>Opción A: Importar CSV (rápido)</h3>
-      <p>
-        Si ya operás hace un tiempo, bajá el historial de tu broker en CSV y subilo
-        desde <strong>Registrar → Importar historial</strong> (el botón violeta del
-        menú lateral en la compu; el "+" de abajo en el celular). Rendi reconoce los formatos de Cocos, IOL,
-        Balanz, Schwab y Binance automáticamente. Mapeamos las columnas, te mostramos
-        un preview antes de confirmar, y creamos las posiciones + operaciones de una.
-      </p>
-      <p>
-        Si tu broker no está en la lista, exportá igual el CSV y mandalo a{' '}
-        <a href="mailto:soporte@rendi.finance">soporte@rendi.finance</a> — sumamos
-        el parser nuevo en 1-2 días.
-      </p>
-
-      <h3>Opción B: Cargar manualmente</h3>
-      <p>
-        Tocá <strong>Registrar → Compra</strong> (el botón violeta del menú lateral
-        en la compu; el "+" de abajo en el celular). Completás:
+        Con tu primer broker cargado ya entrás a Rendi. Desde ahí:
       </p>
       <ul>
-        <li><strong>Broker</strong> (el que creaste antes).</li>
-        <li><strong>Activo</strong>: ticker (ej. NVDA, AAPL.BA, AL30, BTC). Hay autocomplete.</li>
-        <li><strong>Cantidad</strong>: unidades (acciones, bonos VN, tokens).</li>
-        <li><strong>Precio promedio de compra</strong>: en la moneda nativa del activo.</li>
-        <li><strong>Fecha</strong> opcional (default hoy).</li>
+        <li>
+          <strong>Otro broker</strong>: <strong>Registrar → Importar historial</strong> (el
+          botón violeta del menú lateral en la compu; el "+" de abajo en el celular) y
+          elegís el broker. Plus permite {brokersDe(PLUS_FEATURES)} brokers y Pro,{' '}
+          {brokersDe(PRO_FEATURES)}.
+        </li>
+        <li>
+          <strong>Algo que no estaba en el archivo</strong>: lo cargás a mano con{' '}
+          <strong>Registrar → Compra</strong>: el broker, el activo (ticker, con
+          autocompletar), la cantidad, el precio promedio de compra y la fecha. Si vendiste
+          algo, va en <strong>Operaciones → Nueva operación → Venta</strong>, y Rendi aplica
+          FIFO con tus lotes.
+        </li>
       </ul>
       <p>
-        Si vendiste algo en el pasado, después lo cargás en <strong>Operaciones →
-        Nueva operación → Venta</strong>. Rendi aplica FIFO automático con tus lotes.
+        Si tu broker no está en la lista, podés mandarnos el archivo a{' '}
+        <a href="mailto:soporte@rendi.finance">soporte@rendi.finance</a> y vemos de sumarlo.
       </p>
 
       <h2>4. Cuestionario de perfil de inversor (opcional)</h2>

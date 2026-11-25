@@ -377,7 +377,9 @@ const OP_LABELS = {
 // su broker afuera, así que el asistente saltea el Paso 0 y arranca en la subida
 // con el export soportado de esa plataforma. 'personal' = la planilla de Rendi:
 // queda en el Paso 0 con «Plantilla de Rendi» ya elegida, porque la moneda y el
-// broker de destino se eligen ahí (sin eso la subida no puede seguir). Sin la
+// broker de destino se eligen ahí (sin eso la subida no puede seguir).
+// 'wallbit' = la integración: queda en el Paso 0 con «Integración con broker»
+// elegida, que es donde se pega la clave de Wallbit (no hay archivo). Sin la
 // prop, el asistente arranca en el Paso 0 como siempre.
 export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected, initialPreview = null, redoBanner = null, plataformaInicial = null }) {
   const [step, setStep] = useState(initialPreview ? STEP_PREVIEW : STEP_INTRO)
@@ -577,6 +579,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
   function arrancarEn(plataforma, grupos) {
     setEsperandoInicio(false)
     if (!plataforma || initialPreview) return
+    if (plataforma === 'wallbit') { setEntryType('integration'); return }
     setEntryType('csv')
     if (plataforma === 'personal') { choosePersonal(); return }
     const grupo = brokersParaElegir(grupos).find(g => g.platform === plataforma && !g.bloqueada)
