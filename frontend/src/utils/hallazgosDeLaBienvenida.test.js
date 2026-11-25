@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { hallazgosDeLaBienvenida, HALLAZGOS_DEL_MOTOR, MAX_HALLAZGOS } from './hallazgosDeLaBienvenida'
+import { hallazgosDeLaBienvenida, repartoDeLaCartera, HALLAZGOS_DEL_MOTOR, MAX_HALLAZGOS } from './hallazgosDeLaBienvenida'
 import { selectDiagnostics } from './diagnostics'
 import { OCULTO } from './ocultarSaldos'
 
@@ -79,5 +79,45 @@ describe('hallazgosDeLaBienvenida', () => {
     expect(todo).not.toMatch(/USD \d/)
     expect(todo).toContain('+25,0%')
     expect(todo).toContain('AAPL')
+  })
+})
+
+describe('repartoDeLaCartera (la torta)', () => {
+  it('sin valor, no hay torta', () => {
+    expect(repartoDeLaCartera(null)).toEqual([])
+    expect(repartoDeLaCartera({ value: 0, pieData: [] })).toEqual([])
+  })
+
+  it('de mayor a menor, y el % es sobre el total de la cartera: el mismo que dice el hallazgo de concentración', () => {
+    const r = repartoDeLaCartera(GANADORA)
+    expect(r.map(x => x.nombre)).toEqual(['AAPL', 'GGAL', 'SPY'])
+    expect(r[0].pct).toBeCloseTo(80)
+    expect(r.reduce((s, x) => s + x.pct, 0)).toBeCloseTo(100)
+    const texto = hallazgosDeLaBienvenida({ stats: GANADORA, hoy: HOY }).find(x => x.id === 'concentration_extreme').texto
+    expect(texto).toContain('**80%**')
+  })
+
+  it('el efectivo es una porción más, en su lugar por tamaño', () => {
+    const r = repartoDeLaCartera({ value: 10000, cashUsd: 3000, pieData: [{ name: 'AAPL', value: 5000 }, { name: 'KO', value: 2000 }] })
+    expect(r.map(x => x.nombre)).toEqual(['AAPL', 'Efectivo', 'KO'])
+    expect(r[1]).toMatchObject({ efectivo: true })
+    expect(r[1].pct).toBeCloseTo(30)
+  })
+
+  it('más de 5 partes: las 4 más grandes y el resto plegado en «Otros», que suma lo que falta', () => {
+    const pieData = [3000, 2500, 2000, 1000, 800, 400, 300].map((value, i) => ({ name: `A${i}`, value }))
+    const r = repartoDeLaCartera({ value: 10000, pieData })
+    expect(r).toHaveLength(5)
+    expect(r[4]).toMatchObject({ nombre: 'Otros', otros: true, cuantos: 3 })
+    expect(r[4].pct).toBeCloseTo(15)
+    expect(r.reduce((s, x) => s + x.pct, 0)).toBeCloseTo(100)
+  })
+
+  it('con efectivo negativo (deuda con el broker) nada pasa de 100 %', () => {
+    // Los activos suman 1.100 y el total es 1.000 (hay −100 de efectivo).
+    const r = repartoDeLaCartera({ value: 1000, cashUsd: -100, pieData: [{ name: 'AAPL', value: 700 }, { name: 'KO', value: 400 }] })
+    expect(r.map(x => x.nombre)).toEqual(['AAPL', 'KO'])
+    expect(r.reduce((s, x) => s + x.pct, 0)).toBeCloseTo(100)
+    for (const x of r) expect(x.pct).toBeLessThanOrEqual(100)
   })
 })

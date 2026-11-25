@@ -1221,6 +1221,27 @@ body {
 .bv-piso { background: radial-gradient(ellipse at center, rgb(var(--data-violet) / 0.22), transparent 70%); }
 /* El valor de la cartera, recién cargada: un brillo detrás del número. */
 .bv-brillo { background: radial-gradient(ellipse 60% 70% at 50% 50%, rgb(var(--rendi-pos) / 0.10), transparent 75%); }
+/* Cuando lo que tiene vale menos de lo que pagó, el resplandor no es verde. */
+.bv-brillo-neutro { background: radial-gradient(ellipse 60% 70% at 50% 50%, rgb(var(--data-violet) / 0.10), transparent 75%); }
+
+/* El resumen de «tu cartera» (components/onboarding/ResumenDeCartera.jsx).
+   · bv-porcion: cada porción de la torta se dibuja a lo largo de su arco
+     (--c = la circunferencia; el destino es su propio stroke-dasharray).
+   · bv-crece:   una barra crece desde la izquierda hasta su ancho.
+   · bv-pop:     un ícono o una etiqueta aparece con un rebote chico.
+   · bv-chispa:  las chispas del total salen del número y se apagan. */
+@keyframes bv-porcion { from { stroke-dasharray: 0 var(--c); } }
+.bv-porcion { animation: bv-porcion 700ms cubic-bezier(0.16, 1, 0.3, 1) backwards; animation-delay: var(--d, 0s); }
+@keyframes bv-crece { from { transform: scaleX(0); } }
+.bv-crece { transform-origin: 0 50%; animation: bv-crece 900ms cubic-bezier(0.16, 1, 0.3, 1) backwards; animation-delay: var(--d, 0s); }
+@keyframes bv-pop { from { opacity: 0; transform: scale(0.4); } 70% { opacity: 1; transform: scale(1.12); } }
+.bv-pop { animation: bv-pop 520ms cubic-bezier(0.34, 1.56, 0.64, 1) backwards; animation-delay: var(--d, 0s); }
+@keyframes bv-chispa {
+  0%   { opacity: 0; transform: translate(0, 0) scale(0.5); }
+  12%  { opacity: 1; }
+  100% { opacity: 0; transform: translate(var(--x), var(--y)) scale(0.3); }
+}
+.bv-chispa { opacity: 0; animation: bv-chispa 1300ms cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: var(--d, 0s); }
 
 /* Respeta reduced motion */
 @media (prefers-reduced-motion: reduce) {
@@ -1246,6 +1267,8 @@ body {
   .tilde-entra, .viaja-desde, .radar-contorno, .radar-crece, .radar-marca, .dona-barre { animation: none; }
   .etiqueta-punta, .caida-baja .recharts-area, .marca-aparece, .despliega, .isla-despliega { animation: none; }
   .bv-aparece, .bv-globo, .bv-entra { animation: none; }
+  .bv-porcion, .bv-crece, .bv-pop { animation: none; }
+  .bv-chispa { animation: none; display: none; }
   .reveal-up { opacity: 1; }
   /* La cinta de cotizaciones no corre: queda UNA copia de la lista y se
      desliza con el dedo, como la barra de antes. */

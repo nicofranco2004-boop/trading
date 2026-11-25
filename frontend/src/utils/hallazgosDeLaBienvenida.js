@@ -40,9 +40,10 @@ export const MAX_HALLAZGOS = 4
  * @param {number} p.tcValuacion
  * @param {boolean} p.oculto      — «Ocultar saldos»: los montos salen tapados
  * @param {Date}   p.hoy          — inyectable (el motor rota por día)
+ * @param {number} p.maximo       — cuántos como mucho (default MAX_HALLAZGOS)
  * @returns {Array<{id, tono: 'pos'|'neg'|'atencion'|'info', texto}>}
  */
-export function hallazgosDeLaBienvenida({ stats, positions = [], brokers = [], tcValuacion = null, oculto = false, hoy = new Date() } = {}) {
+export function hallazgosDeLaBienvenida({ stats, positions = [], brokers = [], tcValuacion = null, oculto = false, hoy = new Date(), maximo = MAX_HALLAZGOS } = {}) {
   if (!stats || !(stats.value > 0)) return []
   const plata = (v) => (oculto ? OCULTO : fmtUsd(Math.abs(v), 0))
   const out = []
@@ -76,7 +77,7 @@ export function hallazgosDeLaBienvenida({ stats, positions = [], brokers = [], t
     tcValuacion,
   }, 999, hoy).filter(d => HALLAZGOS_DEL_MOTOR.includes(d.id) && !d.locked)
   for (const d of delMotor) {
-    if (out.length >= MAX_HALLAZGOS) break
+    if (out.length >= maximo) break
     out.push({ id: d.id, tono: d.severity === 'urgent' || d.severity === 'warn' ? 'atencion' : 'info', texto: d.text })
   }
 
@@ -87,5 +88,40 @@ export function hallazgosDeLaBienvenida({ stats, positions = [], brokers = [], t
     out.push({ id: 'peor_activo', tono: 'neg', texto: `El que más te pesa es **${worst.asset}**: vale **${plata(worst.pnl_usd)}** menos de lo que pagaste.` })
   }
 
-  return out.slice(0, MAX_HALLAZGOS)
+  return out.slice(0, maximo)
+}
+
+/** Los hallazgos que el resumen de «tu cartera» cuenta con un GRÁFICO (el
+ *  resultado en las barras «pagaste / vale hoy», el mejor y el peor en las
+ *  barras de «cuánto ganó o perdió cada activo»): no se repiten como texto. */
+export const HALLAZGOS_CON_GRAFICO = ['resultado', 'mejor_activo', 'peor_activo']
+
+/**
+ * Las porciones de la torta de «cómo está repartida»: los activos de mayor a
+ * menor (más el efectivo, si hay), los que no entran plegados en «Otros».
+ * El 100 % es el total de la cartera (`stats.value`), el MISMO denominador que
+ * usan los hallazgos de concentración: la torta y el texto dicen el mismo %.
+ * Con efectivo negativo (deuda con el broker) el total queda por debajo de la
+ * suma de los activos: ahí el 100 % es la suma, para que nada pase de 100.
+ *
+ * @returns {Array<{nombre, valor, pct, efectivo?: true, otros?: true, cuantos?: number}>}
+ */
+export function repartoDeLaCartera(stats, maxPorciones = 5) {
+  if (!stats || !(stats.value > 0)) return []
+  const activos = (stats.pieData || []).filter(x => x.value > 0).map(x => ({ nombre: x.name, valor: x.value }))
+  const efectivo = stats.cashUsd || 0
+  const partes = [...activos]
+  // Menos de medio punto de efectivo no se dibuja: es redondeo de la valuación.
+  if (efectivo > stats.value * 0.005) partes.push({ nombre: 'Efectivo', valor: efectivo, efectivo: true })
+  partes.sort((a, b) => b.valor - a.valor)
+  const total = Math.max(stats.value, partes.reduce((s, x) => s + x.valor, 0))
+  if (!(total > 0) || partes.length === 0) return []
+  const visibles = partes.length > maxPorciones ? partes.slice(0, maxPorciones - 1) : partes
+  const resto = partes.slice(visibles.length)
+  const out = visibles.map(x => ({ ...x, pct: (x.valor / total) * 100 }))
+  if (resto.length) {
+    const valor = resto.reduce((s, x) => s + x.valor, 0)
+    out.push({ nombre: 'Otros', valor, pct: (valor / total) * 100, otros: true, cuantos: resto.length })
+  }
+  return out
 }

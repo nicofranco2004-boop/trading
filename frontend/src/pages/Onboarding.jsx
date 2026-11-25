@@ -48,7 +48,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { AlertTriangle, ArrowRight, Check, ChevronLeft, Copy, Download, FileSpreadsheet, Lightbulb, LogOut, Plug, Smartphone, TrendingDown, TrendingUp, Upload } from 'lucide-react'
+import { ArrowRight, Check, ChevronLeft, Copy, Download, FileSpreadsheet, LogOut, Plug, Smartphone, Upload } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import PageMeta from '../components/PageMeta'
 import MervallE from '../components/ai/MervallE'
@@ -58,20 +58,19 @@ import ImportWizard, { withBlockedPlatforms, brokersParaElegir } from '../compon
 import BrokerInstructions, { BROKER_GUIDES } from '../components/import/BrokerInstructions'
 import InvestorProfileForm from '../components/InvestorProfileForm'
 import InstalarAppModal from '../components/InstalarAppModal'
-import AnimatedNumber from '../components/AnimatedNumber'
-import DiagnosticText from '../components/DiagnosticText'
+import ResumenDeCartera, { AnalizandoHistorial, MS_DEL_ANALISIS, finDelResumen, hallazgosEscritos } from '../components/onboarding/ResumenDeCartera'
 import { useAuth } from '../contexts/AuthContext'
-import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
+import { usePrivacy } from '../contexts/PrivacyContext'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useCarteraRecienCargada } from '../hooks/useCarteraRecienCargada'
 import { api, getClientContext } from '../utils/api'
 import { track } from '../utils/track'
-import { fmtUsd } from '../utils/format'
 import { whatsappUrl } from '../utils/support'
 import { faltaConfigurar, marcarRecienConfigurado } from '../utils/bienvenidaObligatoria'
 import { descargarPlantilla, PLANILLA_DE_RENDI } from '../utils/descargarPlantilla'
 import { hallazgosDeLaBienvenida } from '../utils/hallazgosDeLaBienvenida'
+import { prefiereSinMovimiento } from '../utils/movimiento'
 import { esCelular, plataformaDe, yaInstalada, hayInstalador, instalarAhora } from '../utils/instalarApp'
 import { guardar as guardarEnAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
@@ -827,101 +826,62 @@ function PasoCartera({ setCara, onSeguir }) {
   const { loading, stats, positions, brokers, tcValuacion } = useCarteraRecienCargada()
   const { hidden: oculto } = usePrivacy()
   const conValor = !!stats && stats.value > 0
-  // Lo que Mervall-E encontró: 3 o 4 cosas, no sólo el total (utils/hallazgosDeLaBienvenida).
+  // Lo que Mervall-E encontró (utils/hallazgosDeLaBienvenida). Se piden de más:
+  // el resultado y el mejor activo van en gráficos, y el resumen escribe el resto.
   const hallazgos = useMemo(
-    () => (conValor ? hallazgosDeLaBienvenida({ stats, positions, brokers, tcValuacion, oculto }) : []),
+    () => (conValor ? hallazgosDeLaBienvenida({ stats, positions, brokers, tcValuacion, oculto, maximo: 6 }) : []),
     [conValor, stats, positions, brokers, tcValuacion, oculto])
 
+  // El análisis se VE: aunque los datos lleguen en medio segundo, los tres pasos
+  // se tildan a su ritmo antes de revelar el resumen (con «reducir movimiento»,
+  // no: aparece apenas está). Si los datos tardan más, se espera a los datos.
+  const [teatro, setTeatro] = useState(() => !prefiereSinMovimiento())
+  useEffect(() => {
+    if (!teatro) return
+    const t = setTimeout(() => setTeatro(false), MS_DEL_ANALISIS)
+    return () => clearTimeout(t)
+  }, [teatro])
+  const analizando = loading || teatro
+
   // «Vio "tu cartera vale…"» recién cuando el valor está a la vista: mientras
-  // dice «estoy sumando todo…» todavía no lo vio, y sin precios no lo ve.
+  // analiza todavía no lo vio, y sin precios no lo ve.
   const contada = useRef(false)
   useEffect(() => {
-    if (loading || !conValor || contada.current) return
+    if (analizando || !conValor || contada.current) return
     contada.current = true
     track('bienvenida_cartera_vista')
     if (hallazgos.length) track('bienvenida_hallazgos_vistos')
-  }, [loading, conValor, hallazgos.length])
+  }, [analizando, conValor, hallazgos.length])
 
   useEffect(() => {
-    if (loading) { setCara('cargando'); return }
+    if (analizando) { setCara('pensando'); return }
     if (!conValor) { setCara('contento'); return }
     setCara('festejo')
     const t = setTimeout(() => setCara('contento'), MS_FESTEJO)
     return () => clearTimeout(t)
-  }, [loading, conValor, setCara])
+  }, [analizando, conValor, setCara])
 
-  const texto = loading
-    ? ['Dame un segundo, estoy sumando todo…']
+  const texto = analizando
+    ? ['Dame un segundo: estoy leyendo todo tu historial…']
     : conValor
-      ? (hallazgos.length
-          ? ['¡Listo! Leí todo tu historial.', 'Esto es lo que encontré en tu cartera:']
-          : ['¡Listo! Esto es lo que tenés hoy.'])
+      ? ['¡Listo! Leí todo tu historial.', 'Esto es lo que encontré en tu cartera:']
       : ['¡Listo, ya tengo tu historial!', 'Todavía no tengo los precios para ponerle un valor a tu cartera: seguimos y lo ves en Inicio.']
 
   return (
     <div className="space-y-5">
-      <GloboDeMervallE key={loading ? 'sumando' : 'listo'} texto={texto} />
+      <GloboDeMervallE key={analizando ? 'analizando' : 'listo'} texto={texto} />
 
-      {!loading && conValor && (
-        <div className="bv-entra relative overflow-hidden rounded-xl border border-line bg-bg-1 px-5 py-6 sm:px-7 sm:py-8" style={{ '--d': '150ms' }}>
-          <span aria-hidden="true" className="absolute inset-0 bv-brillo" />
-          <div className="relative">
-            <div className="text-[13px] text-ink-2 mb-1">Tu cartera hoy</div>
-            <div className="text-[clamp(26px,8vw,56px)] leading-none font-semibold tracking-tight tabular text-ink-0">
-              <AnimatedNumber value={stats.value} format={(v) => (oculto ? OCULTO : fmtUsd(v))} />
-            </div>
-            <div className="mt-3 text-[14px] text-ink-1 tabular">
-              {stats.positionCount} {stats.positionCount === 1 ? 'posición' : 'posiciones'} en {stats.brokerCount} {stats.brokerCount === 1 ? 'broker' : 'brokers'}
-            </div>
-          </div>
-        </div>
-      )}
-      {loading && (
-        <div className="h-[150px] rounded-xl border border-line bg-bg-1/60 esqueleto" aria-hidden="true" />
-      )}
+      {analizando && <AnalizandoHistorial />}
+      {!analizando && conValor && <ResumenDeCartera stats={stats} hallazgos={hallazgos} oculto={oculto} />}
 
-      {!loading && hallazgos.length > 0 && (
-        <ul className="space-y-2.5" aria-label="Lo que encontré en tu cartera">
-          {hallazgos.map((h, i) => (
-            <Hallazgo key={h.id} hallazgo={h} demora={ENTRADA_HALLAZGOS_MS + i * ENTRE_HALLAZGOS_MS} />
-          ))}
-        </ul>
-      )}
-
-      {!loading && (
-        <div className="bv-entra" style={{ '--d': `${hallazgos.length ? ENTRADA_HALLAZGOS_MS + hallazgos.length * ENTRE_HALLAZGOS_MS : 500}ms` }}>
+      {!analizando && (
+        <div className="bv-entra" style={{ '--d': `${conValor ? finDelResumen(hallazgosEscritos(hallazgos)) : 500}ms` }}>
           <button type="button" onClick={onSeguir} className={`${BOTON_1} w-full sm:w-auto`}>
             Seguir <ArrowRight size={17} strokeWidth={2} aria-hidden="true" />
           </button>
         </div>
       )}
     </div>
-  )
-}
-
-// Los hallazgos entran de a uno, después de que el total terminó de contar: es
-// Mervall-E contando lo que vio, no una tabla que aparece de golpe. Con
-// «reducir movimiento», `bv-entra` no anima y aparecen todos juntos.
-const ENTRADA_HALLAZGOS_MS = 900
-const ENTRE_HALLAZGOS_MS = 450
-const CARA_DEL_HALLAZGO = {
-  pos: { Icono: TrendingUp, color: 'text-rendi-pos', fondo: 'bg-rendi-pos/10' },
-  neg: { Icono: TrendingDown, color: 'text-rendi-neg', fondo: 'bg-rendi-neg/10' },
-  atencion: { Icono: AlertTriangle, color: 'text-rendi-warn', fondo: 'bg-rendi-warn/10' },
-  info: { Icono: Lightbulb, color: 'text-data-violet', fondo: 'bg-data-violet/10' },
-}
-
-function Hallazgo({ hallazgo, demora }) {
-  const { Icono, color, fondo } = CARA_DEL_HALLAZGO[hallazgo.tono] || CARA_DEL_HALLAZGO.info
-  return (
-    <li className="bv-entra flex items-start gap-3 rounded-xl border border-line bg-bg-1 px-4 py-3.5" style={{ '--d': `${demora}ms` }}>
-      <span className={`w-8 h-8 rounded-lg ${fondo} ${color} flex items-center justify-center flex-shrink-0`}>
-        <Icono size={16} strokeWidth={2} aria-hidden="true" />
-      </span>
-      <p className="min-w-0 flex-1 text-[14px] sm:text-[15px] text-ink-1 leading-snug pt-1">
-        <DiagnosticText text={hallazgo.texto} />
-      </p>
-    </li>
   )
 }
 

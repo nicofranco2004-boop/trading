@@ -42,6 +42,14 @@ vi.mock('../components/InvestorProfileForm', () => ({
     h('button', { type: 'button', onClick: () => onCambio?.(1) }, 'perfil-responder')),
 }))
 vi.mock('../components/InstalarAppModal', () => ({ default: ({ open }) => (open ? h('div', { 'data-instalar': '' }) : null) }))
+// El análisis previo al resumen dura 2,4 s en la app. Acá dura lo que diga
+// `analisis.ms` (0 salvo en la prueba que lo mira): lo que se prueba en las
+// demás es QUÉ muestra el resumen, no cuánto tarda en llegar.
+const analisis = { ms: 0 }
+vi.mock('../components/onboarding/ResumenDeCartera', async (o) => {
+  const real = await o()
+  return { ...real, get MS_DEL_ANALISIS() { return analisis.ms } }
+})
 const eventos = []
 const descargarPlantilla = vi.fn(async () => {})
 vi.mock('../utils/descargarPlantilla', async (o) => ({ ...(await o()), descargarPlantilla: (...a) => descargarPlantilla(...a) }))
@@ -318,15 +326,52 @@ describe('4 · al confirmar el archivo: «tu cartera vale…»', () => {
     expect(donde.ahora).toBe('/onboarding')
     expect(todo()).toContain('Esto es lo que encontré en tu cartera')
     expect(todo()).toContain('Tu cartera hoy')
+    // (El total de arriba cuenta hasta su número; el de la barra «Vale hoy» es fijo.)
+    expect(todo()).toContain('USD 2.000')
     expect(todo()).toContain('1 posición en 1 broker')
     // El resumen: no sólo el total. AAPL costó 1000 y vale 2000 (10 × 200), y es
-    // todo lo que hay: cómo viene, el mejor activo y la concentración.
-    expect(todo()).toContain('Lo que tenés hoy vale USD 1.000 más de lo que pagaste')
-    expect(todo()).toContain('Tu mejor activo es AAPL')
+    // todo lo que hay. El resultado va en su etiqueta y en las barras…
+    expect(todo()).toContain('+USD 1.000 · +100,0%')
+    expect(todo()).toContain('Lo que pagaste y lo que vale hoy')
+    expect(todo()).toContain('USD 1.000 más de lo que pagaste')
+    // …cuánto ganó cada activo, la torta con su leyenda…
+    expect(todo()).toContain('Cuánto ganó o perdió cada activo')
+    expect(todo()).toContain('+USD 1.000')
+    expect(todo()).toContain('Cómo está repartida')
+    expect(todo()).toContain('100%')
+    // …y lo que ve el motor de Diagnóstico, escrito.
+    expect(todo()).toContain('Lo que vi en tu cartera')
     expect(todo()).toContain('representa el 100% de tu cartera')
+    // Lo que ya está en un gráfico no se repite como texto.
+    expect(todo()).not.toContain('Tu mejor activo es AAPL')
     expect(eventos).toContain('bienvenida_cartera_vista')
     expect(eventos).toContain('bienvenida_hallazgos_vistos')
     expect(atributo('data-mervalle')).toBe('festejo')
+  })
+
+  it('antes del resumen se ve el análisis, paso por paso; el resumen llega cuando termina', async () => {
+    analisis.ms = 400
+    try {
+      await abrir()
+      await tocar('Empecemos')
+      await tocar('Cocos Capital')
+      await tocar('Subir el archivo')
+      await tocar('wizard-confirmar')
+      auth.user = { ...auth.user, falta_cargar_historial: false }
+      await tocar('wizard-cerrar')
+      await vueltas(10)
+      expect(todo()).toContain('estoy leyendo todo tu historial')
+      expect(todo()).toContain('Leyendo tus operaciones')
+      expect(todo()).toContain('Armando tu resumen')
+      expect(todo()).not.toContain('Tu cartera hoy')
+      expect(eventos).not.toContain('bienvenida_cartera_vista')
+      expect(atributo('data-mervalle')).toBe('pensando')
+      // Pasado el análisis, aparece el resumen.
+      await enActo(async () => { await new Promise(r => setTimeout(r, 550)) })
+      await vueltas()
+      expect(todo()).toContain('Tu cartera hoy')
+      expect(eventos).toContain('bienvenida_cartera_vista')
+    } finally { analisis.ms = 0 }
   })
 })
 
@@ -637,11 +682,13 @@ describe('«tu cartera vale…»: lo que dice y cuándo se cuenta como vista', (
     expect(todo()).toContain('1 posición en 1 broker')
   })
 
-  it('mientras dice «estoy sumando todo…» todavía no cuenta como vista', async () => {
-    // Los precios no llegan nunca: se queda sumando.
+  it('mientras analiza (los datos no llegaron) todavía no cuenta como vista', async () => {
+    // Los precios no llegan nunca: se queda analizando, aunque su tiempo ya pasó.
     const { '/prices': _sinPrecios, ...sumando } = CARTERA
     await hastaLaCartera({ cartera: sumando })
-    expect(todo()).toContain('Dame un segundo, estoy sumando todo…')
+    expect(todo()).toContain('estoy leyendo todo tu historial')
+    expect(todo()).toContain('Buscando los precios de hoy')
+    expect(todo()).not.toContain('Tu cartera hoy')
     expect(eventos).not.toContain('bienvenida_cartera_vista')
   })
 

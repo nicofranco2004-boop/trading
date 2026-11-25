@@ -79,6 +79,7 @@ export function useCarteraRecienCargada() {
     const exchangeBrokers = new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name))
     const byAsset = new Map()
     const porEspecie = new Map()
+    const gananciaPorEspecie = new Map()
     for (const p of positions) {
       if (p.is_cash) continue
       const isARS = arsBrokers.has(p.broker)
@@ -156,9 +157,10 @@ export function useCarteraRecienCargada() {
       const enBolsaAr = isARS || isArUsdBroker(p.broker) || costInPesos(p)
       const especie = enBolsaAr ? cedearEspecieBase(p.asset) : (p.asset || '').toUpperCase()
       porEspecie.set(especie, (porEspecie.get(especie) || 0) + (valueUsd || 0))
+      gananciaPorEspecie.set(especie, (gananciaPorEspecie.get(especie) || 0) + pnlUsd)
     }
     const pieData = [...porEspecie.entries()]
-      .map(([name, v]) => ({ name, value: +v.toFixed(2) }))
+      .map(([name, v]) => ({ name, value: +v.toFixed(2), pnl: +(gananciaPorEspecie.get(name) || 0).toFixed(2) }))
       .filter(x => x.value > 0)
       .sort((a, b) => b.value - a.value)
     const arr = Array.from(byAsset.values())
@@ -172,7 +174,13 @@ export function useCarteraRecienCargada() {
     // que Cartera (utils/brokerAccounts.js).
     const brokerCount = groupBrokersIntoAccounts(brokers).length
 
-    return { value, invested, pnl, pnlPct, best, worst, positionCount, brokerCount, pieData }
+    // El efectivo en dólares, con la misma cuenta que el hallazgo «cash_heavy»
+    // de utils/diagnostics.js: los pesos de un broker en pesos, al dólar de valuación.
+    const cashUsd = positions
+      .filter(p => p.is_cash)
+      .reduce((t, p) => t + (arsBrokers.has(p.broker) ? (p.invested || 0) / tcValuacion : (p.invested || 0)), 0)
+
+    return { value, invested, pnl, pnlPct, best, worst, positionCount, brokerCount, pieData, cashUsd }
   }, [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis])
 
   // positions, brokers y tcValuacion van afuera para los hallazgos que los miran
