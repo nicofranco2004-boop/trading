@@ -18,6 +18,7 @@ import { getBondMeta } from './bondMeta'
 import { isFciSym } from './valuation'
 import { contarPosiciones } from './aiSummary'
 import { MAX_OPERATIONS } from './aiSnapshot'
+import { groupBrokersIntoAccounts } from './brokerAccounts'
 
 export const DEMORA_CARGADOR_MS = 250
 
@@ -196,7 +197,8 @@ export function pasosContextoIA(llego = {}) {
     paso('monthly', 'Tu historial mes a mes', de('monthly'),
       (filas) => cuantos(mesesDelHistorial(filas), 'mes', 'meses'), { error: fallo('monthly') }),
     paso('brokers', 'Tus brokers', de('brokers'),
-      (bs) => cuantos(Array.isArray(bs) ? bs.length : 0, 'broker', 'brokers'), { error: fallo('brokers') }),
+      // CUENTAS, no filas (igual que «Viendo tu cartera»): la pata en dólares no es otro broker.
+      (bs) => cuantos(groupBrokersIntoAccounts(bs).length, 'broker', 'brokers'), { error: fallo('brokers') }),
     // Sin operaciones el chat sigue (aiSnapshot las da por vacías): el renglón
     // lo dice en vez de quedarse girando o de sonar a que se rompió todo.
     fallo('operations') ? { ...operaciones, detalle: 'no llegaron: sigo sin ellas' } : operaciones,

@@ -341,6 +341,23 @@ describe('fetchAiSnapshot — avisa cada pedido en el orden en que vuelve', () =
       .rejects.toThrow('500')
     expect(pasosContextoIA(llego).find(p => p.id === 'positions').estado).toBe('error')
   })
+
+  it('cuenta CUENTAS, no filas: Cocos y su pata «Cocos · USD» son un broker', async () => {
+    // La forma real de GET /api/brokers: la pata en dólares apunta al padre. Antes
+    // la cabecera y el renglón contaban filas y decían «3 brokers» con dos.
+    const BROKERS = [
+      { id: 1, name: 'Cocos', currency: 'ARS', parent_broker_id: null },
+      { id: 2, name: 'Cocos · USD', currency: 'USDT', parent_broker_id: 1 },
+      { id: 3, name: 'Schwab', currency: 'USD', parent_broker_id: null },
+    ]
+    vi.spyOn(api, 'get').mockImplementation(async (path) => (path === '/brokers' ? BROKERS : DATOS[path]))
+    const llego = {}
+    const snap = await fetchAiSnapshot({ alLlegar: ({ pieza, dato }) => { llego[pieza] = dato } })
+    expect(resumenDeCartera(snap).brokers).toBe(2)
+    expect(pasosContextoIA(llego).find(p => p.id === 'brokers').detalle).toBe('2 brokers')
+    // Una sola cuenta bimonetaria: «1 broker».
+    expect(resumenDeCartera({ ...snap, brokers: BROKERS.slice(0, 2) }).brokers).toBe(1)
+  })
 })
 
 // ─── Cualquier escritura deja vieja la lectura ───────────────────────────────

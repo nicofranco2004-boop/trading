@@ -32,10 +32,14 @@ const TECNICO = {
   },
 }
 let peso
+const LOTE_SCHWAB = { id: 1, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK', quantity: 25, buy_price: 118,
+  invested: 2950, entry_date: '2024-12-10', is_cash: 0 }
+const SOLO_SCHWAB = [{ id: 1, name: 'Schwab', currency: 'USD' }]
+let lotes = [LOTE_SCHWAB]
+let brokers = SOLO_SCHWAB
 const RESPUESTAS = {
-  '/positions': () => [{ id: 1, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK', quantity: 25, buy_price: 118,
-    invested: 2950, entry_date: '2024-12-10', is_cash: 0 }],
-  '/brokers': () => [{ id: 1, name: 'Schwab', currency: 'USD' }],
+  '/positions': () => lotes,
+  '/brokers': () => brokers,
   '/dolar': () => ({ mep: { venta: 1555, compra: 1550 } }),
   '/operations': () => [],
   '/prices': () => ({ NVDA: 212.21 }),
@@ -63,7 +67,10 @@ beforeAll(async () => {
 afterAll(() => { vi.unstubAllGlobals() })
 
 let montado
-afterEach(async () => { if (montado) await montado.desmontar(); montado = null })
+afterEach(async () => {
+  if (montado) await montado.desmontar(); montado = null
+  lotes = [LOTE_SCHWAB]; brokers = SOLO_SCHWAB
+})
 
 async function ficha() {
   const el = () => h(MemoryRouter, { initialEntries: ['/activo/NVDA'] },
@@ -90,5 +97,35 @@ describe('ficha del activo: «En tu cartera»', () => {
     const t = await ficha()
     expect(t).toContain('−US$ 146')
     expect(t).not.toContain('de tu cartera')
+  })
+})
+
+// «· N brokers» al lado del ticker y del valor: cuenta CUENTAS, no patas. Antes
+// contaba los nombres de los lotes tal cual y el que tenía NVDA en Cocos (pesos)
+// y en «Cocos · USD» (la pata en dólares de la MISMA cuenta, hija vía
+// `parent_broker_id`) leía «NVDA · 2 brokers» con un solo broker.
+describe('ficha del activo: cuántos brokers', () => {
+  const COCOS = { id: 2, name: 'Cocos', currency: 'ARS', parent_broker_id: null }
+  const COCOS_USD = { id: 3, name: 'Cocos · USD', currency: 'USDT', parent_broker_id: 2 }
+  const lote = (id, broker) => ({ ...LOTE_SCHWAB, id, broker, asset_type: 'CEDEAR', quantity: 10 })
+
+  it('Cocos + Cocos · USD es UN broker: no dice «2 brokers»', async () => {
+    peso = { peso: null }
+    brokers = [COCOS, COCOS_USD]
+    lotes = [lote(1, 'Cocos'), lote(2, 'Cocos · USD')]
+    const t = await ficha()
+    expect(t).toContain('Valor actual')        // la ficha está mostrando tu tenencia
+    expect(t).not.toContain('brokers')
+  })
+
+  it('dos cuentas de verdad (Schwab y Cocos con su pata en dólares) dicen «2 brokers»', async () => {
+    // Sin este caso, un contador clavado en 1 pasaría la prueba de arriba.
+    peso = { peso: null }
+    brokers = [...SOLO_SCHWAB, COCOS, COCOS_USD]
+    lotes = [LOTE_SCHWAB, lote(2, 'Cocos'), lote(3, 'Cocos · USD')]
+    const t = await ficha()
+    expect(t).toContain('NVDA · 2 brokers')
+    expect(t).toContain('Valor actual · 2 brokers')
+    expect(t).not.toContain('3 brokers')
   })
 })

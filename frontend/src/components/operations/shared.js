@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { LOCALE } from '../../utils/format'
 import { esConversion } from '../../utils/tradeStats'
+import { cuentasDeLosNombres } from '../../utils/brokerAccounts'
 
 // ─── Tipos de movimiento ───────────────────────────────────────────────────
 // UN solo mapa. Antes eran dos (`TYPE_META` desktop / `MOVE_TYPE_META` mobile)
@@ -259,11 +260,31 @@ export const SIN_FECHA = '__sin_fecha__'
 /**
  * Agrupa filas (YA filtradas) por día, mes o activo.
  * Devuelve { key, label, rows, count, pnl, brokers } ordenados.
+ * `brokers` son los NOMBRES reales de las patas (para mostrarlos, pasalos por
+ * `rotuloDeBrokers`, que los junta por cuenta).
  *
  * `pnl` es la suma CRUDA en USD y se usa sólo para ORDENAR. Lo que se muestra
  * lo recalcula cada renderer con `histMoney.sumPnlAt(group.rows)`
  * (convert-then-sum), que es lo único que garantiza `total === Σ filas`.
  */
+/**
+ * El rótulo «broker(s)» de la fila-resumen de un grupo, en las dos tablas
+ * (operaciones y movimientos): «—», «Cocos», «Cocos · IOL» o «3 brokers».
+ *
+ * Cuenta CUENTAS, no patas: «Cocos» y su pata en dólares «Cocos · USD» son un
+ * broker. Antes se contaban los nombres tal cual y un grupo con una compra en
+ * pesos y otra en dólares en Cocos decía «Cocos · Cocos · USD».
+ *
+ * @param {string[]} nombres `group.brokers` de buildGroups
+ * @param {Array} brokers filas de /api/brokers (sin ellas, los nombres tal cual)
+ */
+export function rotuloDeBrokers(nombres, brokers) {
+  const cuentas = cuentasDeLosNombres(nombres, brokers)
+  if (cuentas.length === 0) return '—'
+  if (cuentas.length <= 2) return cuentas.join(' · ')
+  return `${cuentas.length} brokers`
+}
+
 export function buildGroups(rows, groupBy) {
   const map = new Map()
   for (const m of rows) {

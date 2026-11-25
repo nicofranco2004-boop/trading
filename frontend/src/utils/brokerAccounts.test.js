@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { groupBrokersIntoAccounts, accountForBrokerName, flattenAccounts, brokerLegLabel } from './brokerAccounts'
+import { groupBrokersIntoAccounts, accountForBrokerName, flattenAccounts, brokerLegLabel, cuentasDeLosNombres } from './brokerAccounts'
 
 const B = (id, name, currency = 'ARS', parent_broker_id = null) =>
   ({ id, name, currency, parent_broker_id })
@@ -120,6 +120,42 @@ describe('accountForBrokerName', () => {
 
   it('devuelve undefined para un broker que ya no existe', () => {
     expect(accountForBrokerName(accounts, 'Borrado')).toBeUndefined()
+  })
+})
+
+describe('cuentasDeLosNombres', () => {
+  const brokers = [
+    B(1, 'Cocos', 'ARS'),
+    B(2, 'Cocos · USD', 'USDT', 1),
+    B(3, 'IOL', 'ARS'),
+    B(4, 'Schwab', 'USD'),
+  ]
+
+  it('la pata en dólares es la MISMA cuenta que su padre: «Cocos», no dos', () => {
+    expect(cuentasDeLosNombres(['Cocos', 'Cocos · USD'], brokers)).toEqual(['Cocos'])
+    expect(cuentasDeLosNombres(['Cocos · USD'], brokers)).toEqual(['Cocos'])
+  })
+
+  it('cuentas distintas sí se cuentan, sin repetir y en el orden en que aparecen', () => {
+    expect(cuentasDeLosNombres(['IOL', 'Cocos · USD', 'Cocos', 'IOL', 'Schwab'], brokers))
+      .toEqual(['IOL', 'Cocos', 'Schwab'])
+  })
+
+  it('por parent_broker_id, no por el nombre: un hijo renombrado sigue en su cuenta', () => {
+    const conRenombre = [B(1, 'Cocos', 'ARS'), B(2, 'Dólares de Cocos', 'USDT', 1)]
+    expect(cuentasDeLosNombres(['Cocos', 'Dólares de Cocos'], conRenombre)).toEqual(['Cocos'])
+  })
+
+  it('un nombre que no está en la lista (broker borrado, o la lista no llegó) cuenta con su nombre', () => {
+    expect(cuentasDeLosNombres(['Cocos', 'Viejo'], brokers)).toEqual(['Cocos', 'Viejo'])
+    expect(cuentasDeLosNombres(['Cocos', 'Cocos · USD'], [])).toEqual(['Cocos', 'Cocos · USD'])
+    expect(cuentasDeLosNombres(['Cocos', 'Cocos · USD'], undefined)).toEqual(['Cocos', 'Cocos · USD'])
+  })
+
+  it('nombres vacíos no cuentan; sin nombres, ninguna cuenta', () => {
+    expect(cuentasDeLosNombres(['', null, 'Cocos'], brokers)).toEqual(['Cocos'])
+    expect(cuentasDeLosNombres([], brokers)).toEqual([])
+    expect(cuentasDeLosNombres(undefined, brokers)).toEqual([])
   })
 })
 

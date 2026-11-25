@@ -16,7 +16,7 @@ import { usd, pctSigned, colorClass } from '../../utils/format'
 import EmptyState from '../EmptyState'
 import InlineAIButton from '../ai/InlineAIButton'
 import Panel from '../Panel'
-import { prettyOpType, pctEnMoneda } from './shared'
+import { prettyOpType, pctEnMoneda, rotuloDeBrokers } from './shared'
 import { esCobro } from '../../utils/tradeStats'
 import InfoTooltip from '../InfoTooltip'
 import { celdasDelDiario, ChipTendencia, fechaCorta } from './DiarioCeldas'
@@ -35,6 +35,8 @@ export default function TradesTable({
   histMoney, expandedGroups, onToggleGroup,
   onEdit, onDelete, onDeleteGroup, borrando = () => false,
   onAdd, page, totalPages, onPage, diario = null,
+  // Filas de /api/brokers: para que el rótulo de cada grupo cuente CUENTAS.
+  brokers = [],
 }) {
   return (
     <Panel padding="none">
@@ -121,6 +123,7 @@ export default function TradesTable({
                     histMoney={histMoney}
                     onDeleteGroup={groupBy === 'asset' ? onDeleteGroup : null}
                     deleting={borrando(`grp-${g.key}`)}
+                    brokerRows={brokers}
                   />
                   {isOpen && g.rows.map(op => (
                     <TradeRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} indent deleting={borrando(`op-${op.id}`)} diario={diario} />
@@ -260,7 +263,7 @@ function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = fal
 // filas usan el FX de su fecha: un grupo de UN trade mostraba dos números
 // distintos (reporte real: header +$147.007 vs su única fila +$135.444, mismo
 // pnl_usd × dos dólares). El invariante que garantiza esto es `total === Σ filas`.
-function TradeGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup, deleting }) {
+function TradeGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup, deleting, brokerRows }) {
   const { label, count, brokers } = group
   // Signo, color y flecha salen del MISMO número que se imprime. Derivarlos del
   // USD crudo podía contradecir lo mostrado: un grupo con +100 USD de 2021 (fx 190)
@@ -271,11 +274,8 @@ function TradeGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, his
   const Chevron = isOpen ? ChevronUp : ChevronDown
   const hasPnl = pnl !== 0
   const Arrow = pnl > 0 ? ArrowUpRight : pnl < 0 ? ArrowDownRight : null
-  const brokersLabel = brokers.length === 0
-    ? '—'
-    : brokers.length <= 2
-    ? brokers.join(' · ')
-    : `${brokers.length} brokers`
+  // Por cuenta: «Cocos» + «Cocos · USD» es UN broker (ver rotuloDeBrokers).
+  const brokersLabel = rotuloDeBrokers(brokers, brokerRows)
   return (
     <tr
       className={`border-b border-line/40 bg-bg-2/40 hover:bg-bg-2/60 cursor-pointer transition-colors ${conNueva ? 'destello-nueva' : ''}`}

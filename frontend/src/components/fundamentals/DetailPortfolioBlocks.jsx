@@ -17,6 +17,7 @@ import { costInPesos, costInUsd, valueEquityLot, isArUsdBroker, costBasisRate } 
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
 import { resolveCedearRatio } from '../../utils/cedearRatio'
 import { pctVar, pctColor } from '../../utils/format'
+import { cuentasDeLosNombres } from '../../utils/brokerAccounts'
 
 const baseOf = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
 const fmtUsd = (n) => (n == null ? '—' : '$' + Math.round(n).toLocaleString('es-AR'))
@@ -177,7 +178,8 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
 
       const pnlUsd = valueUsd - costUsd
       owned = {
-        qty, costUsd, brokers: [...brk],
+        // Por CUENTA: «Tenés 10 en Cocos», no «en Cocos · Cocos · USD».
+        qty, costUsd, brokers: cuentasDeLosNombres([...brk], brokers),
         avgCostUsd, costOnAxis, isLocalByma: anyLocal, converted,
         valueUsd, pnlUsd,
         pnlPct: costUsd > 0 && costOnAxis != null ? (pnlUsd / costUsd) * 100 : null,

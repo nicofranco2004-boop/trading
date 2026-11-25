@@ -23,6 +23,7 @@ import { esAccionLocal } from '../utils/accionLocal'
 import { useUltimoPedido } from './useUltimoPedido'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { operacionesEnUsd } from '../utils/assetPnl'
+import { cuentasDeLosNombres } from '../utils/brokerAccounts'
 
 // ─── Matriz de valuación por lote (reusa la lógica de PositionDetailMobile) ──
 // Costo económico del lote, en SU moneda = lo pagado + las comisiones de compra.
@@ -286,7 +287,8 @@ export function useFichaDelActivo(asset, { conCotizacion = true, aceptaOtroNombr
       lots, valueUsd, investedUsd, qty, pnlUsd, pnlPct, avgCostUsd, pnlPctCompra, lineaSinTc,
       realizedTotal, wins, losses, winRate, best, worst,
       tradesCount: closed.length,
-      brokerCount: new Set(openLots.map(p => p.broker)).size,
+      // CUENTAS, no patas: «Cocos» + «Cocos · USD» es un broker (cuentasDeLosNombres).
+      brokerCount: cuentasDeLosNombres(openLots.map(p => p.broker), brokers).length,
     }
   }, [positions, operations, brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis])
 

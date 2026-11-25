@@ -123,6 +123,46 @@ export function accountForBrokerName(accounts, brokerName) {
 }
 
 /**
+ * Las CUENTAS detrás de una lista de NOMBRES de broker (los `p.broker` de unas
+ * posiciones u operaciones), para contarlas o listarlas en pantalla.
+ *
+ * Contar los nombres tal cual cuenta las PATAS: «Cocos» y «Cocos · USD» son
+ * dos nombres pero una sola cuenta, y la persona con un solo broker leía
+ * «2 brokers» (ficha del activo, Movimientos, Analizar). Acá cada nombre se
+ * resuelve a su cuenta con el mismo criterio que Cartera
+ * (`groupBrokersIntoAccounts`, por `parent_broker_id`) y se repite una vez.
+ *
+ * · Devuelve los `label` de las cuentas, sin repetir, en el orden en que
+ *   aparecen sus nombres. `.length` es cuántas cuentas son.
+ * · Un nombre que no está en `brokers` (el broker se borró, o la lista todavía
+ *   no llegó) cuenta como cuenta propia con su nombre: mejor el nombre crudo
+ *   que esconder la fila.
+ *
+ * ⚠️ Es para MOSTRAR (ver la regla 2 de arriba): nunca se usa para filtrar ni se
+ * manda a un endpoint en lugar del nombre real de la pata.
+ *
+ * @param {Array<string>} brokerNames nombres reales (pueden repetirse o venir vacíos)
+ * @param {Array} brokers filas de /api/brokers
+ * @returns {string[]}
+ */
+export function cuentasDeLosNombres(brokerNames, brokers) {
+  const cuentas = groupBrokersIntoAccounts(brokers)
+  const vistas = new Set()
+  const out = []
+  for (const name of brokerNames || []) {
+    if (!name) continue
+    const cuenta = accountForBrokerName(cuentas, name)
+    // La clave separa cuentas conocidas (por id) de nombres sueltos: un nombre
+    // suelto nunca coincide con el id de una cuenta.
+    const clave = cuenta ? `cuenta:${cuenta.key}` : `nombre:${name}`
+    if (vistas.has(clave)) continue
+    vistas.add(clave)
+    out.push(cuenta ? cuenta.label : name)
+  }
+  return out
+}
+
+/**
  * Compat: la forma plana [{broker, indent, parentName}] que consumía el render
  * viejo. Se deriva del agrupado para que haya UN solo constructor del árbol
  * padre→hijo y no dos que puedan divergir.

@@ -27,6 +27,7 @@ import { businessQuality, priceRead, AXIS_PILL } from './axes'
 import { pctVar, pctColor } from '../../utils/format'
 import { usePrivacy } from '../../contexts/PrivacyContext'
 import { pesoVisible, deTuCartera } from '../../utils/parteDeTuPlata'
+import { cuentasDeLosNombres } from '../../utils/brokerAccounts'
 
 const baseTicker = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
 
@@ -136,7 +137,8 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
       analizable += h.valueUsd
       const pnlUsd = h.valueUsd - h.investedUsd
       return {
-        base: h.base, valueUsd: h.valueUsd, brokers: [...h.brokers],
+        // Por CUENTA: «Cocos» + «Cocos · USD» se lee «Cocos», no «Cocos · Cocos · USD».
+        base: h.base, valueUsd: h.valueUsd, brokers: cuentasDeLosNombres([...h.brokers], brokers),
         pnlPct: h.investedUsd > 0 ? (pnlUsd / h.investedUsd) * 100 : null,
         weight: totalValue > 0 ? (h.valueUsd / totalValue) * 100 : null,
       }

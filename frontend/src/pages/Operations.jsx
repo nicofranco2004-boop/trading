@@ -575,7 +575,7 @@ export default function Operations() {
       {/* `onChanged` llega en LAS DOS anchuras: borrar un movimiento recalcula
           las operaciones del tab "Solo P/L", cuyos datos viven acá. Antes el
           feed lo montaba sin el prop y borrar en el celular no refrescaba nada. */}
-      {tab === 'all' && <MovementsView onChanged={load} isMobile={isMobile} cambios={cambios} />}
+      {tab === 'all' && <MovementsView onChanged={load} isMobile={isMobile} cambios={cambios} brokers={brokers} />}
 
       {/* Cobros: dividendos, cupones e intereses por mes, año y activo. Una sola
           vista para las dos anchuras (se acomoda sola, R6). */}
@@ -785,6 +785,7 @@ export default function Operations() {
       {!isMobile && (
         <TradesTable
           nuevas={nuevas}
+          brokers={brokers}
           ops={ops}
           filteredOps={filteredOps}
           pagedOps={pagedOps}
@@ -1264,7 +1265,9 @@ export function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
 // tab 'Solo P/L', cuyos datos viven en el padre y se cargan una sola vez al montar:
 // sin avisarle, la operación borrada seguía visible ahí (y en sus KPIs) hasta recargar.
 // Desde la Fase 3 el prop llega en LAS DOS anchuras (el feed lo montaba sin él).
-function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } }) {
+// `brokers`: las filas de /api/brokers que ya pidió Operations. Sólo para
+// mostrar (el rótulo de broker de cada grupo cuenta cuentas, no patas).
+function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false }, brokers = [] }) {
   // Lo que se anota de un cambio es de la cuenta de los datos de esta pantalla
   // (utils/duenoDeLaPestana): si la pestaña ya es de otra, no se anota.
   const duenoDatos = useDuenoDeLosDatos()
@@ -1752,6 +1755,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
       {!isMobile && (
         <MovementsTable
           nuevas={nuevas}
+          brokers={brokers}
           movements={movements}
           filtered={filtered}
           pageRows={pageRows}

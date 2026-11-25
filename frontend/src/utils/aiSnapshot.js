@@ -27,6 +27,7 @@
 
 import { api, getClientContext } from './api'
 import { buildAiSummary } from './aiSummary'
+import { groupBrokersIntoAccounts } from './brokerAccounts'
 
 // Operaciones capeadas a las 100 más recientes: el backend corta el snapshot
 // en 200 KB y una cuenta con 500+ operaciones se caía sin esto.
@@ -103,6 +104,7 @@ export function resumenDeCartera(snap) {
   const posiciones = snap.summary?.open_positions_count
   return {
     posiciones: Number.isFinite(posiciones) ? posiciones : null,
-    brokers: Array.isArray(snap.brokers) ? snap.brokers.length : null,
+    // CUENTAS, no filas: «Cocos» + «Cocos · USD» se lee «1 broker».
+    brokers: Array.isArray(snap.brokers) ? groupBrokersIntoAccounts(snap.brokers).length : null,
   }
 }

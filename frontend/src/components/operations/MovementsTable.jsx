@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import { colorClass } from '../../utils/format'
 import EmptyState from '../EmptyState'
-import { TYPE_META, puedeBorrarMovimiento, amountClassFor } from './shared'
+import { TYPE_META, puedeBorrarMovimiento, amountClassFor, rotuloDeBrokers } from './shared'
 import { esFilaDePase, lineaDeFilaDePase, avisoDeFilaDePase } from '../../utils/moverDeBroker'
 
 export const MOV_PAGE_SIZE = 50
@@ -29,6 +29,8 @@ export default function MovementsTable({
   histMoney, currency, expandedGroups, onToggleGroup,
   onDelete, onDeleteGroup, onDeshacerPase, borrando = () => false,
   page, totalPages, onPage,
+  // Filas de /api/brokers: para que el rótulo de cada grupo cuente CUENTAS.
+  brokers = [],
 }) {
   return (
     <>
@@ -71,6 +73,7 @@ export default function MovementsTable({
                       histMoney={histMoney}
                       onDeleteGroup={groupBy === 'asset' ? onDeleteGroup : null}
                       deleting={borrando(`grp-${g.key}`)}
+                      brokerRows={brokers}
                     />
                     {isOpen && g.rows.map(m => (
                       <MovementRow key={m.id} m={m} nueva={nuevas.has(m.id)} histMoney={histMoney} indent onDelete={onDelete} onDeshacerPase={onDeshacerPase} deleting={borrando(`mov-${m.id}`)} deshaciendo={borrando(`pase-${m.traspaso_id}`)} />
@@ -213,7 +216,7 @@ function MovementRow({ m, nueva = false, histMoney, indent = false, onDelete, on
 // ⚠️ CONVERT-THEN-SUM, igual que TradeGroupRow (ver el comentario largo allá):
 // cada fila se convierte con SU FX histórico y recién ahí se suma, para que el
 // total coincida con las filas que despliega.
-function MovementGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup, deleting }) {
+function MovementGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup, deleting, brokerRows }) {
   const { label, count, brokers } = group
   // El tacho de "borrar todo el historial" solo aplica a un ACTIVO de verdad: no a
   // "Sin activo" (depósitos/retiros sueltos) ni a los grupos de puro efectivo, que no
@@ -226,11 +229,8 @@ function MovementGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, 
   const Chevron = isOpen ? ChevronUp : ChevronDown
   const hasPnl = pnl !== 0
   const Arrow = pnl > 0 ? ArrowUpRight : pnl < 0 ? ArrowDownRight : null
-  const brokersLabel = brokers.length === 0
-    ? '—'
-    : brokers.length <= 2
-    ? brokers.join(' · ')
-    : `${brokers.length} brokers`
+  // Por cuenta: «Cocos» + «Cocos · USD» es UN broker (ver rotuloDeBrokers).
+  const brokersLabel = rotuloDeBrokers(brokers, brokerRows)
   return (
     <tr
       className={`border-t border-line/60 bg-bg-2/40 hover:bg-bg-2/60 cursor-pointer transition-colors ${conNueva ? 'destello-nueva' : ''}`}
