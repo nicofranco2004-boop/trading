@@ -12,11 +12,14 @@
 import Tour from './Tour'
 import { PASOS } from './pasos'
 import { CATALOGO } from '../../utils/catalogoDelAlmacen'
+import { recienConfigurado } from '../../utils/bienvenidaObligatoria'
 
 // Nunca en las pantallas que piden la pantalla entera (login, alta de cuenta,
-// la primera lectura).
+// la primera lectura). Y no en la misma visita en que terminó la bienvenida
+// obligatoria: aterriza en el inicio con la lista de primeros pasos y ya tuvo
+// bastante; le toca la próxima vez que entre (utils/bienvenidaObligatoria.js).
 const PANTALLA_ENTERA = /^\/(login|registro|onboarding|bienvenida|claim|verify-email|reset-password)/
-export const dondeVaNovedades = (pathname) => !PANTALLA_ENTERA.test(pathname)
+export const dondeVaNovedades = (pathname) => !PANTALLA_ENTERA.test(pathname) && !recienConfigurado()
 
 export default function TourNovedades() {
   return (

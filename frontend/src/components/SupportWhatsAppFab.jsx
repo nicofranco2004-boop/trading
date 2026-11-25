@@ -39,8 +39,11 @@ export default function SupportWhatsAppFab() {
   // solo arregla la mitad de las pantallas.
   if (SIN_BOTON.some(r => pathname === r || pathname.startsWith(r + '/'))) return null
   // En mobile, levantamos el FAB para no chocar con la TabBar (a la altura que
-  // reserva espacioAbajo.js, la misma de Mervall-E).
-  const bottomOffset = isMobile ? '' : 'bottom-5'
+  // reserva espacioAbajo.js, la misma de Mervall-E). En la bienvenida
+  // (/onboarding) no hay TabBar —se dibuja sin el armazón—: va abajo de todo,
+  // como en la compu, y no queda flotando en el medio de la grilla de brokers.
+  const sobreLaBarra = isMobile && !pathname.startsWith('/onboarding')
+  const bottomOffset = sobreLaBarra ? '' : 'bottom-5'
   return (
     <a
       href={whatsappUrl()}
@@ -48,7 +51,7 @@ export default function SupportWhatsAppFab() {
       rel="noreferrer noopener"
       aria-label="Consultas por WhatsApp"
       title="Consultas por WhatsApp"
-      style={isMobile ? { bottom: FLOTANTES_DESDE_ABAJO } : undefined}
+      style={sobreLaBarra ? { bottom: FLOTANTES_DESDE_ABAJO } : undefined}
       className={`fixed ${bottomOffset} right-4 sm:right-5 z-40 inline-flex items-center justify-center w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-[rgb(var(--whatsapp))] text-white shadow-lg shadow-[rgb(var(--whatsapp))]/30 hover:shadow-xl hover:shadow-[rgb(var(--whatsapp))]/40 hover:scale-105 transition-all`}
     >
       <WhatsAppIcon size={28} />

@@ -25,6 +25,7 @@ import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { puedeChatLibre } from '../utils/chatLibre'
 import { muroTapaLaPantalla } from '../utils/muroDePlan'
+import { faltaConfigurar } from '../utils/bienvenidaObligatoria'
 import { api } from '../utils/api'
 import { pantallasVisibles, menuVisible, nombreDelCliente } from '../utils/navegacion'
 import { tickerName, POPULAR_TICKERS } from '../utils/tickers'
@@ -93,7 +94,7 @@ export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicia
   const inputRef = useRef(null)
   const navigate = useNavigate()
   const { pathname, search } = useLocation()
-  const { user } = useAuth()
+  const { user, isDemo } = useAuth()
   const { clientCtx } = useAdvisorContext()
   const { currency, setCurrency } = useCurrency()
   const { dark, toggle: cambiarTema } = useTheme()
@@ -106,9 +107,11 @@ export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicia
   const cerrar = useCallback(() => { setAbierto(false); setConsulta(''); setSel(0) }, [])
 
   // Con el muro de "elegí un plan" puesto no se abre: quedaría debajo del muro,
-  // invisible y con el teclado atrapado adentro.
+  // invisible y con el teclado atrapado adentro. Mientras le falta cargar su
+  // historial (la bienvenida obligatoria), tampoco: ofrecería pantallas a las
+  // que todavía no puede entrar.
   const tapadoRef = useRef(false)
-  tapadoRef.current = muroTapaLaPantalla(user, pathname)
+  tapadoRef.current = muroTapaLaPantalla(user, pathname) || faltaConfigurar(user, { isDemo, clientCtx })
 
   // ⌘K / Ctrl+K y el botón del menú.
   useEffect(() => {

@@ -1,48 +1,31 @@
-// ProgressBar — barra de progreso del wizard de onboarding.
+// ProgressBar — el avance de la bienvenida (pages/Onboarding.jsx), discreto.
 // ════════════════════════════════════════════════════════════════════════════
-// Muestra los N steps como pills horizontales, con el actual destacado.
-// Coherente con la estética del producto: mono uppercase + accent violet.
+// Una fila: a la izquierda el tramo en que está («Configurá tu Rendi», «Últimos
+// detalles») en sans violeta, a la derecha «2 de 3» con números tabulares, y
+// abajo una pastilla fina por paso, llenas hasta el actual. Sin mayúsculas ni
+// mono (frontend/CLAUDE.md, R1/R2). Cada pastilla dice su estado a un lector de
+// pantalla; el conjunto lleva el nombre del tramo.
 
-import { Check } from 'lucide-react'
-
-export default function ProgressBar({ steps, currentIndex }) {
+export default function ProgressBar({ steps, currentIndex, titulo }) {
+  const total = steps.length
   return (
-    <div className="w-full">
-      {/* Step indicator mono */}
-      <div className="text-[12px] text-data-violet mb-3 text-center font-medium">
-        Paso {currentIndex + 1} de {steps.length}
+    <div className="w-full" role="group" aria-label={titulo || 'Avance'}>
+      <div className="flex items-baseline justify-between gap-3 mb-1.5">
+        <span className="text-[12.5px] font-medium text-data-violet truncate">{titulo || steps[currentIndex]}</span>
+        <span className="text-[12px] text-ink-3 tabular flex-shrink-0">{currentIndex + 1} de {total}</span>
       </div>
-
-      {/* Pills */}
-      <div className="flex items-center gap-1.5 w-full max-w-md mx-auto">
+      <div className="flex items-center gap-1.5 w-full">
         {steps.map((step, i) => {
-          const isDone = i < currentIndex
-          const isCurrent = i === currentIndex
+          const hecho = i < currentIndex
+          const actual = i === currentIndex
           return (
-            <div key={step} className="flex-1 flex items-center gap-1.5">
-              <div
-                className={`h-1 flex-1 rounded-full transition-colors ${
-                  isDone || isCurrent ? 'bg-data-violet' : 'bg-bg-2'
-                }`}
-                aria-label={`${step} ${isDone ? '(completado)' : isCurrent ? '(actual)' : '(pendiente)'}`}
-              />
-              {/* Check al pasar */}
-              {isDone && i < steps.length - 1 && (
-                <Check
-                  size={10}
-                  strokeWidth={2.5}
-                  className="text-data-violet -ml-1"
-                  aria-hidden="true"
-                />
-              )}
-            </div>
+            <div
+              key={step}
+              className={`h-1 flex-1 rounded-full transition-colors duration-500 ${hecho || actual ? 'bg-data-violet' : 'bg-line-2'}`}
+              aria-label={`${step} ${hecho ? '(listo)' : actual ? '(ahora)' : '(después)'}`}
+            />
           )
         })}
-      </div>
-
-      {/* Label del step actual */}
-      <div className="text-center mt-3">
-        <span className="text-xs text-ink-3 font-medium">{steps[currentIndex]}</span>
       </div>
     </div>
   )

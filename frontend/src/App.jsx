@@ -19,6 +19,8 @@ import Sidebar from './components/Sidebar'
 import TransicionDePantalla from './components/TransicionDePantalla'
 import BuscadorRapido from './components/BuscadorRapido'
 import { muroTapaLaPantalla } from './utils/muroDePlan'
+import { faltaConfigurar, bienvenidaTapaLaPantalla } from './utils/bienvenidaObligatoria'
+import { getClientContext } from './utils/api'
 import { PageSkeleton } from './components/Skeleton'
 import MobileTabBar from './components/mobile/MobileTabBar'
 import MobileTopBar from './components/mobile/MobileTopBar'
@@ -134,9 +136,9 @@ const BlogFifoCedears = COMPONENTES_PUBLICOS['/blog/fifo-cedears-argentina']
 const BlogPnlRealUsdBlue = COMPONENTES_PUBLICOS['/blog/pnl-real-usd-blue-argentina']
 const BlogComparativaBrokers = COMPONENTES_PUBLICOS['/blog/comparativa-brokers-argentina']
 
-// Onboarding wizard — flow guiado de primer uso post-signup.
-// Auto-trigger desde VerifyEmail.jsx si el user no tiene brokers.
-// Skip flag en localStorage para users que prefieran explorar solos.
+// La bienvenida obligatoria con Mervall-E: una cuenta nueva no ve Rendi hasta
+// subir y confirmar un archivo de su broker. La manda acá la puerta de Layout
+// (utils/bienvenidaObligatoria.js) y se dibuja sin el armazón de la app.
 const Onboarding = lazy(() => import('./pages/Onboarding'))
 
 // Guía / Manual completo — accesible sin login. Index + 6 sub-secciones.
@@ -204,10 +206,14 @@ export function RouteTracker() {
 const SIN_ACOMPANANTE = ['/onboarding', '/bienvenida', '/claim', '/verify-email', '/reset-password']
 
 function VozGate() {
-  const { user } = useAuth()
+  const { user, isDemo } = useAuth()
   const { pathname } = useLocation()
   if (!user) return null
   if (SIN_ACOMPANANTE.some(r => pathname.startsWith(r))) return null
+  // Mientras le falta cargar su historial, tampoco: la isla y los tutoriales
+  // presentan una app que todavía no puede ver (la puerta lo manda a
+  // /onboarding, y en el instante del cambio no tienen que asomarse).
+  if (faltaConfigurar(user, { isDemo, clientCtx: getClientContext() })) return null
   // Con la cuenta EN PAUSA tampoco. Visto en el navegador: la burbuja quedaba
   // flotando ENCIMA del muro, con sus propios botones, ofreciéndose a explicar
   // una app a la que esa persona no puede entrar. Y encima le tapaba la mitad
@@ -320,6 +326,8 @@ function AppRoutes() {
       {/* Back-compat: las alertas vivían en Config › Notificaciones */}
       <Route path="/config/notificaciones" element={<Navigate to="/alertas" replace />} />
       <Route path="/bienvenida" element={<FirstInsight />} />
+      {/* La dibuja Layout ANTES de los armazones (sin menú ni barras): esta
+          ruta queda para que la lista de pantallas de las pruebas la incluya. */}
       <Route path="/onboarding" element={<Onboarding />} />
       <Route path="/admin" element={<Admin />} />
       <Route path="/admin/pruebas" element={<AdminPruebas />} />
@@ -393,8 +401,9 @@ function MuroDePlanGate() {
 
 
 function Layout() {
-  const { user } = useAuth()
+  const { user, isDemo, bootstrapped } = useAuth()
   const isMobile = useIsMobile()
+  const { pathname } = useLocation()
 
   if (!user) {
     return (
@@ -454,6 +463,37 @@ function Layout() {
           <Route path="*" element={<Login />} />
         </Routes>
       </Suspense>
+    )
+  }
+
+  // ─── La bienvenida obligatoria ─────────────────────────────────────────
+  // UNA puerta para los dos armazones (celular y compu): está antes de que se
+  // elija cuál, así el día que alguien toque uno solo no queda abierta en el
+  // otro. La regla vive en utils/bienvenidaObligatoria.js (la consultan también
+  // la isla de Mervall-E y el buscador ⌘K). El cliente abierto sale de
+  // utils/api, la misma fuente que hidrata AdvisorProvider (que todavía no
+  // está montado acá).
+  if (bienvenidaTapaLaPantalla(user, pathname, { isDemo, clientCtx: getClientContext() })) {
+    // Antes de que el servidor confirme la sesión, el usuario sale de lo
+    // guardado en el navegador: no se decide con eso. Se espera sin mostrar la
+    // app (si no, asomaba el inicio y después lo sacaba).
+    if (!bootstrapped) return <PageFallback />
+    return <Navigate to="/onboarding" replace />
+  }
+  // /onboarding se dibuja SIN el armazón, para cualquiera: sin menú, sin las
+  // barras del celular, sin la barra de la prueba ni la cinta de cotizaciones,
+  // sin ⌘K. Sólo la página, el aviso de «otra persona entró en otra pestaña» y
+  // el botón de WhatsApp. (Si a quien entra no le falta nada, la página misma
+  // lo manda al inicio.)
+  if (pathname.startsWith('/onboarding')) {
+    return (
+      <>
+        <CuentaCambiadaEnOtraPestana />
+        <Suspense fallback={<PageFallback />}>
+          <Onboarding />
+        </Suspense>
+        <SupportWhatsAppFab />
+      </>
     )
   }
 

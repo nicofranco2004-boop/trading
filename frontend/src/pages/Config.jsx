@@ -255,8 +255,6 @@ function MetaRow({ label, children, last }) {
 
 // ─── Página ──────────────────────────────────────────────────────────────────
 
-const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
-
 export default function Config() {
   const navigate = useNavigate()
   const { user, logout } = useAuth()

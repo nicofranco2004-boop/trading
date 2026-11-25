@@ -334,7 +334,9 @@ const BLOCKED_IMPORT_PLATFORMS = {}
 // un parser real en el backend, para que aparezcan en el dropdown y disparen el
 // card de contacto. No duplica las que ya vienen del registry (Cocos, Balanz,
 // IOL…). Hoy BLOCKED_IMPORT_PLATFORMS está vacío → no inyecta nada.
-function withBlockedPlatforms(groups) {
+// Exportada: la grilla de brokers de la bienvenida (pages/Onboarding.jsx) sale
+// de la MISMA lista que el Paso 0 de acá, no de una copia.
+export function withBlockedPlatforms(groups) {
   const list = Array.isArray(groups) ? groups : []
   const present = new Set(list.map(g => g.platform))
   const synthetic = Object.entries(BLOCKED_IMPORT_PLATFORMS)
@@ -345,6 +347,17 @@ function withBlockedPlatforms(groups) {
       exports: [{ id, label: info.label, supported: false }],
     }))
   return [...list, ...synthetic]
+}
+
+// Los brokers que el Paso 0 ofrece en «El export de mi broker»: los del
+// registry menos el genérico, con al menos un export soportado. Las bloqueadas
+// vienen marcadas (`bloqueada`): el Paso 0 no las ofrece y la bienvenida las
+// muestra pero las manda a la planilla de Rendi. Una sola regla para los dos.
+export function brokersParaElegir(groups) {
+  return (groups || [])
+    .filter(g => g.platform !== 'generic'
+      && (BLOCKED_IMPORT_PLATFORMS[g.platform] || (g.exports || []).some(e => e.supported)))
+    .map(g => ({ ...g, bloqueada: !!BLOCKED_IMPORT_PLATFORMS[g.platform] }))
 }
 
 const OP_LABELS = {
@@ -360,8 +373,18 @@ const OP_LABELS = {
   TRANSFER: 'Transferencia',
 }
 
-export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected, initialPreview = null, redoBanner = null }) {
+// `plataformaInicial` (la bienvenida, pages/Onboarding.jsx): la persona ya eligió
+// su broker afuera, así que el asistente saltea el Paso 0 y arranca en la subida
+// con el export soportado de esa plataforma. 'personal' = la planilla de Rendi:
+// queda en el Paso 0 con «Plantilla de Rendi» ya elegida, porque la moneda y el
+// broker de destino se eligen ahí (sin eso la subida no puede seguir). Sin la
+// prop, el asistente arranca en el Paso 0 como siempre.
+export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected, initialPreview = null, redoBanner = null, plataformaInicial = null }) {
   const [step, setStep] = useState(initialPreview ? STEP_PREVIEW : STEP_INTRO)
+  // Con `plataformaInicial`, hasta que llega la lista de brokers no se sabe a
+  // qué paso ir: se espera sin mostrar el Paso 0 (que si no aparecía un instante
+  // y se podía tocar).
+  const [esperandoInicio, setEsperandoInicio] = useState(!!plataformaInicial && !initialPreview)
 
   // Activación: marca la entrada al flujo de import (antes el wizard no emitía
   // ningún evento → no se podía medir cuántos abren vs completan).
@@ -427,9 +450,13 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
   const inputRef = useRef(null)
 
   useEffect(() => {
+    const alLlegar = (grupos) => {
+      setParserGroups(grupos)
+      arrancarEn(plataformaInicial, grupos)
+    }
     api.get('/imports/parsers/grouped')
-      .then(g => setParserGroups(withBlockedPlatforms(g)))
-      .catch(() => setParserGroups(withBlockedPlatforms([])))
+      .then(g => alLlegar(withBlockedPlatforms(g)))
+      .catch(() => alLlegar(withBlockedPlatforms([])))
     api.get('/brokers').then(bs => {
       // Con `prev`: si la lista tarda y la persona ya creó un broker desde acá, ni
       // se lo saca de la lista ni se lo cambia por el primero alfabético.
@@ -542,6 +569,20 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
     setPlatform('generic')
     setFormat('rendi_generic')
     setImportMode('single')
+  }
+
+  // Saltea el Paso 0 con lo que se eligió afuera (ver `plataformaInicial`). Una
+  // plataforma que no está en la lista (bloqueada, o la lista no llegó) deja el
+  // Paso 0 como siempre, con «Importar con CSV» ya elegido.
+  function arrancarEn(plataforma, grupos) {
+    setEsperandoInicio(false)
+    if (!plataforma || initialPreview) return
+    setEntryType('csv')
+    if (plataforma === 'personal') { choosePersonal(); return }
+    const grupo = brokersParaElegir(grupos).find(g => g.platform === plataforma && !g.bloqueada)
+    if (!grupo) return
+    chooseBrokerPlatform(grupo)
+    setStep(STEP_UPLOAD)
   }
 
   function toggleSkipRow(rowIndex) {
@@ -941,7 +982,13 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
             </div>
           )}
 
-          {step === STEP_INTRO && (
+          {esperandoInicio && (
+            <div className="flex items-center justify-center gap-2 py-10 text-sm text-ink-3" aria-live="polite">
+              <Loader2 size={16} className="animate-spin" aria-hidden="true" /> Preparando la subida…
+            </div>
+          )}
+
+          {step === STEP_INTRO && !esperandoInicio && (
             <IntroStep
               parserGroups={parserGroups}
               sourceType={sourceType} setSourceType={setSourceType}
@@ -1309,11 +1356,7 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
                      onCreateBroker, isArsContext, onWallbitConnected, entryType, setEntryType }) {
   // Brokers soportados para la rama "de un broker": del registry, excluyendo el
   // genérico y cualquier plataforma bloqueada (BLOCKED_IMPORT_PLATFORMS).
-  const supportedBrokers = (parserGroups || []).filter(g =>
-    g.platform !== 'generic' &&
-    !BLOCKED_IMPORT_PLATFORMS[g.platform] &&
-    (g.exports || []).some(e => e.supported)
-  )
+  const supportedBrokers = brokersParaElegir(parserGroups).filter(g => !g.bloqueada)
   const brokerLabel = supportedBrokers.find(g => g.platform === platform)?.platform_label
 
   const [showCreate, setShowCreate] = useState(false)

@@ -1,199 +1,545 @@
-// Onboarding — wizard de bienvenida para users nuevos.
+// Onboarding — la bienvenida obligatoria con Mervall-E (ruta /onboarding).
 // ════════════════════════════════════════════════════════════════════════════
-// Ruta: /onboarding
+// Una cuenta nueva no ve Rendi hasta haber SUBIDO Y CONFIRMADO un archivo de su
+// broker (o la planilla de Rendi, para un broker que Rendi no lee). Cargar a
+// mano no destraba. Quién tiene que pasar por acá lo decide el servidor
+// (`user.falta_cargar_historial`) y la regla de pantalla vive en
+// utils/bienvenidaObligatoria.js; la puerta que manda acá está en App.jsx
+// (Layout), igual que el muro de plan. Esta página se dibuja SIN el armazón de
+// la app (sin menú, sin barras del celular, sin la barra de la prueba): sólo
+// ella y el botón de WhatsApp.
 //
-// Flow (3 steps):
-//   1. Welcome — bienvenida + valor prop + CTA "Empezar"
-//   2. Position — cargar cartera: CSV import / manual (con broker inline) / saltar
-//   3. Complete — celebración + 3 cards (Insights, Coach, Quiz)
+// Mervall-E guía todo hablando en un globo (GloboDeMervallE). Los pasos:
+//   Configurá tu Rendi   1 hola      — saludo + la prueba gratis (días del servidor)
+//                        2 broker    — la misma lista que el Paso 0 del importador
+//                        3 historial — cómo bajar el archivo + el importador
+//   Últimos detalles     4 cartera   — «esto es lo que tenés hoy» (el momento wow)
+//                        5 perfil    — opcional, con «Más tarde»
+//                        6 celular   — opcional, sólo en el celular y sin la app
+//                                      instalada; último a propósito: en iPhone
+//                                      instalar saca de Safari y corta el recorrido
+// Lo que deja para más tarde queda pendiente en la lista de primeros pasos de
+// Inicio (components/home/OnboardingChecklist.jsx), que ya lo maneja.
 //
-// Trigger automático: en VerifyEmail.jsx, tras login OK redirigimos acá si
-// el user no tiene brokers cargados (es fresh signup).
+// EL ESTADO DEL RECORRIDO VIVE ACÁ, no en el navegador. Si al montar a la
+// persona no le falta nada, se va al inicio. Pero si a mitad de camino el
+// servidor ya dice que cargó (pasa justo al confirmar el archivo), la página
+// sigue con sus pasos hasta el final.
 //
-// Skip / abandono:
-//   - LocalStorage flag `rendi_onboarding_skipped` evita re-mostrar.
-//   - El user puede volver al onboarding manualmente desde Config (link
-//     "Repetir tour" para los que se equivocaron).
-//
-// Tracking GA4: cada paso emite eventos para medir embudo de activación:
-//   - onboarding_started
-//   - onboarding_step_completed { step }
-//   - onboarding_skipped { at_step }
-//   - onboarding_completed
+// Medición: cada paso tiene su evento propio (`bienvenida_*`, utils/usoCatalogo):
+// el panel de uso guarda sólo el nombre, y es la forma de ver dónde se va la gente.
 
-import { useEffect, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Navigate, useNavigate } from 'react-router-dom'
+import { ArrowRight, ChevronLeft, FileSpreadsheet, LogOut, Smartphone, Upload } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import PageMeta from '../components/PageMeta'
-import { useAuth } from '../contexts/AuthContext'
-import { trackEvent } from '../utils/analytics'
-import { track } from '../utils/track'
+import MervallE from '../components/ai/MervallE'
+import GloboDeMervallE from '../components/onboarding/GloboDeMervallE'
 import ProgressBar from '../components/onboarding/ProgressBar'
-import WelcomeStep from '../components/onboarding/WelcomeStep'
-import PositionStep from '../components/onboarding/PositionStep'
-import CompleteStep from '../components/onboarding/CompleteStep'
+import ImportWizard, { withBlockedPlatforms, brokersParaElegir } from '../components/import/ImportWizard'
+import BrokerInstructions, { BROKER_GUIDES } from '../components/import/BrokerInstructions'
+import InvestorProfileForm from '../components/InvestorProfileForm'
+import InstalarAppModal from '../components/InstalarAppModal'
+import AnimatedNumber from '../components/AnimatedNumber'
+import { useAuth } from '../contexts/AuthContext'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
+import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { useIsMobile } from '../hooks/useIsMobile'
+import { useCarteraRecienCargada } from '../hooks/useCarteraRecienCargada'
+import { api, getClientContext } from '../utils/api'
+import { track } from '../utils/track'
+import { fmtUsd } from '../utils/format'
+import { whatsappUrl } from '../utils/support'
+import { faltaConfigurar, marcarRecienConfigurado } from '../utils/bienvenidaObligatoria'
+import { esCelular, plataformaDe, yaInstalada, hayInstalador, instalarAhora } from '../utils/instalarApp'
 import { guardar as guardarEnAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
-export const ONBOARDING_SKIPPED_KEY = 'rendi_onboarding_skipped'
-export const ONBOARDING_COMPLETED_KEY = 'rendi_onboarding_completed'
+const TRAMO_1 = { titulo: 'Configurá tu Rendi', pasos: ['hola', 'broker', 'historial'], nombres: ['Hola', 'Tu broker', 'Tu historial'] }
+const TRAMO_2 = { titulo: 'Últimos detalles', pasos: ['cartera', 'perfil', 'celular'], nombres: ['Tu cartera', 'Tu perfil', 'Tu celular'] }
 
-const STEP_LABELS = ['Bienvenida', 'Cartera', 'Listo']
-const STEP_NAMES = ['welcome', 'position', 'complete']
+// Cuánto saluda Mervall-E al llegar antes de empezar a hablar.
+const MS_SALUDO = 1300
+// Cuánto festeja con la cartera a la vista (el festejo no descansa: gasta batería).
+const MS_FESTEJO = 4200
+// Cuánto se espera a la prueba gratis (/plan/features) antes de saludar sin ella.
+const MS_ESPERA_PRUEBA = 2500
+
+const BOTON = 'inline-flex items-center justify-center gap-2 font-medium rounded-xl transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-data-violet disabled:opacity-60'
+const BOTON_1 = `${BOTON} h-12 px-6 text-[15px] bg-data-violet hover:bg-rendi-violet-hover text-white lp-sombra-boton hover:-translate-y-px`
+const BOTON_2 = `${BOTON} h-12 px-5 text-[15px] bg-bg-1 text-ink-0 border border-line-2 hover:border-data-violet/60`
+
+/** El primer nombre, o nada si lo que hay es el mail. */
+export function primerNombre(nombre) {
+  const n = String(nombre || '').trim()
+  if (!n || n.includes('@')) return ''
+  return n.split(/\s+/)[0]
+}
+
+/** Lo que dice Mervall-E en el saludo. Los días de la prueba salen del
+ *  servidor (`trial` de /plan/features), nunca escritos acá. */
+export function textoDelSaludo(nombre, trial) {
+  const quien = primerNombre(nombre)
+  const lineas = [`¡Hola${quien ? `, ${quien}` : ''}! Soy Mervall-E, y te voy a ayudar a armar tu Rendi.`]
+  if (trial?.active && trial.pro_days && trial.plus_days) {
+    const base = `${trial.pro_days} días de Rendi Pro y después ${trial.plus_days} de Plus, gratis y sin tarjeta`
+    const left = trial.days_left
+    if (left != null && trial.total_days && left < trial.total_days) {
+      lineas.push(`Tu prueba son ${base}: ${left <= 1 ? 'te queda 1 día' : `te quedan ${left} días`}.`)
+    } else {
+      lineas.push(`Arrancás con ${base}.`)
+    }
+  }
+  lineas.push('Para mostrarte tu plata necesito tu historial. Son un par de minutos.')
+  return lineas
+}
+
+/** El nombre corto de un broker para que lo diga Mervall-E: el de su guía de
+ *  descarga si la tiene («Cocos»), si no el del servidor sin lo de entre
+ *  paréntesis («IOL (InvertirOnline)» → «IOL»). */
+export function nombreCorto(grupo) {
+  const guia = BROKER_GUIDES.find(b => b.id === grupo?.platform)
+  if (guia?.label) return guia.label
+  return String(grupo?.platform_label || '').split(/\s*[(·]/)[0].trim()
+}
 
 export default function Onboarding() {
-  const { user } = useAuth()
-  const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
-  // Permite saltar directo a un step específico via ?step=complete
-  // (usado por VerifyEmail → /imports → /bienvenida → /onboarding?step=complete
-  // cuando el user termina el CSV import).
-  const initialStep = (() => {
-    const requested = searchParams.get('step')
-    const idx = STEP_NAMES.indexOf(requested)
-    return idx >= 0 ? idx : 0
-  })()
-
-  const [step, setStep] = useState(initialStep)
-  const [data, setData] = useState({}) // acumulador: { broker, position, skipped }
-
+  const { user, isDemo, bootstrapped } = useAuth()
+  // ¿Le toca la bienvenida? Se decide UNA vez, con la sesión ya confirmada por
+  // el servidor (antes de `bootstrapped` el usuario sale de lo guardado en el
+  // navegador). Después, aunque el servidor diga que ya cargó, el recorrido
+  // sigue hasta el final.
+  const decidir = () => faltaConfigurar(user, { isDemo, clientCtx: getClientContext() })
+  const [enCurso, setEnCurso] = useState(() => (bootstrapped ? decidir() : null))
   useEffect(() => {
-    // Si el user entra directamente al step=complete (vuelta del CSV import),
-    // no contar como un nuevo inicio del onboarding — ya empezó antes.
-    if (initialStep === 0) {
-      trackEvent('onboarding_started', { at_step: STEP_NAMES[0] })
-      track('onboarding_started', { at_step: STEP_NAMES[0] })
-    }
+    if (enCurso === null && bootstrapped) setEnCurso(decidir())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [bootstrapped, enCurso])
 
-  // Guard: si el user no está logueado o es admin/demo, no debería estar acá.
-  useEffect(() => {
-    if (!user) {
-      navigate('/login', { replace: true })
-    }
-  }, [user, navigate])
+  if (!user) return null
+  if (enCurso === null) return <div className="min-h-[100dvh] bg-bg-0 bv-fondo" />
+  if (!enCurso) return <Navigate to="/" replace />
+  return <Recorrido />
+}
 
-  function goNext(extra = {}) {
-    setData((prev) => ({ ...prev, ...extra }))
-    trackEvent('onboarding_step_completed', { step: STEP_NAMES[step] })
-    track('onboarding_step_completed', { step: STEP_NAMES[step] })
-    if (step < STEP_NAMES.length - 1) {
-      setStep((s) => s + 1)
-    } else {
-      // Completó el último step
-      finishOnboarding()
-    }
+function Recorrido() {
+  const { user, refreshUser, logout } = useAuth()
+  const navigate = useNavigate()
+  const isMobile = useIsMobile()
+  // En el teléfono (no por el ancho de la ventana): el paso de agregar Rendi al
+  // inicio y el aviso de «bajalo desde la compu» son del aparato.
+  const [enCelular] = useState(() => esCelular(typeof navigator === 'undefined' ? 'otro' : plataformaDe(navigator)))
+  const [conPasoCelular] = useState(() => enCelular && !yaInstalada())
+
+  const [paso, setPaso] = useState('hola')
+  const [cara, setCara] = useState('saludo')
+  const [broker, setBroker] = useState(null)        // { platform, nombre, guia } · platform 'personal' = la planilla
+  const cargo = useRef(false)
+  const refrescado = useRef(false)
+
+  useEffect(() => { track('bienvenida_hola') }, [])
+
+  const tramo = TRAMO_1.pasos.includes(paso) ? TRAMO_1 : TRAMO_2
+  const pasosDelTramo = tramo.pasos.filter(p => p !== 'celular' || conPasoCelular)
+  const nombres = pasosDelTramo.map(p => tramo.nombres[tramo.pasos.indexOf(p)])
+
+  function ir(siguiente) {
+    setPaso(siguiente)
+    if (typeof window !== 'undefined') window.scrollTo?.(0, 0)
   }
 
-  function goBack() {
-    if (step > 0) setStep((s) => s - 1)
+  async function asegurarUsuarioAlDia() {
+    if (refrescado.current) return
+    try { await refreshUser(); refrescado.current = true } catch { /* se reintenta al terminar */ }
   }
 
-  function handleSkip() {
-    trackEvent('onboarding_skipped', { at_step: STEP_NAMES[step] })
-    track('onboarding_skipped', { at_step: STEP_NAMES[step] })
-    try {
-      guardarEnAlmacen(CATALOGO.bienvenidaSalteada, '1')
-    } catch {}
-    // FR-01: mandar a la CARTERA (su empty-state con CTA de carga), no a la Home
-    // de mercado genérica — que no contiene nada del usuario y posterga el aha.
-    navigate('/posiciones', { replace: true })
+  async function terminar() {
+    track('bienvenida_terminada')
+    marcarRecienConfigurado()
+    // El próximo import (desde Importar o Configuración) no lo manda a la
+    // primera lectura otra vez: esa pantalla ya la vio acá, en «tu cartera».
+    try { guardarEnAlmacen(CATALOGO.primeraImportacion, '1') } catch { /* sin almacenamiento: a lo sumo la ve una vez */ }
+    await asegurarUsuarioAlDia()
+    navigate('/', { replace: true })
   }
 
-  function finishOnboarding() {
-    trackEvent('onboarding_completed', { had_position: !!data.position })
-    track('onboarding_completed', { had_position: !!data.position })
-    try {
-      guardarEnAlmacen(CATALOGO.bienvenidaCompleta, '1')
-    } catch {}
-    // No navegamos automáticamente — el CompleteStep tiene CTAs propios.
-  }
-
-  // Marcar completado al entrar a complete step (por si el user cierra el tab)
-  useEffect(() => {
-    if (step === STEP_NAMES.length - 1) {
-      try {
-        guardarEnAlmacen(CATALOGO.bienvenidaCompleta, '1')
-      } catch {}
-    }
-  }, [step])
+  const props = { setCara, ir, broker }
+  let contenido = null
+  if (paso === 'hola') contenido = <PasoHola {...props} nombre={user?.name} />
+  else if (paso === 'broker') contenido = <PasoBroker {...props} onElegir={(b) => { setBroker(b); ir('historial') }} />
+  else if (paso === 'historial') {
+    contenido = (
+      <PasoHistorial {...props} enCelular={enCelular}
+        onCargado={() => { cargo.current = true; track('bienvenida_historial_cargado'); asegurarUsuarioAlDia() }}
+        onCerrado={() => { if (!cargo.current) return false; ir('cartera'); return true }} />
+    )
+  } else if (paso === 'cartera') contenido = <PasoCartera {...props} onSeguir={() => ir('perfil')} />
+  else if (paso === 'perfil') {
+    contenido = <PasoPerfil {...props} onSeguir={() => (conPasoCelular ? ir('celular') : terminar())} />
+  } else if (paso === 'celular') contenido = <PasoCelular {...props} onSeguir={terminar} />
 
   return (
-    <div className="min-h-screen bg-bg-0 text-ink-0 flex flex-col">
+    <div className="min-h-[100dvh] bg-bg-0 bv-fondo text-ink-0 flex flex-col">
       <PageMeta
-        title="Empezá con Rendi"
-        description="Configurá tu cuenta en 2 minutos: broker, primera operación y a invertir."
+        title="Armá tu Rendi"
+        description="Mervall-E te ayuda a cargar tu historial y armar tu cartera en Rendi."
         canonical="/onboarding"
         noindex={true}
       />
 
-      {/* Header minimal — solo logo + opción skip */}
-      {/* Debajo de la barra de arriba del celular (--alto-barra-celular; en la
-          compu vale 0). Con top-0 quedaba DETRÁS de la barra al bajar y
-          "Saltar onboarding" no se veía. */}
-      <header className="border-b border-line/40 sticky top-[var(--alto-barra-celular,0px)] bg-bg-0/95 backdrop-blur-sm z-10">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <RendiLogo size={28} />
-            <span className="font-semibold text-base tracking-tight">rendi</span>
-          </div>
-          {step < STEP_NAMES.length - 1 && (
-            <button
-              type="button"
-              onClick={handleSkip}
-              className="text-xs text-ink-3 hover:text-ink-1 transition-colors px-3 py-1.5"
-            >
-              Saltar onboarding
-            </button>
-          )}
+      <header className="max-w-5xl w-full mx-auto px-4 sm:px-6 pt-4 sm:pt-6 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <RendiLogo size={26} />
+          <span className="font-semibold text-[17px] tracking-tight">rendi</span>
+        </div>
+        <div className="w-48 sm:w-60">
+          <ProgressBar steps={nombres} currentIndex={Math.max(0, pasosDelTramo.indexOf(paso))} titulo={tramo.titulo} />
         </div>
       </header>
 
-      {/* Progress bar */}
-      <div className="max-w-3xl mx-auto w-full px-4 sm:px-6 pt-8 pb-2">
-        <ProgressBar steps={STEP_LABELS} currentIndex={step} />
-      </div>
-
-      {/* Body — contenido del step actual */}
-      <main className="flex-1 max-w-3xl mx-auto w-full px-4 sm:px-6 py-8 md:py-12">
-        {step === 0 && (
-          <WelcomeStep
-            userName={user?.name}
-            onNext={() => goNext()}
-            onSkip={handleSkip}
-          />
-        )}
-        {step === 1 && (
-          <PositionStep
-            onNext={(extra) => goNext(extra)}
-            onBack={goBack}
-          />
-        )}
-        {step === 2 && (
-          <CompleteStep
-            skipped={!!data.skipped}
-            position={data.position}
-          />
-        )}
+      <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 pt-5 sm:pt-10 md:pt-14 pb-24 md:pb-16">
+        <div className="grid grid-cols-1 md:grid-cols-[176px_minmax(0,1fr)] gap-3 md:gap-8 items-start">
+          {/* Mervall-E: un solo personaje en movimiento en toda la pantalla. No se
+              vuelve a crear entre pasos (cambia de cara), así no «reaparece». */}
+          <div className="flex md:justify-center">
+            <div className="relative bv-aparece">
+              <MervallE size={isMobile ? 96 : 164} estado={cara} />
+              <span aria-hidden="true" className="hidden md:block absolute left-1/2 -translate-x-1/2 -bottom-2 w-28 h-4 rounded-full bv-piso" />
+            </div>
+          </div>
+          <div className="min-w-0">
+            {contenido}
+          </div>
+        </div>
       </main>
 
-      {/* Footer mini — copy reassurance */}
-      <footer className="border-t border-line/40">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-4 text-center">
-          <p className="text-[11px] text-ink-3">
-            Podés cambiar todo después desde{' '}
-            <button
-              type="button"
-              onClick={() => navigate('/config')}
-              className="text-ink-2 hover:text-ink-1 underline-offset-2 hover:underline"
-            >
-              Configuración
-            </button>
-            .
-          </p>
-        </div>
+      {/* A la derecha queda lugar para el botón flotante de WhatsApp. */}
+      <footer className="max-w-5xl w-full mx-auto pl-4 pr-20 sm:pl-6 sm:pr-24 pb-6 flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px] text-ink-3">
+        <a href={whatsappUrl('Hola, estoy armando mi Rendi y tengo una consulta: ')} target="_blank" rel="noopener noreferrer"
+          className="hover:text-ink-1 transition-colors underline-offset-2 hover:underline">
+          ¿Dudas? Escribinos por WhatsApp
+        </a>
+        <button type="button" onClick={logout} className="inline-flex items-center gap-1.5 hover:text-ink-1 transition-colors">
+          <LogOut size={13} strokeWidth={1.75} aria-hidden="true" /> Cerrar sesión
+        </button>
       </footer>
+    </div>
+  )
+}
+
+// ── 1. Hola ─────────────────────────────────────────────────────────────────
+
+function PasoHola({ setCara, ir, nombre }) {
+  const { trial, loading } = usePlanFeatures()
+  // La frase de la prueba necesita los días del servidor: se espera un poco a
+  // /plan/features (casi siempre ya está, se pidió al entrar). El texto se fija
+  // la primera vez que se muestra: si cambiara a mitad de escribirse, saltaría.
+  const [esperaVencida, setEsperaVencida] = useState(false)
+  useEffect(() => { const t = setTimeout(() => setEsperaVencida(true), MS_ESPERA_PRUEBA); return () => clearTimeout(t) }, [])
+  const llego = useRef(Date.now())
+  const [saludo, setSaludo] = useState(null)       // { texto, demora }
+  useEffect(() => {
+    if (saludo || (loading && !esperaVencida)) return
+    // Saluda con la mano al llegar y empieza a hablar cuando terminó de
+    // saludar (o enseguida, si el plan tardó más que el saludo).
+    setSaludo({ texto: textoDelSaludo(nombre, trial), demora: Math.max(0, MS_SALUDO - (Date.now() - llego.current)) })
+  }, [saludo, loading, esperaVencida, nombre, trial])
+
+  useEffect(() => { setCara('saludo') }, [setCara])
+  useEffect(() => {
+    if (!saludo) return
+    const t = setTimeout(() => setCara(c => (c === 'saludo' ? 'hablando' : c)), saludo.demora)
+    return () => clearTimeout(t)
+  }, [saludo, setCara])
+
+  return (
+    <div className="space-y-5">
+      {saludo && <GloboDeMervallE key="hola" texto={saludo.texto} demora={saludo.demora} onTermino={() => setCara('contento')} />}
+      <div className="bv-entra" style={{ '--d': '600ms' }}>
+        <button type="button" onClick={() => ir('broker')} className={`${BOTON_1} w-full sm:w-auto`}>
+          Empecemos <ArrowRight size={17} strokeWidth={2} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── 2. Broker ───────────────────────────────────────────────────────────────
+
+function PasoBroker({ setCara, onElegir }) {
+  // La MISMA lista que el Paso 0 del importador (ImportWizard): los lectores
+  // del servidor + las plataformas bloqueadas, que se muestran pero van a la
+  // planilla. NO se crea el broker acá (POST /brokers): el importador lo crea
+  // solo con el nombre que reconoce ('Cocos', 'Bull Market'…), y crear
+  // «Cocos Capital» antes dejaba dos.
+  const [grupos, setGrupos] = useState(null)
+  const [fallo, setFallo] = useState(false)
+  const [vuelta, setVuelta] = useState(0)
+  useEffect(() => {
+    let vivo = true
+    setFallo(false)
+    api.get('/imports/parsers/grouped')
+      .then(g => { if (vivo) setGrupos(brokersParaElegir(withBlockedPlatforms(g))) })
+      .catch(() => { if (vivo) { setGrupos([]); setFallo(true) } })
+    return () => { vivo = false }
+  }, [vuelta])
+
+  useEffect(() => { setCara('hablando') }, [setCara])
+
+  function elegir(grupo) {
+    track('bienvenida_broker_elegido')
+    setCara('contento')
+    if (!grupo) { onElegir({ platform: 'personal', nombre: null }); return }
+    const nombre = nombreCorto(grupo)
+    // Una plataforma bloqueada se encuentra por nombre pero todavía no se lee:
+    // va a la planilla, diciendo cuál era.
+    if (grupo.bloqueada) { onElegir({ platform: 'personal', nombre, bloqueada: true }); return }
+    onElegir({ platform: grupo.platform, nombre, guia: BROKER_GUIDES.some(b => b.id === grupo.platform) })
+  }
+
+  return (
+    <div className="space-y-5">
+      <GloboDeMervallE key="broker"
+        texto={['¿Con qué broker invertís?', 'Si tenés más de uno, empezá por el principal: los otros los sumás después.']}
+        onTermino={() => setCara(c => (c === 'hablando' ? 'reposo' : c))} />
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-2.5">
+        {grupos === null && Array.from({ length: 6 }, (_, i) => (
+          <div key={i} className="h-[60px] rounded-xl border border-line bg-bg-1/60 esqueleto" aria-hidden="true" />
+        ))}
+        {(grupos || []).map((g, i) => <TarjetaBroker key={g.platform} grupo={g} i={i} onClick={() => elegir(g)} />)}
+        {grupos !== null && (
+          <button type="button" onClick={() => elegir(null)}
+            className="col-span-2 lg:col-span-3 bv-entra flex items-center gap-3 text-left px-4 py-3.5 rounded-xl border border-dashed border-line-3 bg-bg-1/50 hover:border-data-violet/60 hover:bg-data-violet/[0.04] transition-colors"
+            style={{ '--d': `${Math.min(12, (grupos || []).length) * 40}ms` }}>
+            <span className="w-9 h-9 rounded-xl bg-data-violet/10 text-data-violet grid place-items-center flex-shrink-0">
+              <FileSpreadsheet size={18} strokeWidth={1.75} aria-hidden="true" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-[14.5px] font-medium text-ink-0">Otro / mi broker no está</span>
+              <span className="block text-[12.5px] text-ink-2 leading-snug">Interactive Brokers, Lemon, Mercado Pago… Lo cargamos con la planilla de Rendi.</span>
+            </span>
+          </button>
+        )}
+      </div>
+      {fallo && (
+        <p className="text-[13px] text-ink-2">
+          No pude traer la lista de brokers.{' '}
+          <button type="button" onClick={() => { setGrupos(null); setVuelta(v => v + 1) }} className="text-data-violet hover:underline underline-offset-2">
+            Probar de nuevo
+          </button>
+        </p>
+      )}
+    </div>
+  )
+}
+
+function TarjetaBroker({ grupo, i, onClick }) {
+  const Logo = BROKER_GUIDES.find(b => b.id === grupo.platform)?.Logo
+  return (
+    <button type="button" onClick={onClick}
+      className="bv-entra group flex items-center gap-3 min-h-[60px] text-left px-3.5 py-3 rounded-xl border border-line bg-bg-1 hover:border-data-violet/60 hover:bg-data-violet/[0.04] hover:-translate-y-px transition-all"
+      style={{ '--d': `${Math.min(i, 12) * 40}ms` }}>
+      <span className="flex-shrink-0 w-7 h-7 grid place-items-center" aria-hidden="true">
+        {Logo
+          ? <Logo size={26} />
+          : <span className="w-7 h-7 rounded-lg bg-data-violet/15 text-data-violet text-[13px] font-semibold grid place-items-center">{nombreCorto(grupo).slice(0, 1)}</span>}
+      </span>
+      <span className="text-[14px] font-medium text-ink-0 leading-tight">{grupo.platform_label}</span>
+    </button>
+  )
+}
+
+// ── 3. Historial ────────────────────────────────────────────────────────────
+
+function PasoHistorial({ setCara, ir, broker, enCelular, onCargado, onCerrado }) {
+  const [abierto, setAbierto] = useState(false)
+  const [volvio, setVolvio] = useState(false)       // cerró el importador sin cargar
+  const planilla = broker?.platform === 'personal'
+
+  // Recién eligió: festeja un instante y después explica.
+  useEffect(() => {
+    setCara('contento')
+    const t = setTimeout(() => setCara(c => (c === 'contento' ? 'hablando' : c)), 900)
+    return () => clearTimeout(t)
+  }, [setCara])
+
+  const texto = volvio
+    ? ['Cuando tengas el archivo, acá estoy.']
+    : planilla
+      ? [broker?.bloqueada
+          ? `${broker.nombre} todavía no lo leo directo, así que usamos la planilla de Rendi.`
+          : '¡Dale! Usamos la planilla de Rendi.',
+        'Es un Excel simple: una fila por cada compra o venta. En el próximo paso elegís la moneda, le ponés nombre a tu broker y te dejo la planilla de ejemplo.']
+      : [`¡${broker?.nombre}, buenísimo!`,
+        `Necesito el archivo con tus movimientos. Abajo te dejo cómo bajarlo de ${broker?.nombre}; cuando lo tengas, subilo acá.`]
+
+  function abrir() {
+    track('bienvenida_subir_abierto')
+    setCara('reposo')
+    setAbierto(true)
+  }
+
+  return (
+    <div className="space-y-5">
+      <GloboDeMervallE key={volvio ? 'volvio' : 'historial'} texto={texto} demora={volvio ? 0 : 900}
+        onTermino={() => setCara(c => (c === 'hablando' || c === 'contento' ? 'atento' : c))} />
+
+      <div className="bv-entra rounded-xl border border-line bg-bg-1 p-4 sm:p-5 space-y-3" style={{ '--d': '300ms' }}>
+        <button type="button" onClick={abrir} className={`${BOTON_1} w-full sm:w-auto`}>
+          <Upload size={17} strokeWidth={2} aria-hidden="true" /> Subir el archivo
+        </button>
+        {enCelular && (
+          <p className="flex items-start gap-2 text-[13px] text-ink-2 leading-snug">
+            <Smartphone size={15} strokeWidth={1.75} className="flex-shrink-0 mt-0.5 text-data-violet" aria-hidden="true" />
+            <span>La mayoría de los brokers deja bajar este archivo sólo desde su página web. Si estás en el celular, entrá a rendi.finance desde la compu: te espero acá.</span>
+          </p>
+        )}
+        <button type="button" onClick={() => ir('broker')}
+          className="inline-flex items-center gap-1 text-[13px] text-ink-3 hover:text-ink-1 transition-colors">
+          <ChevronLeft size={14} strokeWidth={1.75} aria-hidden="true" /> Cambiar de broker
+        </button>
+      </div>
+
+      {!planilla && broker?.guia && (
+        <div className="bv-entra" style={{ '--d': '450ms' }}>
+          <BrokerInstructions lockBrokerId={broker.platform} />
+        </div>
+      )}
+
+      {abierto && (
+        <ImportWizard
+          plataformaInicial={broker?.platform}
+          onConfirmed={() => onCargado()}
+          onClose={() => {
+            setAbierto(false)
+            // Con el archivo confirmado sigue a «tu cartera». Lo cerró sin
+            // confirmar nada: se queda acá, esperando.
+            if (onCerrado()) return
+            setVolvio(true)
+            setCara('atento')
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── 4. Tu cartera ───────────────────────────────────────────────────────────
+
+function PasoCartera({ setCara, onSeguir }) {
+  // El MISMO cálculo que /bienvenida (pages/FirstInsight.jsx).
+  const { loading, stats } = useCarteraRecienCargada()
+  const { hidden: oculto } = usePrivacy()
+  const conValor = !!stats && stats.value > 0
+
+  useEffect(() => { track('bienvenida_cartera_vista') }, [])
+
+  useEffect(() => {
+    if (loading) { setCara('cargando'); return }
+    if (!conValor) { setCara('contento'); return }
+    setCara('festejo')
+    const t = setTimeout(() => setCara('contento'), MS_FESTEJO)
+    return () => clearTimeout(t)
+  }, [loading, conValor, setCara])
+
+  const texto = loading
+    ? ['Dame un segundo, estoy sumando todo…']
+    : conValor
+      ? ['¡Listo! Esto es lo que tenés hoy.']
+      : ['¡Listo, ya tengo tu historial!', 'Todavía no tengo los precios para ponerle un valor a tu cartera: seguimos y lo ves en Inicio.']
+
+  return (
+    <div className="space-y-5">
+      <GloboDeMervallE key={loading ? 'sumando' : 'listo'} texto={texto} />
+
+      {!loading && conValor && (
+        <div className="bv-entra relative overflow-hidden rounded-xl border border-line bg-bg-1 px-5 py-6 sm:px-7 sm:py-8" style={{ '--d': '150ms' }}>
+          <span aria-hidden="true" className="absolute inset-0 bv-brillo" />
+          <div className="relative">
+            <div className="text-[13px] text-ink-2 mb-1">Tu cartera hoy</div>
+            <div className="text-[clamp(26px,8vw,56px)] leading-none font-semibold tracking-tight tabular text-ink-0">
+              <AnimatedNumber value={stats.value} format={(v) => (oculto ? OCULTO : fmtUsd(v))} />
+            </div>
+            <div className="mt-3 text-[14px] text-ink-1 tabular">
+              {stats.positionCount} {stats.positionCount === 1 ? 'posición' : 'posiciones'} en {stats.brokerCount} {stats.brokerCount === 1 ? 'broker' : 'brokers'}
+            </div>
+          </div>
+        </div>
+      )}
+      {loading && (
+        <div className="h-[150px] rounded-xl border border-line bg-bg-1/60 esqueleto" aria-hidden="true" />
+      )}
+
+      {!loading && (
+        <div className="bv-entra" style={{ '--d': '500ms' }}>
+          <button type="button" onClick={onSeguir} className={`${BOTON_1} w-full sm:w-auto`}>
+            Seguir <ArrowRight size={17} strokeWidth={2} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── 5. Perfil de inversor (opcional) ────────────────────────────────────────
+
+function PasoPerfil({ setCara, onSeguir }) {
+  useEffect(() => { setCara('hablando') }, [setCara])
+  function listo() { track('bienvenida_perfil_hecho'); onSeguir() }
+  function despues() { track('bienvenida_perfil_despues'); onSeguir() }
+  return (
+    <div className="space-y-5">
+      <GloboDeMervallE key="perfil"
+        texto={['Contame un poco cómo invertís, así lo que te diga es para vos.', 'Son unos toques. Si preferís, lo dejamos para más tarde.']}
+        onTermino={() => setCara(c => (c === 'hablando' ? 'reposo' : c))} />
+      <div className="bv-entra rounded-xl border border-line bg-bg-1" style={{ '--d': '250ms' }}>
+        <InvestorProfileForm />
+      </div>
+      {/* Pegados abajo: el formulario es largo y «Más tarde» no puede quedar
+          escondido al final. A la derecha queda lugar para WhatsApp, que
+          flota en esa esquina. */}
+      <div className="sticky bottom-0 -mx-4 sm:mx-0 pl-4 pr-20 sm:px-0 py-3 bg-bg-0/90 backdrop-blur-sm flex gap-2.5">
+        <button type="button" onClick={listo} className={`${BOTON_1} flex-1 sm:flex-none`}>Listo</button>
+        <button type="button" onClick={despues} className={`${BOTON_2} flex-1 sm:flex-none`}>Más tarde</button>
+      </div>
+    </div>
+  )
+}
+
+// ── 6. Rendi en el celular (opcional, sólo en el teléfono) ──────────────────
+
+function PasoCelular({ setCara, onSeguir }) {
+  const [modal, setModal] = useState(false)
+  const [instalando, setInstalando] = useState(false)
+  useEffect(() => { setCara('hablando') }, [setCara])
+
+  async function mostrame() {
+    track('bienvenida_celular_hecho')
+    // En Android, si el navegador deja, se instala en un toque.
+    if (hayInstalador()) {
+      setInstalando(true)
+      const r = await instalarAhora()
+      track('instalar_app_un_toque', { resultado: r, origen: 'bienvenida' })
+      setInstalando(false)
+      if (r === 'accepted') { onSeguir(); return }
+    }
+    setModal(true)
+  }
+  function despues() { track('bienvenida_celular_despues'); onSeguir() }
+
+  return (
+    <div className="space-y-5">
+      <GloboDeMervallE key="celular"
+        texto={['¿Me ponés en la pantalla de inicio? Así entrás de un toque.', 'Sin App Store ni Play Store: queda con su ícono, como una app.']}
+        onTermino={() => setCara(c => (c === 'hablando' ? 'atento' : c))} />
+      <div className="bv-entra flex flex-col sm:flex-row gap-2.5" style={{ '--d': '300ms' }}>
+        <button type="button" onClick={mostrame} disabled={instalando} className={`${BOTON_1} w-full sm:w-auto whitespace-nowrap`}>
+          <Smartphone size={17} strokeWidth={2} aria-hidden="true" /> Mostrame cómo
+        </button>
+        <button type="button" onClick={despues} className={`${BOTON_2} w-full sm:w-auto`}>Más tarde</button>
+      </div>
+      <InstalarAppModal open={modal} origen="bienvenida" onClose={() => { setModal(false); onSeguir() }} />
     </div>
   )
 }

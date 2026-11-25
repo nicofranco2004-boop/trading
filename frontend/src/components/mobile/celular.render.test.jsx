@@ -63,8 +63,8 @@ describe('la barra de arriba del celular', () => {
 })
 
 describe('la barra anota su alto, y lo que se pega debajo lo lee', () => {
-  // Las cabeceras de Cartera y Movimientos, la burbuja de Rendi, la ficha de
-  // una tenencia y el Onboarding se pegan DEBAJO de la barra al bajar. Cuando
+  // Las cabeceras de Cartera y Movimientos, la burbuja de Rendi y la ficha de
+  // una tenencia se pegan DEBAJO de la barra al bajar. Cuando
   // cada una tenía el alto escrito a mano (88 px, 0) quedaban tapadas, o
   // tapaban la barra, cada vez que la barra cambió de alto.
   const raizFalsa = () => {
@@ -155,7 +155,10 @@ describe('nada se pega arriba con un alto escrito a mano', () => {
     expect(malos).toEqual([])
   })
   it('y los que tienen que leerla, la leen en la CLASE (no en un comentario)', () => {
-    for (const nombre of ['pages/PositionsMobile.jsx', 'pages/Operations.jsx', 'pages/PositionDetailMobile.jsx', 'pages/Onboarding.jsx']) {
+    // (La bienvenida, pages/Onboarding.jsx, estaba en esta lista: desde la
+    // bienvenida obligatoria se dibuja SIN la barra del celular —App.jsx, Layout—
+    // y no tiene nada pegado arriba.)
+    for (const nombre of ['pages/PositionsMobile.jsx', 'pages/Operations.jsx', 'pages/PositionDetailMobile.jsx']) {
       const src = fuentes[`/src/${nombre}`]
       expect(pegadosArriba(src).some(t => t.includes(VARIABLE_ALTO_BARRA)), nombre).toBe(true)
     }

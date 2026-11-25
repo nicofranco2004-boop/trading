@@ -65,7 +65,6 @@ const CLASIFICADAS = new Set(Object.values(RUTAS).flat())
 export const SIN_OJITO = {
   // Formularios: muestran lo que la persona está cargando.
   'components/AddPositionFlow.jsx': 'formulario: lo que estás cargando',
-  'components/onboarding/PositionStep.jsx': 'formulario del primer activo',
   'components/PfFormModal.jsx': 'formulario de plazo fijo',
   'components/BondCashflowModal.jsx': 'formulario para anotar un cobro',
   'components/alerts/AlertaForm.jsx': 'formulario de alerta: precios',
@@ -103,6 +102,7 @@ export const SIN_OJITO = {
   'hooks/useCuponesPorCobrar.js': 'lo muestra DividendosPorCobrar (mira el ojito)',
   'hooks/useDividendosPorCobrar.js': 'lo muestra DividendosPorCobrar (mira el ojito)',
   'hooks/useMonthlyData.js': 'lo muestra MonthlySummary (mira el ojito)',
+  'hooks/useCarteraRecienCargada.js': 'lo muestran /bienvenida (FirstInsight) y el paso «tu cartera» de la bienvenida obligatoria (Onboarding): los dos miran el ojito',
   'hooks/useFueraDeHorarioDelInicio.js': 'tu cartera para la sección de pre/post mercado del inicio de la compu; no dibuja nada: la sección recibe `oculto` de Home, que mira el ojito',
   'hooks/usePfRollup.js': 'lo suma la Cartera, que mira el ojito',
   'hooks/useReportYears.js': 'años con informe, sin montos',

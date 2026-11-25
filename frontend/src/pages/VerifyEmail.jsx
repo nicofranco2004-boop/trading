@@ -21,8 +21,6 @@ import RendiLogo from '../components/RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import PageMeta from '../components/PageMeta'
 import { pedirAlServidor } from '../utils/api'
-import { leer as leerDelAlmacen } from '../utils/almacen'
-import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 export default function VerifyEmail() {
   const [searchParams] = useSearchParams()
@@ -138,22 +136,15 @@ export default function VerifyEmail() {
         inputs.current[0]?.focus()
         throw new Error(typeof data.detail === 'string' ? data.detail : 'Código inválido o expirado.')
       }
-      // Verificación exitosa → login + redirect.
-      // Si el user es fresh signup (recién verificó email por primera vez)
-      // y no clickeó "saltar onboarding" en algún intento previo,
-      // lo mandamos al wizard de onboarding. Sino al home.
+      // Verificación exitosa → login + a la bienvenida.
       // La puerta única de la sesión (AuthContext.entrar): quién es lo dice el
       // servidor, no esta pantalla. Se espera antes de navegar.
       await entrar({ evento: 'sign_up' })
-      const skippedBefore = (() => {
-        try {
-          return leerDelAlmacen(CATALOGO.bienvenidaSalteada) === '1' ||
-                 leerDelAlmacen(CATALOGO.bienvenidaCompleta) === '1'
-        } catch {
-          return false
-        }
-      })()
-      navigate(skippedBefore ? '/' : '/onboarding')
+      // Siempre a /onboarding: la página decide si le toca (lo dice el servidor
+      // con `falta_cargar_historial`); si no, lo manda al inicio. Antes miraba
+      // dos marcas de ESTE navegador («la salteó», «la completó»), que no son de
+      // la persona: en otra compu o en otra cuenta decían cualquier cosa.
+      navigate('/onboarding')
     } catch (ex) {
       setError(ex.message)
     } finally {

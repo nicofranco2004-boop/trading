@@ -134,10 +134,13 @@ export const CATALOGO = Object.freeze({
   vioTourTecnico: e({ clave: 'rendi:tour:tecnico:v1', donde: LOCAL, tipo: PREFERENCIA, porque: 'ya vio el recorrido de Análisis técnico' }),
   pasosOmitidos: e({ clave: 'rendi_checklist_omitidos', donde: LOCAL, tipo: PREFERENCIA, porque: 'pasos de la lista de inicio que se omitieron' }),
   listaDeInicioCerrada: e({ clave: 'rendi_checklist_dismissed', donde: LOCAL, tipo: PREFERENCIA, porque: 'la lista de inicio se cerró' }),
-  volverABienvenida: e({ clave: 'rendi_onboarding_pending', donde: LOCAL, tipo: PREFERENCIA, porque: 'volver a la bienvenida después de cargar' }),
-  bienvenidaSalteada: e({ clave: 'rendi_onboarding_skipped', donde: LOCAL, tipo: PREFERENCIA, porque: 'se salteó la bienvenida' }),
-  bienvenidaCompleta: e({ clave: 'rendi_onboarding_completed', donde: LOCAL, tipo: PREFERENCIA, porque: 'se completó la bienvenida' }),
   primeraImportacion: e({ clave: 'rendi_first_import_done', donde: LOCAL, tipo: PREFERENCIA, porque: 'ya importó alguna vez (para la primera lectura)' }),
+  // Si la bienvenida se completó lo decide el servidor (`falta_cargar_historial`
+  // en /auth/me), no el navegador: esto sólo dice que en ESTA pestaña se acaba
+  // de terminar, para que el tutorial de novedades no salte encima en la misma
+  // visita (utils/bienvenidaObligatoria.js).
+  recienConfigurado: e({ clave: 'rendi_bienvenida_recien', donde: SESION, tipo: PREFERENCIA,
+    porque: 'se acaba de terminar la bienvenida en esta pestaña: el tutorial de novedades espera a la próxima visita' }),
   conocioLaCartera: e({ clave: 'rendi_positions_discovered', donde: LOCAL, tipo: PREFERENCIA, porque: 'ya conoció la cartera' }),
   pistaDeslizar: e({ clave: 'rendi_cartera_scroll_descubierto', donde: LOCAL, tipo: PREFERENCIA, porque: 'ya vio la pista de deslizar la cartera' }),
 })

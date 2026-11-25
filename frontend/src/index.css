@@ -1193,6 +1193,35 @@ body {
 }
 .isla-despliega { animation: isla-despliega 380ms cubic-bezier(0.16, 1, 0.3, 1) backwards; }
 
+/* La bienvenida obligatoria (pages/Onboarding.jsx) — prefijo `bv-`. Todas son de
+   ENTRADA (`backwards`): sin ellas (reducir movimiento) cada pieza queda en su
+   estado final, completa. La demora va en --d.
+   · bv-aparece: Mervall-E llega (crece desde abajo, con un rebote chico).
+   · bv-globo:   el globo se infla desde la punta que lo une a Mervall-E.
+   · bv-entra:   lo de cada paso (tarjetas, botones) sube y aparece. */
+@keyframes bv-aparece {
+  from { opacity: 0; transform: translateY(18px) scale(0.6); }
+  60%  { opacity: 1; }
+  to   { opacity: 1; transform: none; }
+}
+.bv-aparece { transform-origin: 50% 100%; animation: bv-aparece 700ms cubic-bezier(0.34, 1.56, 0.64, 1) backwards; animation-delay: var(--d, 0s); }
+@keyframes bv-globo { from { opacity: 0; transform: scale(0.92); } }
+.bv-globo { transform-origin: 12% 0%; animation: bv-globo 380ms cubic-bezier(0.16, 1, 0.3, 1) backwards; animation-delay: var(--d, 0s); }
+@media (min-width: 768px) { .bv-globo { transform-origin: 0% 40%; } }
+@keyframes bv-entra { from { opacity: 0; transform: translateY(10px); } }
+.bv-entra { animation: bv-entra 480ms cubic-bezier(0.16, 1, 0.3, 1) backwards; animation-delay: var(--d, 0s); }
+/* El fondo: un resplandor violeta arriba, como la portada. Va acá y no en un
+   `bg-[…]` porque lleva una variable del tema (frontend/CLAUDE.md, R8). */
+.bv-fondo {
+  background-image:
+    radial-gradient(ellipse 70% 45% at 50% -8%, rgb(var(--data-violet) / 0.16), transparent 70%),
+    radial-gradient(ellipse 40% 30% at 90% 100%, rgb(var(--data-violet) / 0.06), transparent 70%);
+}
+/* El piso donde se para Mervall-E (cuerpo entero, en la compu). */
+.bv-piso { background: radial-gradient(ellipse at center, rgb(var(--data-violet) / 0.22), transparent 70%); }
+/* El valor de la cartera, recién cargada: un brillo detrás del número. */
+.bv-brillo { background: radial-gradient(ellipse 60% 70% at 50% 50%, rgb(var(--rendi-pos) / 0.10), transparent 75%); }
+
 /* Respeta reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .grid-bg, .spotlight-pulse, .value-pulse, .ticker-scroll, .headline-sweep,
@@ -1216,6 +1245,7 @@ body {
   .barrido-escaneo::after { animation: none; display: none; }
   .tilde-entra, .viaja-desde, .radar-contorno, .radar-crece, .radar-marca, .dona-barre { animation: none; }
   .etiqueta-punta, .caida-baja .recharts-area, .marca-aparece, .despliega, .isla-despliega { animation: none; }
+  .bv-aparece, .bv-globo, .bv-entra { animation: none; }
   .reveal-up { opacity: 1; }
   /* La cinta de cotizaciones no corre: queda UNA copia de la lista y se
      desliza con el dedo, como la barra de antes. */

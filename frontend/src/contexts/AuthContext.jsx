@@ -36,6 +36,8 @@ export const DEMO_USER = {
   subscription_period: 'monthly',
   demo: true,
   created_at: '2024-04-01T00:00:00Z',
+  // El demo es una cartera de ejemplo ya cargada: nunca pasa por la bienvenida.
+  falta_cargar_historial: false,
 }
 
 // Mapea la respuesta de /auth/me al shape de `user` que consume la app.
@@ -96,6 +98,11 @@ export function mapMeToUser(me) {
     pausa_resumen:   me.pausa_resumen || null,
     // 'prueba_terminada' | 'prueba_usada' — ver el porqué en /api/auth/me.
     pausa_motivo:    me.pausa_motivo || null,
+    // Cuenta nueva que todavía no subió y confirmó un archivo de su broker: no
+    // ve Rendi hasta hacerlo (la bienvenida obligatoria). Lo decide el
+    // servidor (backend/bienvenida.py) con quien está logueado; la regla de
+    // pantalla vive en utils/bienvenidaObligatoria.js.
+    falta_cargar_historial: !!me.falta_cargar_historial,
   }
 }
 

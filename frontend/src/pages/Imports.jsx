@@ -17,14 +17,15 @@ import { tituloDeLotePase, esFrenoDeUnPase } from '../utils/moverDeBroker'
 import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
-// Flag de localStorage: si el user nunca completó un import → al confirmar
-// el primero lo redirigimos a /bienvenida para el "primer insight" en lugar
-// de devolverlo a la tabla administrativa.
-const FIRST_IMPORT_FLAG = 'rendi_first_import_done'
 
 export default function Imports() {
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user, refreshUser } = useAuth()
+  // Deshacer el ÚNICO import de una cuenta nueva la devuelve a la bienvenida
+  // obligatoria: lo decide el servidor (`falta_cargar_historial` en /auth/me) y
+  // la puerta de App.jsx lo manda a /onboarding apenas el usuario se refresca.
+  // Sin esto recién pasaba al recargar la página.
+  const revisarSiFaltaConfigurar = () => { refreshUser?.()?.catch?.(() => {}) }
   const { clientCtx } = useAdvisorContext()
   // El asesor en su propio nivel no tiene cartera (decisión de producto):
   // un import acá caería en su cuenta de trabajo y quedaría invisible
@@ -94,6 +95,7 @@ export default function Imports() {
         : `Importación del ${fmtDate(batch.created_at)} revertida correctamente.`)
       setConfirmRevert(null)
       await load()
+      revisarSiFaltaConfigurar()
     } catch (ex) {
       const msg = ex.message || 'No se pudo revertir.'
       // Errores terminales donde forzar tampoco ayuda → cerramos el modal. Los
@@ -427,7 +429,7 @@ export default function Imports() {
         <ImportWizard
           initialPreview={redoPreview.preview}
           redoBanner={true}
-          onClose={() => { setRedoPreview(null); load() }}
+          onClose={() => { setRedoPreview(null); load(); revisarSiFaltaConfigurar() }}
           onConfirmed={() => { setRedoPreview(null); load() }}
         />
       )}

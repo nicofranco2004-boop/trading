@@ -6273,6 +6273,17 @@ def me(request: Request, uid: int = Depends(get_effective_user)):
             # el user vea "expirado" sin sorpresas.
             d["access_mode"] = "cancelled"
 
+        # ¿Tiene que pasar por la bienvenida (subir su primer archivo) antes de
+        # ver Rendi? La regla entera vive en `bienvenida.falta_cargar_historial`;
+        # acá sólo se pregunta. Por el uid AUTENTICADO, como `aviso_precios`: con
+        # un asesor mirando a un cliente, la bienvenida no le toca al cliente.
+        # Va al final a propósito: es la última lectura del pedido, así que ni
+        # siquiera un error suyo puede dejar a medias los campos de arriba (y
+        # ante un error la función ya devuelve False sola: falla abierta).
+        import bienvenida as _bienvenida
+        d["falta_cargar_historial"] = _bienvenida.falta_cargar_historial(
+            conn, getattr(request.state, "rendi_auth_uid", uid))
+
     return d
 
 

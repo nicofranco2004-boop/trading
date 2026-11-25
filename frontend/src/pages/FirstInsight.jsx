@@ -8,16 +8,17 @@
 // paneles entran de a uno: es la primera vez que esta persona ve su plata en
 // Rendi. Con "reducir movimiento", todo aparece quieto.
 //
-// Trigger: localStorage flag `rendi_first_import_done` se setea acá la
-// primera vez y nunca más vuelve. Si el user importa de nuevo no aparece.
+// Cuándo se llega: al cerrar el importador después del PRIMER import en este
+// navegador (pages/Imports.jsx y pages/Config.jsx miran la marca
+// `primeraImportacion` del catálogo del almacén). La bienvenida obligatoria
+// (pages/Onboarding.jsx) no pasa por acá: tiene su propio paso «tu cartera»,
+// con el mismo cálculo (hooks/useCarteraRecienCargada.js), y deja la marca
+// puesta para que el próximo import no traiga a nadie de vuelta.
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { rutaParaImportar } from '../utils/navegacion'
-import { Sparkles, TrendingUp, TrendingDown, ArrowRight, Wallet } from 'lucide-react'
-import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols } from '../utils/valuation'
-import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
+import { Sparkles, TrendingUp, TrendingDown, ArrowRight } from 'lucide-react'
 import { fmtUsd as fmtUsdRaw, usd as usdRaw, pctSigned } from '../utils/format'
 import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import AssetLogo from '../components/AssetLogo'
@@ -26,10 +27,8 @@ import Panel from '../components/Panel'
 import AnimatedNumber from '../components/AnimatedNumber'
 import { entrada } from '../hooks/useAlVerse'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
-import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import MervallE from '../components/ai/MervallE'
-import { borrar as borrarDelAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
-import { CATALOGO } from '../utils/catalogoDelAlmacen'
+import { useCarteraRecienCargada } from '../hooks/useCarteraRecienCargada'
 
 export default function FirstInsight() {
   // «Ocultar saldos»: el valor, lo invertido y lo ganado salen tapados; quedan
@@ -39,164 +38,21 @@ export default function FirstInsight() {
   const usd = (v) => (oculto ? OCULTO : usdRaw(v))
   const navigate = useNavigate()
   const coachDrawer = useCoachDrawer()
-  const { valuationDollar, costBasis } = useCurrency()
-  const [positions, setPositions] = useState([])
-  const [brokers, setBrokers] = useState([])
-  const [prices, setPrices] = useState({})
-  const [dolar, setDolar] = useState(null)
-  const [loading, setLoading] = useState(true)
+  // El cálculo es el mismo que el del paso «tu cartera» de la bienvenida
+  // obligatoria (pages/Onboarding.jsx): vive en un solo lugar.
+  const { loading, stats } = useCarteraRecienCargada()
 
   // CTA al Coach IA post-import: abre el drawer con una pregunta pre-cargada
   // que el bot responde con contexto de la cartera recién importada. Navegamos
-  // al dashboard primero (el drawer vive a nivel App; FirstInsight es full-screen)
-  // — mismo patrón que CompleteStep. La pregunta está en la whitelist (main.py).
+  // al dashboard primero (el drawer vive a nivel App; FirstInsight es full-screen).
+  // La pregunta está en la whitelist (main.py).
   function askCoach() {
     track('first_insight_coach_cta')
     navigate('/dashboard')
     setTimeout(() => coachDrawer?.open?.('¿Mi nivel de concentración es elevado?'), 300)
   }
 
-  // Si el user llega acá desde el flow de onboarding (ImportWizard lo seteó),
-  // lo redirigimos al CompleteStep del wizard en lugar del FirstInsight clásico.
-  // Mejor UX: cierra el loop del onboarding con celebración + 3 cards CTAs
-  // en vez de quedar varado en FirstInsight sin guidance hacia el dashboard.
-  useEffect(() => {
-    let pending = false
-    try { pending = leerDelAlmacen(CATALOGO.volverABienvenida) === '1' } catch {}
-    if (pending) {
-      try { borrarDelAlmacen(CATALOGO.volverABienvenida) } catch {}
-      navigate('/onboarding?step=complete', { replace: true })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  useEffect(() => {
-    track('first_insight_viewed')
-    Promise.all([
-      api.get('/positions'),
-      api.get('/brokers'),
-      api.get('/dolar').catch(() => null),
-    ]).then(async ([pos, bkrs, dol]) => {
-      setPositions(pos || [])
-      setBrokers(bkrs || [])
-      setDolar(dol)
-      // Fetch precios de los assets
-      const arsBrokers = new Set((bkrs || []).filter(b => b.currency === 'ARS').map(b => b.name))
-      // .BA por el PADRE: lote en pesos (currency='ARS') o sub-broker AR·USD → .BA;
-      // acción AR en broker USD extranjero (Schwab) → ADR NYSE (ticker pelado).
-      const usdSyms = [...new Set((pos || []).filter(p => !arsBrokers.has(p.broker) && !p.is_cash).map(p => (isArUsdBroker(p.broker) || costInPesos(p)) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
-      const arsSyms = [...new Set((pos || []).filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
-      // + las keys que lee el motor (buildPriceSymbols): esta lista pedía BTC.BA
-      // para la cripto de un "· USD" y el motor lee BTC (quedaba al costo).
-      const all = [...new Set([...buildPriceSymbols(pos || [], bkrs || []), ...usdSyms, ...arsSyms])].join(',')
-      if (all) {
-        try {
-          const data = await api.get(`/prices?symbols=${all}`)
-          setPrices(data || {})
-        } catch {}
-      }
-    }).finally(() => setLoading(false))
-  }, [])
-
-  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
-  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion  // dólar financiero p/ CEDEARs
-  const tcCripto = dolar?.cripto?.venta
-
-  const stats = useMemo(() => {
-    if (!brokers.length || !positions.length) return null
-    let value = 0, invested = 0
-    for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis)
-      value += r.value || 0
-      invested += r.invested || 0
-    }
-    const pnl = value - invested
-    const pnlPct = invested > 0 ? pnl / invested : 0
-
-    // Mejor y peor activo por P&L USD individual
-    const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
-    const exchangeBrokers = new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name))
-    const byAsset = new Map()
-    for (const p of positions) {
-      if (p.is_cash) continue
-      const isARS = arsBrokers.has(p.broker)
-      const cost = (p.invested || 0) + (p.commissions || 0)
-      let valueUsd = null, pnlUsd = null
-      if (isARS && costInUsd(p)) {
-        // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
-        // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
-        // El costo YA está en USD (sin ÷blue); el valor va por el tipo de instrumento
-        // (usdLotValue, que ya clampea). Sin esto, la rama isARS de abajo dividía el
-        // costo USD por el blue → colapsaba (~1/MEP) y el ranking best/worst se rompía.
-        // Gateado a broker ARS: una acción US genuina (currency='USD' en Schwab/IBKR)
-        // NO entra acá (usdLotValue le armaría 'AAPL.BA', inexistente) → va al else US.
-        const u = usdLotValue(p, prices, tcCedear)
-        valueUsd = u.valueUsd
-        pnlUsd = valueUsd - u.investedUsd
-      } else if (isARS && cryptoCostInUsd(p)) {
-        // Lo mismo para la CRIPTO comprada en dólares (costInUsd la excluye): sin
-        // esto caía abajo, su costo USD se dividía por el dólar y quedaba en ~0.
-        const c = cryptoUsdLotValue(p, prices, { cedearRate: tcCedear, tcCripto, isExchange: exchangeBrokers.has(p.broker) })
-        valueUsd = c.valueUsd
-        pnlUsd = valueUsd - c.investedUsd
-      } else if (isARS) {
-        const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
-        if (priceArs != null) {
-          // Guard anti-distorsión: mkt y costo comparados en ARS (mismas unidades).
-          // Un ×100 (bono per-100 leído per-1) → cae a costo, P&L 0.
-          const mktArs = priceArs * (p.quantity || 0)
-          const trust = trustMktValue(mktArs, cost, p.asset_type, p.price_override != null)
-          valueUsd = (trust ? mktArs : cost) / tcValuacion
-          pnlUsd = valueUsd - cost / tcValuacion
-        }
-      } else if (costInPesos(p)) {
-        // Lote en PESOS en cuenta USD → costo Y valor por el MEP (no peso como dólar).
-        const u = pesoLotUsd(p, prices, tcCedear)
-        const trust = trustMktValue(u.valueUsd, u.investedUsd, p.asset_type, p.price_override != null)
-        valueUsd = trust ? u.valueUsd : u.investedUsd
-        pnlUsd = valueUsd - u.investedUsd
-      } else if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isCrypto(p.asset) && !isFciSym(p.asset) && p.price_override == null) {
-        // Instrumento de BYMA en cuenta USD (CEDEAR o acción AR de un sub-broker
-        // "· USD"): se valúa por su precio LOCAL .BA (ARS) ÷ MEP, NO por el ticker
-        // US (un CEDEAR vale 15-100× menos que la acción → antes se inflaba 3-29×).
-        // Espeja computeBrokerValue (rama USD). Broker USD → cost YA está en USD.
-        // El FCI-USD NO entra: su precio es el NAV en USD (va al else, sin ÷MEP).
-        const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
-        const mktUsd = priceArs != null ? (priceArs * (p.quantity || 0)) / tcCedear : null
-        valueUsd = (mktUsd != null && trustMktValue(mktUsd, cost, p.asset_type)) ? mktUsd : cost
-        pnlUsd = valueUsd - cost
-      } else {
-        // Key normalizada primero (la que pide el fetch: 'BRK.B' se pide como
-        // 'BRK-B'), con fallback a la cruda para el last-known del cron y los
-        // payloads legacy. Leer sólo la cruda dejaba el lote al costo, P&L 0.
-        const price = p.price_override ?? prices[priceSymbol(p.asset, false, p.asset_type)] ?? prices[p.asset]
-        if (price != null) {
-          // Premium dólar-cripto (broker no-exchange) a valor Y costo → ranking
-          // best/worst consistente con el resto de la app. f=1 para todo lo demás.
-          const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear, isARS ? 'ARS' : 'USD')
-          // Guard anti-distorsión: mkt vs costo en USD sin factor (mismas unidades),
-          // luego escala por f (igual que computeBrokerValue). Un ×100/colisión → costo.
-          const mkt = price * (p.quantity || 0)
-          const trust = trustMktValue(mkt, cost, p.asset_type, p.price_override != null)
-          valueUsd = (trust ? mkt : cost) * f
-          pnlUsd = valueUsd - cost * f
-        }
-      }
-      if (pnlUsd == null) continue
-      const cur = byAsset.get(p.asset) || { asset: p.asset, pnl_usd: 0, value_usd: 0 }
-      cur.pnl_usd += pnlUsd
-      cur.value_usd += (valueUsd || 0)
-      byAsset.set(p.asset, cur)
-    }
-    const arr = Array.from(byAsset.values())
-    arr.sort((a, b) => b.pnl_usd - a.pnl_usd)
-    const best = arr[0] || null
-    const worst = arr[arr.length - 1] || null
-    const positionCount = positions.filter(p => !p.is_cash).length
-    const brokerCount = brokers.length
-
-    return { value, invested, pnl, pnlPct, best, worst, positionCount, brokerCount }
-  }, [positions, brokers, prices, tcValuacion])
+  useEffect(() => { track('first_insight_viewed') }, [])
 
   if (loading) {
     return (
