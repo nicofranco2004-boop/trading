@@ -615,8 +615,10 @@ class LaHuellaVeLosPases(_Cuenta):
         from fechas import hoy_art_date
         return bf.huella_de_entrada(self.conn, self.uid, hoy_art_date())
 
-    def test_motor_version_4(self):
-        self.assertEqual(bf.MOTOR_VERSION, 4)
+    def test_motor_version_5(self):
+        # 5: pesos y dólares de un mismo activo ya no se suman (ver
+        # tests/test_fotos_pesos_y_dolares.py). Subirla rehace cada historia una vez.
+        self.assertEqual(bf.MOTOR_VERSION, 5)
 
     def test_pase_y_deshacer_cambian_la_huella(self):
         self._confirmar("IBKR", [

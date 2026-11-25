@@ -580,7 +580,7 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
     la curva publicaba +US$ 500 de una suba que la persona ya no tenía, mientras
     `positions` (el rebuild sí filtra) mostraba bien la cartera.
 
-    ⚠️ TRES COSAS QUE ESTA VERSIÓN CUENTA (MOTOR_VERSION 4):
+    ⚠️ TRES COSAS QUE CUENTA DESDE MOTOR_VERSION 4 (y una cuarta, (d), desde la 5 — abajo):
       · (a) EL TIPO DE ACTIVO NO PARTE EL GRUPO. Se agrupaba por broker, activo Y
         tipo: una venta con otro tipo que sus compras caía en otro grupo, daba
         cantidad negativa y se descartaba, así que la tenencia NO bajaba. Pasa de
@@ -598,24 +598,40 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
         seguía valuando a mercado títulos que la persona ya no tenía. Se resta desde
         la fecha de la venta (ver `_ventas_a_mano_de_lotes_del_registro`)."""
     from importing.schema import TX_VIVAS
+    # ⚠️ (d) EL COSTO EN PESOS Y EL COSTO EN DÓLARES NO SE SUMAN (MOTOR_VERSION 5).
+    # Se sumaban en UN monto y la tenencia salía etiquetada 'USD' si ALGUNA compra
+    # había sido en dólares. Caso real (25/11/2026, Cocos): TSLA comprado muchas veces
+    # en pesos y UNA con «Compra Dolar Mep»; la foto del 31/10 tomó 1.304.277 PESOS
+    # como dólares → la cartera «valía» US$ 1,3 millones y el tablero mostró −99,6 %
+    # en «Últimos 25 días» y «Este mes». Ahora cada moneda es su bolsa (cantidad y
+    # costo en SU unidad), y la tenencia que queda se reparte entre las dos según
+    # cuánto se compró en cada una. Una venta no lleva moneda confiable (una
+    # reducción sin efectivo viene vacía), así que la cantidad total sigue
+    # restándose en un solo grupo: la VENTA no elige bolsa.
+    _ES_USD = "UPPER(COALESCE(n.currency,'')) = 'USD'"
+    _MONTO = "COALESCE(n.gross_amount, COALESCE(n.quantity,0)*COALESCE(n.unit_price,0))"
+    _SALE_POR_PASE = ("n.operation_type='SELL' AND n.traspaso_id IS NOT NULL "
+                      "AND n.costo_nativo IS NOT NULL")
+
+    def _bolsa(es_usd: bool) -> str:
+        cond = _ES_USD if es_usd else f"NOT ({_ES_USD})"
+        return (f"""SUM(CASE WHEN n.operation_type='BUY' AND {cond} THEN {_MONTO}
+                             WHEN {_SALE_POR_PASE} AND {cond} THEN -n.costo_nativo
+                             ELSE 0 END),
+                    SUM(CASE WHEN n.operation_type='BUY' AND {cond} THEN COALESCE(n.quantity,0)
+                             WHEN {_SALE_POR_PASE} AND {cond} THEN -COALESCE(n.quantity,0)
+                             ELSE 0 END)""")
+
     rows = conn.execute(
         f"""SELECT n.broker AS broker, n.asset_symbol AS asset,
                   MAX(CASE WHEN n.operation_type='BUY' AND COALESCE(n.currency,'') <> ''
-                           THEN UPPER(n.currency) END) AS currency,
+                                AND NOT ({_ES_USD})
+                           THEN UPPER(n.currency) END) AS moneda_otra,
                   SUM(CASE n.operation_type WHEN 'BUY'  THEN COALESCE(n.quantity,0)
                                             WHEN 'SELL' THEN -COALESCE(n.quantity,0)
                                             ELSE 0 END) AS qty,
-                  SUM(CASE WHEN n.operation_type='BUY'
-                        THEN COALESCE(n.gross_amount, COALESCE(n.quantity,0)*COALESCE(n.unit_price,0))
-                           WHEN n.operation_type='SELL' AND n.traspaso_id IS NOT NULL
-                                AND n.costo_nativo IS NOT NULL
-                        THEN -n.costo_nativo
-                        ELSE 0 END) AS buy_amt,
-                  SUM(CASE WHEN n.operation_type='BUY' THEN COALESCE(n.quantity,0)
-                           WHEN n.operation_type='SELL' AND n.traspaso_id IS NOT NULL
-                                AND n.costo_nativo IS NOT NULL
-                        THEN -COALESCE(n.quantity,0)
-                        ELSE 0 END) AS buy_qty
+                  {_bolsa(True)},
+                  {_bolsa(False)}
              FROM {TX_VIVAS}
             WHERE b.user_id = ?
               AND n.asset_symbol IS NOT NULL AND n.asset_symbol != ''
@@ -627,37 +643,50 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
     tipos = _tipo_de_las_compras(conn, uid, date_iso)
     grupos = {}
     for r in rows:
-        grupos[(r["broker"], r["asset"])] = {
-            "asset_type": tipos.get((r["broker"], r["asset"])), "currency": r["currency"],
-            "qty": float(r["qty"] or 0), "buy_amt": float(r["buy_amt"] or 0),
-            "buy_qty": float(r["buy_qty"] or 0)}
+        r = tuple(r)
+        broker, asset, moneda_otra, qty, amt_usd, qty_usd, amt_otra, qty_otra = r
+        grupos[(broker, asset)] = {
+            "asset_type": tipos.get((broker, asset)), "qty": float(qty or 0),
+            # moneda de la bolsa → [monto comprado, cantidad comprada]
+            "bolsas": {"USD": [float(amt_usd or 0), float(qty_usd or 0)],
+                       (moneda_otra or None): [float(amt_otra or 0), float(qty_otra or 0)]}}
     # (c) Lo que la persona vendió a mano de esos lotes, hasta esta fecha. Igual que
-    # la salida de un pase (b): se va la cantidad y SU costo, no el promedio.
-    for broker, asset, cantidad, costo in _ventas_a_mano_de_lotes_del_registro(conn, uid, date_iso):
+    # la salida de un pase (b): se va la cantidad y SU costo, no el promedio, de la
+    # bolsa de la moneda del lote.
+    for broker, asset, cantidad, costo, moneda in _ventas_a_mano_de_lotes_del_registro(conn, uid, date_iso):
         g = grupos.get((broker, asset))
         if g is None:
             continue
         g["qty"] -= cantidad
-        g["buy_qty"] -= cantidad
-        g["buy_amt"] -= costo
+        clave = "USD" if (moneda or "").upper() == "USD" else next(
+            (k for k in g["bolsas"] if k != "USD"), None)
+        bolsa = g["bolsas"].setdefault(clave, [0.0, 0.0])
+        bolsa[0] -= costo
+        bolsa[1] -= cantidad
     out = []
     for (broker, asset), g in grupos.items():
         qty = g["qty"]
         if qty <= 1e-9:        # cerrada / sobre-vendida → no es tenencia
             continue
-        buy_qty = g["buy_qty"]
-        avg_cost = max(0.0, g["buy_amt"]) / buy_qty if buy_qty > 1e-9 else 0
+        con_compras = {m: b for m, b in g["bolsas"].items() if b[1] > 1e-9}
+        comprado = sum(b[1] for b in con_compras.values())
+        if comprado <= 1e-9:
+            # Sin compras que den el costo (raro: sólo pases que entraron sin monto).
+            out.append({"broker": broker, "asset": asset, "asset_type": g["asset_type"],
+                        "currency": None, "quantity": qty, "invested": 0.0})
+            continue
         # currency: para que compute_broker_value_usd respete el costo USD (sin ÷MEP)
-        # de bonos/ONs/FCI-USD/CEDEAR-MEP en un broker ARS. Se TAGEA desde las patas de
-        # COMPRA (no se particiona el GROUP BY): una VENTA de reducción sin cash (rescate
-        # parcial / reducción de capital / canje) llega con moneda vacía→'ARS' y, si
-        # particionáramos, caería en otro bucket y NO restaría la cantidad (qty inflada).
-        # MAX prioriza 'USD' si alguna compra fue en dólares (el caso "costo en dólares").
-        # El tipo, por la misma razón, también sale de las compras (a).
-        out.append({
-            "broker": broker, "asset": asset, "asset_type": g["asset_type"],
-            "currency": (g["currency"] or None), "quantity": qty, "invested": avg_cost * qty,
-        })
+        # de bonos/ONs/FCI-USD/CEDEAR-MEP en un broker ARS, y pase a dólares el costo
+        # en pesos. Cada bolsa con SU moneda y SU costo promedio.
+        for moneda, (monto, comprada) in con_compras.items():
+            parte = qty * comprada / comprado
+            if parte <= 1e-9:
+                continue
+            out.append({
+                "broker": broker, "asset": asset, "asset_type": g["asset_type"],
+                "currency": moneda, "quantity": parte,
+                "invested": max(0.0, monto) / comprada * parte,
+            })
     return out
 
 
@@ -703,7 +732,7 @@ def _tipo_de_las_compras(conn, uid: int, date_iso: str) -> dict:
 
 
 def _ventas_a_mano_de_lotes_del_registro(conn, uid: int, date_iso: str) -> list:
-    """[(broker, activo, cantidad, costo)] de cada venta A MANO, con fecha ≤
+    """[(broker, activo, cantidad, costo, moneda del lote)] de cada venta A MANO, con fecha ≤
     `date_iso`, de un lote que salió del registro de lo importado.
 
     Una venta a mano (`sell_position_fifo`) consume los lotes de `positions` y deja
@@ -761,7 +790,8 @@ def _ventas_a_mano_de_lotes_del_registro(conn, uid: int, date_iso: str) -> list:
             continue
         costo_lote = _fx.costo_del_lote(lote.get("invested"), lote.get("buy_price"), cantidad) or 0
         costo = float(costo_lote) * consumido / cantidad if cantidad > 0 else 0.0
-        out.append((lote.get("broker"), lote.get("asset"), consumido, costo))
+        # La moneda del lote: el costo está en ESA unidad, y resta de esa bolsa.
+        out.append((lote.get("broker"), lote.get("asset"), consumido, costo, lote.get("currency")))
     return out
 
 
@@ -786,8 +816,10 @@ MTM_SOURCE = "mtm_backfill"
 # bonos al cierre de su mes en data912 (antes, al costo). 4 = la tenencia entiende
 # los pases entre brokers y corrige dos errores que ya estaban: una venta con otro
 # tipo de activo que sus compras no bajaba la tenencia, y una venta a mano de un
-# lote importado la dejaba en la historia para siempre (`_holdings_asof`).
-MOTOR_VERSION = 4
+# lote importado la dejaba en la historia para siempre (`_holdings_asof`). 5 = el
+# costo en pesos y el costo en dólares de un mismo activo ya no se suman en un
+# solo monto etiquetado 'USD' (`_holdings_asof` (d): TSLA de Cocos, US$ 1,3 M).
+MOTOR_VERSION = 5
 
 # ⚠️ YA NO HAY PISO DE COBERTURA. La cobertura se estampa y SE MUESTRA; no filtra
 # nada. Un piso —fuera 0,70 o 0,995— esconde la curva entera al que no llega, que
@@ -1289,7 +1321,13 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         # trabajo viene a sacar de la curva, ahora con etiqueta de mercado.
         # Antes mentia CON la etiqueta puesta (source='import') y todos los filtros
         # la descartaban; asi era estrictamente peor.
-        _vistos = {(h["broker"], h["asset"]): float(h["quantity"] or 0) for h in hold}
+        # SUMADO: un activo comprado en pesos y en dólares viene en dos partes (una
+        # por moneda, ver `_holdings_asof` (d)); quedarse con la última haría creer
+        # que la otra no se vio y la contaría dos veces al costo.
+        _vistos: dict = {}
+        for h in hold:
+            _k = (h["broker"], h["asset"])
+            _vistos[_k] = _vistos.get(_k, 0.0) + float(h["quantity"] or 0)
         _no_visto, _afirmable = _tenencia_no_vista(conn, uid, d, _vistos)
         val_costo += _no_visto
         if _no_visto > 0:
