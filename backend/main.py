@@ -6542,7 +6542,8 @@ def _reset_plan(conn, uid: int, tablas) -> list:
 
 
 def _reset_data_worker(uid: int, *, tablas: tuple = None, toda_la_config: bool = False,
-                       borrar_perfil: bool = False, pausa: float = 0.0) -> None:
+                       borrar_perfil: bool = False, pausa: float = 0.0,
+                       volver_a_la_bienvenida: bool = False) -> None:
     """Corre el borrado completo. Publica progreso en `_reset_progress`.
 
     UN SOLO MOTOR para los dos botones. El de "Empezar de cero" del usuario y el
@@ -6557,6 +6558,9 @@ def _reset_data_worker(uid: int, *, tablas: tuple = None, toda_la_config: bool =
         onboarding. Es la ÚNICA columna de `users` que se toca, y a propósito:
         `users` es también donde viven el tier y el crédito pago.
       • `pausa`: segundos de freno entre tandas (ver `_borrar_en_chunks`).
+      • `volver_a_la_bienvenida`: deja la marca para que la app lleve a la persona
+        a la bienvenida con Mervall-E aunque su cuenta sea vieja (`bienvenida.py`).
+        Lo pasa el botón del usuario; el de admin no.
 
     ATOMICIDAD: en chunks el reset ya NO es atómico — si el proceso muere a
     mitad, la cartera queda a medio borrar. Es un intercambio deliberado y es
@@ -6631,6 +6635,18 @@ def _reset_data_worker(uid: int, *, tablas: tuple = None, toda_la_config: bool =
                     (uid,)).rowcount
             if n:
                 cleared["user_broker_credentials.last_sync_at"] = n
+
+        # «Empezar de cero» es volver a armar Rendi: la bienvenida le corresponde
+        # también a una cuenta de antes del corte. Va DESPUÉS del borrado de `config`
+        # (si no, la marca se iría con él) y en su propio intento: la bienvenida es
+        # una guía, y que falle la marca no puede hacer fallar el borrado.
+        if volver_a_la_bienvenida:
+            try:
+                import bienvenida as _bienvenida
+                with conn:
+                    _bienvenida.marcar_que_empezo_de_cero(conn, uid)
+            except Exception:
+                log.exception("reset_my_data: no se pudo dejar la marca de la bienvenida uid=%s", uid)
 
         # Sin esto el chat de IA sigue respondiendo con la cartera RECIÉN BORRADA
         # hasta 60s — justo el síntoma de "datos fantasma" que este botón elimina.
@@ -6819,7 +6835,7 @@ def reset_my_data(uid: int = Depends(get_effective_user)):
             # migración, que en producción ya pasó.
             "«Empezar de cero» está pausado por un rato. Lo frenamos a propósito para "
             "que la app siga andando rápido para todos. Probá de nuevo más tarde.")
-    if not _arrancar_reset(uid, pausa=pausa):
+    if not _arrancar_reset(uid, pausa=pausa, volver_a_la_bienvenida=True):
         # Idempotente: dos clicks no lanzan dos borrados. Devolvemos el que corre.
         return {"ok": True, "estado": "corriendo", "ya_corriendo": True}
     return {"ok": True, "estado": "corriendo"}

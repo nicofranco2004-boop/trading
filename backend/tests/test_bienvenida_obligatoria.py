@@ -441,5 +441,106 @@ class FallaAbierta(_Base):
             conn.close()
 
 
+class EmpezarDeCero(_Base):
+    """«Empezar de cero» vuelve a pedir la bienvenida, tenga la cuenta la edad que
+    tenga. El 25/11 el dueño lo apretó en una cuenta vieja y entró al tablero vacío:
+    la regla miraba sólo la fecha de alta, que el borrado no cambia.
+
+    Por la puerta real: el botón (POST /api/me/reset-data), el borrado en segundo
+    plano hasta que termina, y `/api/auth/me` — lo que pide la app al recargar."""
+
+    VIEJA = "2026-03-10 12:00:00"
+
+    def _empezar_de_cero(self, headers):
+        # Sobre SQLite el botón está cerrado (ver `_empezar_de_cero_abierto`); la
+        # maquinaria es la misma en los dos motores y se abre con la palanca.
+        os.environ["RENDI_RESET_DATA_ENABLED"] = "1"
+        try:
+            r = self.http.post("/api/me/reset-data", headers=headers)
+            self.assertEqual(r.status_code, 200, r.text)
+            limite = time.time() + 20
+            while time.time() < limite:
+                st = self.http.get("/api/me/reset-data/status", headers=headers).json()
+                if st["estado"] != "corriendo":
+                    self.assertEqual(st["estado"], "listo", st)
+                    return
+                time.sleep(0.05)
+            self.fail("el borrado no terminó en 20 s")
+        finally:
+            os.environ.pop("RENDI_RESET_DATA_ENABLED", None)
+
+    def test_cuenta_vieja_empieza_de_cero_y_le_toca_la_bienvenida(self):
+        uid, h = self._cuenta_con_fecha_de_alta(self.VIEJA)
+        self._cuentas.append(uid)
+        self.assertFalse(self._falta(h), "control: una cuenta vieja no está obligada")
+        self._empezar_de_cero(h)
+        self.assertTrue(self._falta(h), "apretó «Empezar de cero»: le toca la bienvenida")
+        # Y sale de ella como cualquiera: subiendo y confirmando un archivo.
+        lote = self._subir(h)
+        self.assertTrue(self._falta(h), "la vista previa sola no destraba")
+        self._confirmar(h, lote)
+        self.assertFalse(self._falta(h))
+        # Si deshace ese import vuelve a faltar, igual que en una cuenta nueva.
+        self._esperar_reconstruccion(uid)
+        self._revertir(h, lote)
+        self.assertTrue(self._falta(h))
+
+    def test_cuenta_nueva_que_ya_cargo_y_empieza_de_cero(self):
+        uid, h = self._registrarse()
+        self._confirmar(h, self._subir(h))
+        self.assertFalse(self._falta(h), "control: ya cargó")
+        self._esperar_reconstruccion(uid)
+        self._empezar_de_cero(h)
+        self.assertEqual(self._estado_de_lotes(uid), [], "el borrado se lleva sus lotes")
+        self.assertTrue(self._falta(h))
+
+    def test_cuenta_vieja_con_cartera_que_no_empezo_de_cero_sigue_igual(self):
+        """La marca la deja el botón, no el hecho de estar vacía: una cuenta vieja
+        vacía que nunca lo apretó no cambia."""
+        uid, h = self._cuenta_con_fecha_de_alta(self.VIEJA)
+        self._cuentas.append(uid)
+        self._revertir(h, self._subir_y_confirmar(h, uid))
+        self.assertFalse(self._falta(h))
+
+    def _subir_y_confirmar(self, h, uid):
+        lote = self._subir(h)
+        self._confirmar(h, lote)
+        self._esperar_reconstruccion(uid)
+        return lote
+
+    def test_el_admin_que_empieza_de_cero_sigue_afuera(self):
+        """Si el admin quedara en la bienvenida no podría entrar a /admin."""
+        uid = self._sql("INSERT INTO users (email, password_hash, approved, email_verified, "
+                        "is_admin, created_at) VALUES (?, 'x', 1, 1, 1, ?)",
+                        (f"jefe-{uuid.uuid4().hex[:10]}@rendi.test", self.VIEJA))
+        h = {"Authorization": f"Bearer {main.create_token(uid)}"}
+        self._empezar_de_cero(h)
+        self.assertFalse(self._falta(h))
+
+    def test_el_borrado_del_panel_de_admin_no_deja_la_marca_y_se_lleva_la_que_habia(self):
+        """«Dejar una cuenta en cero» (admin) borra todas las preferencias: la cuenta
+        vuelve a ser la cuenta vieja que era, sin bienvenida obligatoria."""
+        uid, h = self._cuenta_con_fecha_de_alta(self.VIEJA)
+        self._cuentas.append(uid)
+        self._empezar_de_cero(h)
+        self.assertTrue(self._falta(h), "control: la marca quedó")
+        self.assertTrue(main._arrancar_reset(uid, toda_la_config=True))
+        limite = time.time() + 20
+        while main.reset_my_data_status(uid=uid)["estado"] == "corriendo":
+            self.assertLess(time.time(), limite, "el borrado de admin no terminó")
+            time.sleep(0.05)
+        self.assertEqual(main.reset_my_data_status(uid=uid)["estado"], "listo")
+        self.assertFalse(self._falta(h))
+
+    def test_si_la_marca_falla_el_borrado_termina_igual(self):
+        uid, h = self._cuenta_con_fecha_de_alta(self.VIEJA)
+        self._cuentas.append(uid)
+        with mock.patch.object(bienvenida, "marcar_que_empezo_de_cero",
+                               side_effect=RuntimeError("sin base")), \
+                self.assertLogs(level="ERROR"):
+            self._empezar_de_cero(h)
+        self.assertFalse(self._falta(h), "sin marca, la cuenta vieja queda como estaba")
+
+
 if __name__ == "__main__":
     unittest.main()

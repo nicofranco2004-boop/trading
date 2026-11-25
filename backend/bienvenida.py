@@ -17,7 +17,9 @@ Quiénes quedan afuera
     administrada, `managed_by`, y la que el cliente después reclamó: el vínculo
     'managed' sigue en `advisor_clients` aunque `managed_by` vuelva a NULL);
   · las cuentas creadas ANTES del corte: a quien ya usaba Rendi no se le cambia
-    la entrada de un día para el otro.
+    la entrada de un día para el otro. SALVO que la persona apriete «Empezar de
+    cero»: ahí eligió volver a armar su Rendi, y la bienvenida le corresponde
+    tenga la cuenta la edad que tenga (`marcar_que_empezo_de_cero`).
 
 Qué cuenta como «cargó su historial»
 ────────────────────────────────────
@@ -29,6 +31,19 @@ tenencia confirmadas y la conexión con Wallbit SÍ cuentan: son el archivo o la
 conexión del broker. Si la persona borra todo («Empezar de cero» borra sus lotes)
 o deshace su único import, vuelve a faltar, y la app la lleva de nuevo a la
 bienvenida.
+
+«Empezar de cero» en una cuenta de antes del corte (25/11/2026)
+───────────────────────────────────────────────────────────────
+El dueño apretó «Empezar de cero» en una cuenta vieja y no vio la bienvenida:
+borrar la cartera no cambia la fecha de alta, y la regla miraba sólo esa fecha.
+La promesa («si borra todo, vuelve a la bienvenida») valía únicamente para las
+cuentas nuevas. Ahora el botón deja una marca en las preferencias de la cuenta
+(`config`, clave `CLAVE_EMPEZO_DE_CERO`) y la regla la mira: con la marca, la
+cuenta cuenta como nueva. La marca no se borra al cargar (no hace falta: con un
+lote confirmado la función da False) — así, si después deshace ese import,
+vuelve a faltar, igual que en una cuenta nueva. El borrado «como el primer día»
+del panel de admin limpia todas las preferencias, marca incluida: esa cuenta
+vuelve a ser la cuenta vieja que era.
 
 Falla abierta
 ─────────────
@@ -59,6 +74,28 @@ def _normalizar_fecha(valor) -> str:
 
 _CORTE = _normalizar_fecha(BIENVENIDA_OBLIGATORIA_DESDE)
 
+# La marca que deja «Empezar de cero» (una fila de `config` de la cuenta).
+CLAVE_EMPEZO_DE_CERO = "bienvenida_tras_empezar_de_cero"
+
+
+def marcar_que_empezo_de_cero(conn, uid) -> None:
+    """La persona apretó «Empezar de cero»: desde ahora la bienvenida le
+    corresponde aunque su cuenta sea de antes del corte. Lo llama el borrado
+    (`main._reset_data_worker`) cuando lo arrancó la propia persona. No hace
+    commit: lo hace quien llama."""
+    from datetime import datetime, timezone
+    ahora = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        """INSERT INTO config (key, value, user_id) VALUES (?, ?, ?)
+           ON CONFLICT (key, user_id) DO UPDATE SET value = EXCLUDED.value""",
+        (CLAVE_EMPEZO_DE_CERO, ahora, uid))
+
+
+def _empezo_de_cero(conn, uid) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM config WHERE user_id=? AND key=? LIMIT 1",
+        (uid, CLAVE_EMPEZO_DE_CERO)).fetchone() is not None
+
 
 def falta_cargar_historial(conn, uid) -> bool:
     """True sólo si esta cuenta tiene que pasar por la bienvenida (ver arriba).
@@ -79,9 +116,10 @@ def falta_cargar_historial(conn, uid) -> bool:
         # La fecha va antes que las dos consultas de abajo: sale de la misma fila,
         # y las cuentas de antes del corte —casi todas, por ahora— no necesitan
         # más. `/api/auth/me` corre en cada arranque de la app.
-        if not row["created_at"]:
-            return False
-        if _normalizar_fecha(row["created_at"]) < _CORTE:
+        # Las de antes del corte sólo entran si apretaron «Empezar de cero» (una
+        # consulta más, por clave, y sólo para ellas).
+        nueva = bool(row["created_at"]) and _normalizar_fecha(row["created_at"]) >= _CORTE
+        if not nueva and not _empezo_de_cero(conn, uid):
             return False
 
         from ai import quota as _q
