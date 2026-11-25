@@ -3,7 +3,8 @@ import { X, Upload, AlertTriangle, CheckCircle2, Download, FileText, Loader2, Sa
 import InfoTooltip from '../InfoTooltip'
 import BrokerInstructions, { BROKER_GUIDES, pasosDeLaFoto } from './BrokerInstructions'
 import WallbitConnect from './WallbitConnect'
-import { api, pedirAlServidor } from '../../utils/api'
+import { api } from '../../utils/api'
+import { descargarPlantilla } from '../../utils/descargarPlantilla'
 import { whatsappUrl } from '../../utils/support'
 import { WhatsAppIcon } from '../SupportWhatsAppFab'
 import { track } from '../../utils/track'
@@ -597,20 +598,11 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
     })
   }
 
+  // La descarga vive en utils/descargarPlantilla (la usa también la bienvenida).
   async function downloadTemplate() {
     setError(null)
     try {
-      const res = await pedirAlServidor(`/imports/template?format=${format}`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `rendi_template_${format}.csv`
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      URL.revokeObjectURL(url)
+      await descargarPlantilla(format)
     } catch (ex) {
       setError(`No se pudo descargar el template: ${ex.message}`)
     }

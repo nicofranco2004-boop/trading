@@ -48,7 +48,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowRight, ChevronLeft, FileSpreadsheet, LogOut, Plug, Smartphone, Upload } from 'lucide-react'
+import { ArrowRight, Check, ChevronLeft, Copy, Download, FileSpreadsheet, LogOut, Plug, Smartphone, Upload } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import PageMeta from '../components/PageMeta'
 import MervallE from '../components/ai/MervallE'
@@ -69,6 +69,7 @@ import { track } from '../utils/track'
 import { fmtUsd } from '../utils/format'
 import { whatsappUrl } from '../utils/support'
 import { faltaConfigurar, marcarRecienConfigurado } from '../utils/bienvenidaObligatoria'
+import { descargarPlantilla, PLANILLA_DE_RENDI } from '../utils/descargarPlantilla'
 import { esCelular, plataformaDe, yaInstalada, hayInstalador, instalarAhora } from '../utils/instalarApp'
 import { guardar as guardarEnAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
@@ -565,15 +566,17 @@ function PasoHistorial({ setCara, ir, broker, enCelular, abierto, onAbrir, onCer
   }, [abierto, setCara])
 
   const texto = volvio
-    ? [integracion ? 'Cuando tengas la clave, acá estoy.' : 'Cuando tengas el archivo, acá estoy.']
+    ? [integracion ? 'Cuando tengas la clave, acá estoy.'
+      : planilla ? 'Cuando tengas la planilla completa, acá estoy.'
+        : 'Cuando tengas el archivo, acá estoy.']
     : integracion
       ? [`¡${broker?.nombre}, buenísimo!`,
         'Con Wallbit no hace falta ningún archivo: pegás una clave de solo lectura de tu cuenta y yo traigo tus operaciones.']
       : planilla
         ? [broker?.bloqueada
-            ? `${broker.nombre} todavía no lo leo directo, así que usamos la planilla de Rendi.`
-            : '¡Dale! Usamos la planilla de Rendi.',
-          'Es un Excel simple: una fila por cada compra o venta. En el próximo paso elegís la moneda, le ponés nombre a tu broker y te dejo la planilla de ejemplo.']
+            ? `${broker.nombre} todavía no lo leo directo, pero no pasa nada: te doy la planilla de Rendi.`
+            : '¡Dale! Para un broker que todavía no leo directo, te doy la planilla de Rendi.',
+          'Bajala, anotá tus operaciones y subila acá. Abajo te dejo cómo completarla.']
         : [`¡${broker?.nombre}, buenísimo!`,
           `Necesito el archivo con tus movimientos. Abajo te dejo cómo bajarlo de ${broker?.nombre}; cuando lo tengas, subilo acá.`]
 
@@ -583,11 +586,31 @@ function PasoHistorial({ setCara, ir, broker, enCelular, abierto, onAbrir, onCer
     onAbrir()
   }
 
+  // La planilla se da ACÁ, no dos pantallas más adelante adentro del
+  // importador: quien eligió «Otro» la necesita antes de tener nada que subir.
+  const [bajada, setBajada] = useState(false)
+  const [errorBajada, setErrorBajada] = useState(false)
+  async function bajarPlanilla() {
+    setErrorBajada(false)
+    try {
+      await descargarPlantilla(PLANILLA_DE_RENDI)
+      setBajada(true)
+      setCara('contento')
+      track('bienvenida_planilla_bajada')
+    } catch {
+      setErrorBajada(true)
+    }
+  }
+
   return (
     <div className="space-y-5">
       <GloboDeMervallE key={volvio ? 'volvio' : 'historial'} texto={texto} demora={volvio ? 0 : 900}
         onTermino={() => setCara(c => (c === 'hablando' || c === 'contento' ? 'atento' : c))} />
 
+      {planilla ? (
+        <TarjetaPlanilla bajada={bajada} error={errorBajada} enCelular={enCelular} nombreBroker={broker?.nombre}
+          onBajar={bajarPlanilla} onSubir={abrir} onCambiar={() => ir('broker')} />
+      ) : (
       <div className="bv-entra rounded-xl border border-line bg-bg-1 p-4 sm:p-5 space-y-3" style={{ '--d': '300ms' }}>
         <button type="button" onClick={abrir} className={`${BOTON_1} w-full sm:w-auto`}>
           {integracion
@@ -605,6 +628,7 @@ function PasoHistorial({ setCara, ir, broker, enCelular, abierto, onAbrir, onCer
           <ChevronLeft size={14} strokeWidth={1.75} aria-hidden="true" /> Cambiar de broker
         </button>
       </div>
+      )}
 
       {!planilla && !integracion && broker?.guia && (
         <div className="bv-entra" style={{ '--d': '450ms' }}>
@@ -624,6 +648,173 @@ function PasoHistorial({ setCara, ir, broker, enCelular, abierto, onAbrir, onCer
         />
       )}
     </div>
+  )
+}
+
+// La planilla de Rendi, para quien eligió «Otro / mi broker no está»: bajarla,
+// completarla y subirla, en el orden en que se hace. El botón fuerte es el del
+// paso que toca: antes de bajarla, «Descargar»; después, «Subir». Las columnas
+// son las de la planilla (backend/importing/parsers/generic.py).
+function TarjetaPlanilla({ bajada, error, enCelular, nombreBroker, onBajar, onSubir, onCambiar }) {
+  return (
+    <div className="bv-entra rounded-xl border border-line bg-bg-1 p-4 sm:p-5" style={{ '--d': '300ms' }}>
+      <div className="flex items-center gap-3 mb-4">
+        <span className="w-9 h-9 rounded-lg bg-data-violet/10 text-data-violet flex items-center justify-center flex-shrink-0">
+          <FileSpreadsheet size={18} strokeWidth={1.75} aria-hidden="true" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-[15px] font-medium text-ink-0">La planilla de Rendi</p>
+          <p className="text-[12.5px] text-ink-3">Se abre con Excel o con Google Sheets.</p>
+        </div>
+      </div>
+
+      <ol className="space-y-5">
+        <PasoPlanilla n={1} titulo="Bajala">
+          <button type="button" onClick={onBajar} className={`${bajada ? BOTON_2 : BOTON_1} w-full sm:w-auto mt-2.5`}>
+            {bajada
+              ? <><Check size={17} strokeWidth={2} aria-hidden="true" /> Ya la bajaste · bajarla de nuevo</>
+              : <><Download size={17} strokeWidth={2} aria-hidden="true" /> Descargar la planilla</>}
+          </button>
+          {error && (
+            <p role="alert" className="mt-2 text-[13px] text-rendi-neg">
+              No pude bajar la planilla. Probá de nuevo, o escribinos por WhatsApp y te la mandamos.
+            </p>
+          )}
+        </PasoPlanilla>
+
+        <PasoPlanilla n={2} titulo="Completala con tus operaciones">
+          <p className="mt-1">Una fila por cada compra, venta, depósito o retiro:</p>
+          <ul className="mt-2 space-y-1">
+            <li><span className="text-ink-0 font-medium">fecha</span>: año-mes-día, como 2024-03-15</li>
+            <li><span className="text-ink-0 font-medium">tipo</span>: COMPRA, VENTA, DEPOSITO o RETIRO</li>
+            <li><span className="text-ink-0 font-medium">broker</span>: el nombre de tu broker</li>
+            <li><span className="text-ink-0 font-medium">activo</span>: el código, como GGAL o AAPL</li>
+            <li><span className="text-ink-0 font-medium">cantidad</span>, <span className="text-ink-0 font-medium">precio</span> y <span className="text-ink-0 font-medium">moneda</span> (ARS o USD). En depósitos y retiros va el <span className="text-ink-0 font-medium">monto</span>.</li>
+          </ul>
+          {/* «1.500» la planilla lo lee como 1,5 (un punto solo es decimal:
+              importing/normalizer.parse_number). Se avisa acá y en el pedido. */}
+          <p className="mt-2">Los números, sin puntos de miles: 1500 o 1500.50.</p>
+          <p className="mt-2 text-ink-3">Trae unas filas de ejemplo: borralas y dejá sólo las tuyas.</p>
+          <AyudaConIA nombreBroker={nombreBroker} />
+        </PasoPlanilla>
+
+        <PasoPlanilla n={3} titulo="Subila acá">
+          <button type="button" onClick={onSubir} className={`${bajada ? BOTON_1 : BOTON_2} w-full sm:w-auto mt-2.5`}>
+            <Upload size={17} strokeWidth={2} aria-hidden="true" /> Subir la planilla completa
+          </button>
+        </PasoPlanilla>
+      </ol>
+
+      {enCelular && (
+        <p className="mt-5 flex items-start gap-2 text-[13px] text-ink-2 leading-snug">
+          <Smartphone size={15} strokeWidth={1.75} className="flex-shrink-0 mt-0.5 text-data-violet" aria-hidden="true" />
+          <span>La planilla es más cómoda de completar en la compu. Si estás en el celular, entrá a rendi.finance desde la compu: te espero acá.</span>
+        </p>
+      )}
+      <button type="button" onClick={onCambiar}
+        className="mt-4 inline-flex items-center gap-1 text-[13px] text-ink-3 hover:text-ink-1 transition-colors">
+        <ChevronLeft size={14} strokeWidth={1.75} aria-hidden="true" /> Cambiar de broker
+      </button>
+    </div>
+  )
+}
+
+// El pedido para que una IA (ChatGPT, Gemini, Claude…) pase el archivo del
+// broker a la planilla de Rendi. Las reglas son las que la planilla acepta de
+// verdad: las columnas de importing/parsers/generic.GENERIC_HEADERS, los tipos de
+// importing/schema (OP_TYPE_ALIASES) y los números de normalizer.parse_number,
+// que lee «1.500» como 1,5: por eso se piden sin separador de miles.
+export function pedidoParaLaIA(nombreBroker) {
+  const broker = nombreBroker
+    ? `siempre "${nombreBroker}"`
+    : 'el nombre de mi broker, igual en todas las filas'
+  return [
+    `Te paso dos archivos: el de mi broker${nombreBroker ? ` (${nombreBroker})` : ''}, con mis operaciones, y la planilla de Rendi (planilla-de-rendi.csv).`,
+    '',
+    'Convertí mis operaciones al formato de la planilla de Rendi y devolveme un archivo CSV listo para descargar.',
+    '',
+    'Reglas:',
+    '1. Usá exactamente estas columnas, en este orden: fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas',
+    '2. Una fila por operación. Borrá las filas de ejemplo que trae la planilla.',
+    '3. fecha: año-mes-día, por ejemplo 2024-03-15.',
+    '4. tipo: COMPRA, VENTA, DEPOSITO, RETIRO, DIVIDENDO, INTERES, COMISION, CONVERSION_ARS_USD (pasé pesos a dólares) o CONVERSION_USD_ARS (pasé dólares a pesos).',
+    `5. broker: ${broker}.`,
+    '6. activo: el código del activo (por ejemplo GGAL, AAPL o AL30). Vacío en depósitos, retiros y conversiones.',
+    '7. En compras y ventas: cantidad (siempre positiva) y precio por unidad. En depósitos, retiros, dividendos, intereses y comisiones: el monto (positivo). En conversiones: monto en pesos, monto_usd en dólares y tc con el tipo de cambio.',
+    '8. comisiones: lo que cobró el broker en esa compra o venta (comisión más impuestos), si figura.',
+    '9. moneda: ARS o USD.',
+    '10. Números sin separador de miles y con punto decimal: 1500.50, nunca 1.500,50.',
+    '11. Si no entendés alguna operación, no la inventes: dejala afuera y listala al final de tu respuesta para que la revise yo.',
+  ].join('\n')
+}
+
+// Atajo para quien ya tiene el archivo de su broker aunque Rendi no lo lea: se
+// lo pasa a una IA junto con la planilla y le pega este pedido. Lo hace la
+// persona, en la IA que elija; Rendi recibe sólo la planilla que suba.
+function AyudaConIA({ nombreBroker }) {
+  const [abierto, setAbierto] = useState(false)
+  const [copia, setCopia] = useState(null)          // null | 'ok' | 'fallo'
+  const pedido = pedidoParaLaIA(nombreBroker)
+
+  async function copiar() {
+    setAbierto(true)
+    try {
+      await navigator.clipboard.writeText(pedido)
+      setCopia('ok')
+      track('bienvenida_pedido_ia_copiado')
+    } catch {
+      // Sin permiso para el portapapeles (http, navegador viejo): el texto ya
+      // está a la vista para copiarlo a mano.
+      setCopia('fallo')
+    }
+  }
+
+  return (
+    <div className="mt-4 rounded-xl border border-data-violet/30 bg-data-violet/[0.05] p-3.5 sm:p-4">
+      <p className="text-[14px] font-medium text-ink-0">¿Tenés el archivo de tu broker? Que lo pase una IA.</p>
+      <p className="mt-1">
+        Subile a ChatGPT, Gemini o Claude el archivo de tu broker y la planilla de Rendi, y pegale este pedido:
+        te devuelve la planilla completa.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" onClick={() => setAbierto(a => !a)} aria-expanded={abierto}
+          className={`${BOTON} h-10 px-4 text-[14px] bg-bg-1 text-ink-0 border border-line-2 hover:border-data-violet/60`}>
+          {abierto ? 'Ocultar el pedido' : 'Acá tenés el pedido para la IA'}
+        </button>
+        <button type="button" onClick={copiar}
+          className={`${BOTON} h-10 px-4 text-[14px] bg-data-violet hover:bg-rendi-violet-hover text-white`}>
+          {copia === 'ok'
+            ? <><Check size={16} strokeWidth={2} aria-hidden="true" /> ¡Copiado!</>
+            : <><Copy size={16} strokeWidth={2} aria-hidden="true" /> Copiar el pedido</>}
+        </button>
+      </div>
+      <p role="status" className="mt-2 text-[13px] empty:hidden">
+        {copia === 'ok' && <span className="text-rendi-pos">Listo: pegalo en la IA junto con los dos archivos.</span>}
+        {copia === 'fallo' && <span className="text-ink-2">No pude copiarlo solo: seleccioná el texto de abajo y copialo.</span>}
+      </p>
+      {abierto && (
+        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-bg-0 p-3 text-[12.5px] leading-relaxed text-ink-1 font-sans select-all">
+          {pedido}
+        </pre>
+      )}
+      <p className="mt-2 text-[12px] text-ink-3">
+        Lo hacés vos, en la IA que elijas: tus operaciones las ve esa IA. Rendi recibe sólo la planilla que subas, y la revisás antes de confirmar.
+      </p>
+    </div>
+  )
+}
+
+function PasoPlanilla({ n, titulo, children }) {
+  return (
+    <li className="flex gap-3">
+      <span className="w-6 h-6 rounded-full border border-data-violet/40 text-data-violet text-[12px] font-medium tabular flex items-center justify-center flex-shrink-0 mt-0.5">
+        {n}
+      </span>
+      <div className="min-w-0 flex-1 text-[13.5px] text-ink-2 leading-relaxed">
+        <p className="text-[14.5px] font-medium text-ink-0">{titulo}</p>
+        {children}
+      </div>
+    </li>
   )
 }
 

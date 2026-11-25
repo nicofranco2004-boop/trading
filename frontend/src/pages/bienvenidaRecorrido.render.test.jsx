@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, enActo, clic, buscarBoton, texto } from '../testing/navegadorMinimo'
 
@@ -40,6 +43,8 @@ vi.mock('../components/InvestorProfileForm', () => ({
 }))
 vi.mock('../components/InstalarAppModal', () => ({ default: ({ open }) => (open ? h('div', { 'data-instalar': '' }) : null) }))
 const eventos = []
+const descargarPlantilla = vi.fn(async () => {})
+vi.mock('../utils/descargarPlantilla', async (o) => ({ ...(await o()), descargarPlantilla: (...a) => descargarPlantilla(...a) }))
 vi.mock('../utils/track', async (o) => ({ ...(await o()), track: (ev) => { eventos.push(ev) } }))
 // El importador: una marca con la plataforma que le pasan y tres botones: uno
 // que confirma (como el real al importar), uno que conecta Wallbit (como
@@ -52,13 +57,13 @@ vi.mock('../components/import/ImportWizard', async (o) => ({
     h('button', { type: 'button', onClick: () => onClose?.() }, 'wizard-cerrar')),
 }))
 
-let RR, Onboarding, pasoQueVa, brokersDeLaBienvenida, urlDe, local, sesion, navegadorDeNode, refreshPlanFeatures
+let RR, Onboarding, pasoQueVa, brokersDeLaBienvenida, urlDe, pedidoParaLaIA, local, sesion, navegadorDeNode, refreshPlanFeatures
 beforeAll(async () => {
   ;({ local, sesion } = instalarNavegadorMinimo())
   navegadorDeNode = globalThis.navigator
   RR = await import('react-router-dom')
   ;({ refreshPlanFeatures } = await import('../hooks/usePlanFeatures'))
-  ;({ default: Onboarding, pasoQueVa, brokersDeLaBienvenida, urlDe } = await import('./Onboarding'))
+  ;({ default: Onboarding, pasoQueVa, brokersDeLaBienvenida, urlDe, pedidoParaLaIA } = await import('./Onboarding'))
 })
 afterAll(() => { vi.unstubAllGlobals() })
 
@@ -67,6 +72,7 @@ afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
   eventos.length = 0
+  descargarPlantilla.mockClear()
   refreshUser.mockReset()
   refreshUser.mockImplementation(async () => auth.user)
   updateUser.mockClear()
@@ -165,6 +171,33 @@ describe('1 · hola: Mervall-E saluda y cuenta la prueba con los días del servi
   })
 })
 
+describe('el pedido para la IA', () => {
+  it('pide exactamente lo que la planilla acepta: sus columnas, sus tipos y números sin puntos de miles', () => {
+    const p = pedidoParaLaIA('Interactive Brokers')
+    expect(p).toContain('fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas')
+    expect(p).toContain('COMPRA, VENTA, DEPOSITO, RETIRO')
+    expect(p).toContain('CONVERSION_ARS_USD')
+    expect(p).toContain('1500.50, nunca 1.500,50')
+    expect(p).toContain('siempre "Interactive Brokers"')
+    expect(p).toContain('no la inventes')
+  })
+  it('las columnas son las del lector de la planilla (el servidor), no una copia que se desactualice', () => {
+    const aqui = dirname(fileURLToPath(import.meta.url))
+    const py = readFileSync(resolve(aqui, '../../../backend/importing/parsers/generic.py'), 'utf8')
+    const bloque = py.match(/GENERIC_HEADERS = \[([\s\S]*?)\]/)
+    expect(bloque, 'GENERIC_HEADERS en generic.py').toBeTruthy()
+    const columnas = [...bloque[1].matchAll(/"([a-z_]+)"/g)].map(m => m[1])
+    expect(columnas.length).toBeGreaterThan(5)
+    expect(pedidoParaLaIA(null)).toContain(columnas.join(','))
+  })
+  it('sin nombre de broker, no deja un hueco', () => {
+    const p = pedidoParaLaIA(null)
+    expect(p).toContain('el nombre de mi broker, igual en todas las filas')
+    expect(p).not.toContain('undefined')
+    expect(p).not.toContain('null')
+  })
+})
+
 describe('2-3 · broker e historial', () => {
   it('la grilla es la del importador (sin el genérico) + «Otro»; elegir uno abre el asistente con su plataforma', async () => {
     await abrir()
@@ -184,13 +217,64 @@ describe('2-3 · broker e historial', () => {
     expect(atributo('data-wizard')).toBe('cocos')
   })
 
-  it('«Otro / mi broker no está» va a la planilla de Rendi', async () => {
+  it('«Otro / mi broker no está» le da la planilla de Rendi ahí mismo: bajarla, completarla, subirla', async () => {
     await abrir()
     await tocar('Empecemos')
     await tocar('Otro / mi broker no está')
-    expect(todo()).toContain('Usamos la planilla de Rendi')
-    await tocar('Subir el archivo')
+    expect(todo()).toContain('te doy la planilla de Rendi')
+    expect(todo()).toContain('Completala con tus operaciones')
+    expect(todo()).toContain('COMPRA, VENTA, DEPOSITO o RETIRO')
+    expect(todo()).toContain('borralas y dejá sólo las tuyas')
+    // No es el camino de un broker: no hay «Subir el archivo» ni su guía.
+    expect(buscarBoton(montado.contenedor, 'Subir el archivo')).toBeNull()
+    expect(atributo('data-wizard')).toBeNull()
+    await tocar('Descargar la planilla')
+    expect(descargarPlantilla).toHaveBeenCalledWith('rendi_generic')
+    expect(eventos).toContain('bienvenida_planilla_bajada')
+    expect(todo()).toContain('Ya la bajaste')
+    await tocar('Subir la planilla completa')
+    expect(eventos).toContain('bienvenida_subir_abierto')
     expect(atributo('data-wizard')).toBe('personal')
+  })
+
+  it('ofrece el pedido para que una IA arme la planilla: se ve y se copia con un toque', async () => {
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal('navigator', { userAgent: 'node', clipboard: { writeText } })
+    await abrir()
+    await tocar('Empecemos')
+    await tocar('Otro / mi broker no está')
+    expect(todo()).toContain('Que lo pase una IA')
+    expect(todo()).not.toContain('Reglas:')
+    await tocar('Acá tenés el pedido para la IA')
+    expect(todo()).toContain('Reglas:')
+    await tocar('Copiar el pedido')
+    expect(writeText).toHaveBeenCalledTimes(1)
+    expect(writeText.mock.calls[0][0]).toBe(pedidoParaLaIA(null))
+    expect(eventos).toContain('bienvenida_pedido_ia_copiado')
+    expect(todo()).toContain('¡Copiado!')
+    expect(todo()).toContain('pegalo en la IA junto con los dos archivos')
+  })
+
+  it('si el navegador no deja copiar, lo dice y deja el pedido a la vista para copiarlo a mano', async () => {
+    vi.stubGlobal('navigator', { userAgent: 'node', clipboard: { writeText: vi.fn(async () => { throw new Error('no') }) } })
+    await abrir()
+    await tocar('Empecemos')
+    await tocar('Otro / mi broker no está')
+    await tocar('Copiar el pedido')
+    expect(todo()).toContain('No pude copiarlo solo')
+    expect(todo()).toContain('Reglas:')
+    expect(eventos).not.toContain('bienvenida_pedido_ia_copiado')
+  })
+
+  it('si la planilla no se puede bajar, lo dice y no cuenta la descarga', async () => {
+    descargarPlantilla.mockImplementationOnce(async () => { throw new Error('HTTP 500') })
+    await abrir()
+    await tocar('Empecemos')
+    await tocar('Otro / mi broker no está')
+    await tocar('Descargar la planilla')
+    expect(todo()).toContain('No pude bajar la planilla')
+    expect(eventos).not.toContain('bienvenida_planilla_bajada')
+    expect(todo()).not.toContain('Ya la bajaste')
   })
 
   it('cerrar el asistente sin confirmar: se queda, y Mervall-E espera', async () => {
@@ -406,7 +490,7 @@ describe('Wallbit: se conecta en vez de subir un archivo', () => {
     await abrir()
     await tocar('Empecemos')
     await tocar('Otro / mi broker no está')
-    await tocar('Subir el archivo')
+    await tocar('Subir la planilla completa')
     // Conectó Wallbit desde la tarjeta de integración del Paso 0 (o lo que
     // exista mañana): la página no se enteró, pero el servidor sí.
     refreshUser.mockImplementationOnce(async () => ({ ...auth.user, falta_cargar_historial: false }))

@@ -117,6 +117,8 @@ export const EVENTOS = {
   // forma de ver en qué paso se va la gente. Van en el orden del recorrido.
   bienvenida_hola: { label: 'Vio el saludo de Mervall-E', donde: 'Bienvenida', tipo: 'vista' },
   bienvenida_broker_elegido: { label: 'Eligió su broker', donde: 'Bienvenida' },
+  bienvenida_planilla_bajada: { label: 'Bajó la planilla de Rendi («Otro / mi broker no está»)', donde: 'Bienvenida' },
+  bienvenida_pedido_ia_copiado: { label: 'Copió el pedido para que una IA le arme la planilla', donde: 'Bienvenida' },
   bienvenida_subir_abierto: { label: 'Abrió la subida del archivo', donde: 'Bienvenida' },
   bienvenida_historial_cargado: { label: 'Confirmó su primer archivo', donde: 'Bienvenida' },
   bienvenida_cartera_vista: { label: 'Vio «tu cartera vale…»', donde: 'Bienvenida', tipo: 'vista' },
