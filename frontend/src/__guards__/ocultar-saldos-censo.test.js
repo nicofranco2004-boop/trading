@@ -54,7 +54,7 @@ export const RUTAS = {
     'fx-rates', 'cedears', 'bond-indices', 'liquidez', 'sections'],
   // Tu cuenta, tus preferencias, la IA, el panel del dueño de Rendi: no son saldos.
   cuenta: ['admin', 'me', 'auth', 'config', 'billing', 'plan', 'push', 'preferencias', 'feedback', 'alerts', 'watchlist',
-    'brokers', 'tesis', 'ai'],
+    'brokers', 'tesis', 'ai', 'whatsapp'],
   // Una ruta que no existe en el servidor: la usa una prueba del modo demo.
   prueba: ['algo-que-el-demo-no-conoce'],
 }

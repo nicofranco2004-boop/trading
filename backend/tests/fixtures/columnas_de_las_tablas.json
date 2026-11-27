@@ -822,6 +822,23 @@
   "nombre",
   "user_id"
  ],
+ "whatsapp_mensajes": [
+  "creado_at",
+  "direccion",
+  "telefono",
+  "texto",
+  "tipo",
+  "user_id",
+  "wa_id"
+ ],
+ "whatsapp_vinculos": [
+  "codigo",
+  "codigo_vence_at",
+  "creado_at",
+  "telefono",
+  "user_id",
+  "vinculado_at"
+ ],
  "yfinance_cache": [
   "fetched_at",
   "kind",

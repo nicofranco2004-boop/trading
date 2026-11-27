@@ -107,6 +107,8 @@ export const EVENTOS = {
   dolar_valuacion_cambiado: { label: 'Cambió MEP / CCL', donde: 'Configuración' },
   montos_ocultos_cambiado: { label: 'Ocultó/mostró los montos', donde: 'Barra lateral' },
   config_tab_viewed: { label: 'Cambió de pestaña', donde: 'Configuración', tipo: 'vista' },
+  whatsapp_codigo_generado: { label: 'Pidió el código para conectar WhatsApp', donde: 'Configuración' },
+  whatsapp_link_abierto: { label: 'Abrió WhatsApp con el código', donde: 'Configuración' },
   recommendation_sent: { label: 'Recomendó Rendi', donde: 'Recomendar' },
   recommendation_email_copied: { label: 'Copió el mail para recomendar', donde: 'Recomendar' },
   instalar_app_abierto: { label: 'Abrió «Descargar app»', donde: 'Descargar app', tipo: 'vista' },

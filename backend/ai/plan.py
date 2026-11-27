@@ -43,6 +43,7 @@ FEATURE_IDS = {
     "export.csv",                   # Export CSV de operaciones / posiciones / monthly
     "tax.helper",                   # Ayuda para impuestos (ARCA): próximamente, todavía no construido
     "alerts.pct_move",              # Alertas de % sobre la cartera ("cae/sube X%") — Plus+
+    "ai.whatsapp",                 # El bot de WhatsApp (whatsapp.py) — Pro (decisión 26/11/2026)
 }
 
 # Límites + accesos por tier.
@@ -61,6 +62,7 @@ PLAN_LIMITS = {
             "export.csv": False,
             "tax.helper": False,                   # próximamente (no construido)
             "alerts.pct_move": False,              # el desbloqueo de funcionalidad = Plus
+            "ai.whatsapp": False,                 # Pro-only
         },
     },
     # Plus — **Rendi entero, sin el analista** (decisión de producto 2026-10-15).
@@ -90,6 +92,7 @@ PLAN_LIMITS = {
             "export.csv": True,
             "tax.helper": False,                   # Pro-only (cuando exista)
             "alerts.pct_move": True,               # ★ el desbloqueo Free→Plus
+            "ai.whatsapp": False,                 # Pro-only — es IA
         },
     },
     "pro": {
@@ -104,6 +107,7 @@ PLAN_LIMITS = {
             "export.csv": True,
             "tax.helper": False,                   # próximamente (todavía no construido)
             "alerts.pct_move": True,
+            "ai.whatsapp": True,                  # ★ el bot de WhatsApp (whatsapp.py)
         },
     },
     # Advisor — Plan Asesor Financiero. Para su PROPIA cuenta el asesor tiene
@@ -122,6 +126,7 @@ PLAN_LIMITS = {
             "export.csv": True,
             "tax.helper": False,
             "alerts.pct_move": True,
+            "ai.whatsapp": False,                 # la cuenta propia del asesor no tiene cartera
         },
     },
     "admin": {
@@ -136,6 +141,7 @@ PLAN_LIMITS = {
             "export.csv": True,
             "tax.helper": True,                    # admin ve todo, incluso si Pro no lo tiene aún
             "alerts.pct_move": True,
+            "ai.whatsapp": True,
         },
     },
 }

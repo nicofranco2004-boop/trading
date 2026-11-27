@@ -6,7 +6,7 @@
 //   • Cuenta          → Datos + Importar + Contraseña + Eliminar cuenta
 //   • Planes          → PlanHero (plan actual, uso IA, gestión de suscripción)
 //   • Tipos de cambio → Moneda de valuación (riel) + Cotizaciones (FX)
-//   • Notificaciones  → placeholder "Próximamente"
+//   • WhatsApp        → conectar el número al bot de Rendi (Pro; WhatsAppPanel)
 //   • Soporte         → WhatsApp directo
 //
 // Desktop: PageHeader + sub-sidebar vertical + contenido de la sección activa.
@@ -18,7 +18,7 @@ import {
   RefreshCw, Lock, Upload, History, KeyRound, Sparkles, Zap, Loader2,
   CheckCircle2, AlertCircle, Trash2, UserRound, CreditCard, ArrowLeftRight,
   LifeBuoy, ChevronRight, ChevronLeft, Mail, CalendarClock, Check, ClipboardList,
-  RotateCcw,
+  RotateCcw, MessageCircle, Copy,
 } from 'lucide-react'
 import { api } from '../utils/api'
 import { useToast } from '../components/Toast'
@@ -61,6 +61,7 @@ const TABS = [
   { id: 'test',           label: 'Test de inversor', icon: ClipboardList,  sub: 'Contexto para Mervall-E AI' },
   { id: 'planes',         label: 'Planes',           icon: CreditCard,     sub: 'Tu plan y uso de IA' },
   { id: 'fx',             label: 'Tipos de cambio',  icon: ArrowLeftRight, sub: 'Moneda de valuación y cotizaciones' },
+  { id: 'whatsapp',       label: 'WhatsApp',         icon: MessageCircle,  sub: 'Hablá con Rendi desde tu celular' },
   { id: 'soporte',        label: 'Soporte',          icon: LifeBuoy,       sub: 'WhatsApp y ayuda' },
 ]
 const VALID_TAB_IDS = new Set(TABS.map(t => t.id))
@@ -242,6 +243,189 @@ function AdvisorAccessPanel() {
   )
 }
 
+// ─── WhatsApp: conectar el número al bot ─────────────────────────────────────
+// El bot es OTRA puerta al mismo Mervall-E AI de la app (backend/whatsapp.py):
+// lee la cartera y anota operaciones con confirmación. La vinculación es por
+// CÓDIGO que viaja en un WhatsApp: que llegue desde un número prueba a la vez que
+// la persona entró a la cuenta (vio el código) y que tiene ese teléfono (Meta
+// garantiza el origen). Nunca se le pide que tipee su número.
+//
+// Estados de /whatsapp/estado:
+//   encendido=false → el bot no está disponible todavía (interruptor de /admin)
+//   permitido=false → el plan no lo incluye (Pro)
+//   vinculado=true  → muestra el número tapado y «Desconectar»
+//   codigo          → el código vigente (15 min) con el link que abre WhatsApp
+
+export function WhatsAppPanel() {
+  const toast = useToast()
+  const [estado, setEstado] = useState(null)       // null = cargando
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const cargar = () => api.get('/whatsapp/estado').then(setEstado).catch(() => setEstado({ error: true }))
+  useEffect(() => { cargar() }, [])
+
+  // Mientras hay un código vigente, se vuelve a preguntar cada 4 s: así la
+  // pantalla pasa sola a «conectado» cuando el mensaje llega al servidor.
+  useEffect(() => {
+    if (!estado?.codigo || estado?.vinculado) return
+    const id = setInterval(cargar, 4000)
+    return () => clearInterval(id)
+  }, [estado?.codigo, estado?.vinculado])
+
+  const pedirCodigo = async () => {
+    setBusy(true); setError('')
+    try {
+      setEstado(await api.post('/whatsapp/codigo'))
+      track('whatsapp_codigo_generado')
+    } catch (e) {
+      setError(e.message || 'No se pudo generar el código')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const desconectar = async () => {
+    if (!await confirmar('¿Desconectar tu WhatsApp? Rendi deja de contestarte por ahí y borra la conversación guardada.')) return
+    setBusy(true)
+    try {
+      setEstado(await api.delete('/whatsapp/vinculo'))
+      toast.push('WhatsApp desconectado')
+    } catch (e) {
+      toast.push(e.message || 'No se pudo desconectar', { type: 'error' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const copiar = async (texto) => {
+    try { await navigator.clipboard.writeText(texto); toast.push('Código copiado') }
+    catch { toast.push('No se pudo copiar', { type: 'error' }) }
+  }
+
+  const header = (
+    <header className="px-4 py-3 border-b border-line">
+      <h2 className="text-sm font-medium text-ink-0">Rendi por WhatsApp</h2>
+      <p className="text-xs text-ink-3 mt-0.5">
+        Preguntale cómo viene tu cartera o dictale una compra desde el celular. Antes de anotar
+        nada te pide que confirmes, y siempre podés deshacer.
+      </p>
+    </header>
+  )
+
+  if (estado === null) {
+    return <Panel padding="none">{header}<div className="px-4 py-4 text-xs text-ink-3">Cargando…</div></Panel>
+  }
+  if (estado.error) {
+    return <Panel padding="none">{header}<div className="px-4 py-4 text-xs text-ink-3">No se pudo cargar. Probá de nuevo en un momento.</div></Panel>
+  }
+  if (!estado.encendido) {
+    return (
+      <Panel padding="none">
+        {header}
+        <div className="px-4 py-4 text-sm text-ink-2">Todavía no está disponible. Te avisamos cuando lo prendamos.</div>
+      </Panel>
+    )
+  }
+  if (!estado.permitido) {
+    return (
+      <Panel padding="none">
+        {header}
+        <div className="px-4 py-4 space-y-2">
+          <p className="text-sm text-ink-2">Está incluido en el plan Pro.</p>
+          <Link to="/planes" className="inline-flex text-xs font-medium text-white bg-data-violet hover:bg-data-violet/85 rounded px-3 py-1.5 transition-colors">
+            Ver planes
+          </Link>
+        </div>
+      </Panel>
+    )
+  }
+  if (estado.vinculado) {
+    return (
+      <Panel padding="none">
+        {header}
+        <div className="px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
+            <p className="text-sm text-ink-0 font-medium inline-flex items-center gap-1.5">
+              <CheckCircle2 size={14} className="text-rendi-pos" /> Conectado al número {estado.telefono}
+            </p>
+            <p className="text-xs text-ink-3 mt-0.5">
+              Escribile «cómo vengo» o «compré 10 GGAL a 8.500 en Cocos». Las consultas descuentan del
+              mismo cupo semanal que la app.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={desconectar}
+            disabled={busy}
+            className="flex-shrink-0 text-xs font-medium text-rendi-neg hover:bg-rendi-neg/[0.06] border border-rendi-neg/30 rounded px-3 py-1.5 transition-colors disabled:opacity-50"
+          >
+            {busy ? 'Desconectando…' : 'Desconectar'}
+          </button>
+        </div>
+      </Panel>
+    )
+  }
+  return (
+    <Panel padding="none">
+      {header}
+      <div className="px-4 py-4 space-y-3">
+        <p className="text-xs text-ink-2">
+          Al conectarlo, tus mensajes y las respuestas pasan por WhatsApp, o sea por Meta, igual que
+          cualquier chat de WhatsApp. Está explicado en nuestra{' '}
+          <Link to="/privacidad" className="text-data-violet hover:underline">política de privacidad</Link>.
+        </p>
+        {estado.codigo ? (
+          <div className="space-y-3">
+            <p className="text-sm text-ink-1">
+              Mandale este código a Rendi desde tu WhatsApp. Dura {estado.vence_min} minutos.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-lg text-ink-0 font-medium tracking-wider tabular select-all">{estado.texto_codigo}</span>
+              <button
+                type="button"
+                onClick={() => copiar(estado.texto_codigo)}
+                className="inline-flex items-center gap-1 text-xs font-medium text-ink-2 hover:text-ink-0 border border-line rounded px-2 py-1 transition-colors"
+              >
+                <Copy size={12} /> Copiar
+              </button>
+            </div>
+            {estado.link ? (
+              <a
+                href={estado.link}
+                target="_blank"
+                rel="noreferrer noopener"
+                onClick={() => track('whatsapp_link_abierto')}
+                className="inline-flex items-center gap-1.5 text-xs bg-[rgb(var(--whatsapp))]/10 hover:bg-[rgb(var(--whatsapp))]/15 text-[rgb(var(--whatsapp))] border border-[rgb(var(--whatsapp))]/30 px-3 py-2 rounded transition-colors"
+              >
+                <WhatsAppIcon size={13} />
+                Abrir WhatsApp con el código
+              </a>
+            ) : (
+              <p className="text-xs text-ink-3">Falta configurar el número del bot: avisanos por Soporte.</p>
+            )}
+            <p className="text-xs text-ink-3 inline-flex items-center gap-1.5">
+              <Loader2 size={12} className="animate-spin" /> Esperando tu mensaje…
+            </p>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={pedirCodigo}
+            disabled={busy}
+            className="text-xs font-medium text-white bg-data-violet hover:bg-data-violet/85 rounded px-3 py-1.5 transition-colors disabled:opacity-50"
+          >
+            {busy ? 'Generando…' : 'Conectar mi WhatsApp'}
+          </button>
+        )}
+        {error && (
+          <p className="text-xs text-rendi-neg inline-flex items-center gap-1"><AlertCircle size={12} /> {error}</p>
+        )}
+      </div>
+    </Panel>
+  )
+}
+
 // ─── Workspace key-value row ─────────────────────────────────────────────────
 
 function MetaRow({ label, children, last }) {
@@ -303,7 +487,8 @@ export default function Config() {
   // PROPIA del asesor (prefijos exentos) mientras "Tipos de cambio" opera
   // sobre el cliente. En contexto mostramos SOLO lo que configura al cliente.
   const { clientCtx } = useAdvisorContext()
-  const CTX_HIDDEN_TABS = new Set(['cuenta', 'test', 'planes'])
+  // 'whatsapp' también: el número se vincula a la cuenta PROPIA, no a la del cliente.
+  const CTX_HIDDEN_TABS = new Set(['cuenta', 'test', 'planes', 'whatsapp'])
   const visibleTabs = clientCtx ? TABS.filter(t => !CTX_HIDDEN_TABS.has(t.id)) : TABS
 
   const urlTab = searchParams.get('tab')
@@ -883,6 +1068,7 @@ export default function Config() {
       case 'test':           return renderPerfil()
       case 'planes':         return renderPlanes()
       case 'fx':             return renderFx()
+      case 'whatsapp':       return <WhatsAppPanel />
       case 'soporte':        return renderSoporte()
       case 'cuenta':
       default:               return renderCuenta()

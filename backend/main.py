@@ -32,6 +32,11 @@ from ai.voz import VOZ
 # un deploy sin OPENAI_API_KEY arranca igual (el endpoint responde 503).
 from ai import tts
 from ai import preguntas as _preguntas
+# La puerta de WhatsApp al chat (firma de Meta, lectura de avisos, envío) y el
+# resumen de la foto de la cartera, que desde el bot se calcula en el servidor
+# para las dos puertas. Ninguno de los dos importa main: sin ciclo.
+import whatsapp as _wa
+import foto_cartera as _foto
 from pricing import letras as _letras_mod
 from collections import defaultdict
 
@@ -644,6 +649,15 @@ def _rate_limit_ip(request: Request) -> str:
 def _check_rate_limit(request: Request, max_calls: int, window_seconds: int, suffix: str = ""):
     ip = _rate_limit_ip(request)
     key = f"{ip}|{suffix}" if suffix else ip
+    if not _rate_limit_clave(key, max_calls, window_seconds):
+        raise HTTPException(429, "Demasiados intentos. Esperá un momento.")
+
+
+def _rate_limit_clave(key: str, max_calls: int, window_seconds: int) -> bool:
+    """El freno por llave, sin pedido HTTP: ¿esta llamada entra en el cupo?
+    (True = pasa y se anota; False = ya se pasó.) `_check_rate_limit` lo usa con
+    la IP; el bot de WhatsApp, con el teléfono — ahí no hay pedido HTTP de la
+    persona, el que llama es Meta."""
     now = time.time()
     # Limpieza global periódica si crece demasiado
     if len(_rate_store) > _RATE_STORE_MAX_KEYS:
@@ -655,8 +669,9 @@ def _check_rate_limit(request: Request, max_calls: int, window_seconds: int, suf
     timestamps = _rate_store[key]
     _rate_store[key] = [t for t in timestamps if now - t < window_seconds]
     if len(_rate_store[key]) >= max_calls:
-        raise HTTPException(429, "Demasiados intentos. Esperá un momento.")
+        return False
     _rate_store[key].append(now)
+    return True
 
 
 # ─── DB helpers ──────────────────────────────────────────────────────────────
@@ -3500,6 +3515,32 @@ def init_db():
                 cambiado_at TEXT,
                 cambiado_por INTEGER             -- users.id del admin
             );
+            -- WhatsApp (whatsapp.py): qué número es de qué cuenta. Una fila por
+            -- cuenta; `telefono` NULL mientras el código generado en la app no
+            -- llegó desde un WhatsApp. Un teléfono, una cuenta (UNIQUE).
+            CREATE TABLE IF NOT EXISTS whatsapp_vinculos (
+                user_id INTEGER PRIMARY KEY,
+                telefono TEXT UNIQUE,            -- sólo dígitos con código de país
+                codigo TEXT,                     -- el pendiente ('RENDI ABC123'), NULL una vez usado
+                codigo_vence_at TEXT,
+                creado_at TEXT DEFAULT (datetime('now')),
+                vinculado_at TEXT
+            );
+            -- Los mensajes que pasaron por el bot, en los dos sentidos. Dos
+            -- trabajos: (1) `wa_id` es la llave contra DUPLICADOS: Meta reenvía
+            -- el mismo aviso si el servidor tarda en decir «recibido», y sin
+            -- esto un «sí» repetido anotaría la operación dos veces; (2) es la
+            -- memoria de la conversación (en la app la guarda el navegador).
+            CREATE TABLE IF NOT EXISTS whatsapp_mensajes (
+                wa_id TEXT PRIMARY KEY,          -- id de Meta ('wamid…'); 'out:…' para los nuestros
+                telefono TEXT NOT NULL,
+                user_id INTEGER,                 -- NULL si el número no estaba vinculado
+                direccion TEXT NOT NULL,         -- 'in' | 'out'
+                tipo TEXT,                       -- 'texto' | 'boton' | 'audio' | 'imagen' | 'documento' | 'otro'
+                texto TEXT,
+                creado_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_whatsapp_mensajes_user ON whatsapp_mensajes(user_id, creado_at);
         """)
 
         # Tu tesis: por qué compraste un activo (tesis.py). Una por (usuario,
@@ -6401,6 +6442,9 @@ _RESET_ADMIN_EXTRA_TABLES = (
     #   (`user_broker_credentials`, broker='iol_lab'); quedaban sus resultados y
     #   la bitácora de cuánto vivía esa clave, que sin la clave no miden nada.
     "iol_lab_runs", "iol_lab_token_log",
+    # La conversación con el bot de WhatsApp habla de la cartera que se borra:
+    # «como la primera vez» arranca sin memoria de la charla anterior.
+    "whatsapp_mensajes",
 )
 
 # Tablas con `user_id` que el reset de admin NO borra, y por qué. No es una
@@ -6416,6 +6460,8 @@ _RESET_ADMIN_CONSERVADAS = {
     "ai_tool_usage": "contador de la cuota de IA: borrarlo es regalarse cuota",
     "push_subscriptions": "el permiso de notificaciones del DISPOSITIVO: sin él, no hay push "
                           "hasta que lo vuelva a dar, sin aviso",
+    "whatsapp_vinculos": "el número de WhatsApp vinculado, como el permiso de push: es del "
+                         "dispositivo, no de la cartera; desvincular es un botón aparte",
     "login_history": "rastro de seguridad de la cuenta, que sigue siendo la misma",
     "password_reset_tokens": "rastro de seguridad de la cuenta, que sigue siendo la misma",
     "email_verification_codes": "rastro de seguridad de la cuenta, que sigue siendo la misma",
@@ -39399,6 +39445,13 @@ def _enrich_chat_snapshot_valuation(uid: int, snapshot: dict) -> dict:
     out = dict(snapshot)
     out["positions"] = _con_nombres(valued)
     summ = dict(out.get("summary") or {})
+    # Los acumulados del mensual (meses seguidos, realizado, depósitos, retiros)
+    # se calculan ACÁ, de las filas que trae la foto, para las dos puertas (app y
+    # WhatsApp). Hasta el 26/11/2026 los mandaba el navegador con OTROS nombres
+    # (`months_tracked`…) que el sanitizador descartaba: nunca llegaban al modelo.
+    _acum = _foto.resumen(snapshot.get("positions"), snapshot.get("monthly"))
+    for _k in ("months_count", "sum_pnl_realized", "sum_deposits", "sum_withdrawals"):
+        summ[_k] = _acum[_k]
     summ.update(totals)
     # Recuentos server-side, coherentes con las posiciones valuadas (agrupadas por
     # holding). Pisamos también los contadores que trae el cliente (buildSummary)
@@ -46225,7 +46278,23 @@ def diagnostics_dismiss(request: Request, uid: int = Depends(get_effective_user)
 
 @app.post("/api/ai/chat")
 def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_user)):
+    """La puerta HTTP del chat: la app. El cuerpo vive en `_ai_chat_core` para
+    que WhatsApp (whatsapp.py + `_wa_atender`) entre por la MISMA función con
+    el mismo cupo, las mismas herramientas y el mismo registro de operaciones,
+    en vez de una copia. Ver el docstring de `_ai_chat_core`."""
+    return _ai_chat_core(data, uid, request=request)
+
+
+def _ai_chat_core(data: AIChatIn, uid: int, request: Optional[Request] = None,
+                  canal: str = "app"):
     """Chat con el coach IA — tier-aware.
+
+    `request` es None cuando el turno NO viene por HTTP (WhatsApp): entonces no
+    hay freno por IP (el bot frena por teléfono antes de llegar acá), quien
+    pregunta es la propia cuenta (`_auth_uid_de(None, uid)` → uid, sin lente
+    de asesor) y los errores salen como HTTPException igual — el que llama los
+    traduce a un texto. `canal` cambia sólo el FORMATO de la respuesta
+    (`whatsapp.SISTEMA_WHATSAPP`), nunca el cupo ni las herramientas.
 
     Free/Plus:
     - Solo aceptan mensajes en _FREE_QUESTIONS_WHITELIST (preguntas guiadas).
@@ -46255,7 +46324,8 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     # M22 (audit IA #2): rate-limit por-request (por uid+IP) ANTES de tocar DB o
     # LLM. Defensa contra ráfagas/scripts (el endpoint más caro de la app) y
     # mitiga el race de la cuota semanal (concurrencia acotada por minuto).
-    _check_rate_limit(request, max_calls=12, window_seconds=60, suffix=f"ai_chat:{uid}")
+    if request is not None:
+        _check_rate_limit(request, max_calls=12, window_seconds=60, suffix=f"ai_chat:{uid}")
 
     # Resolver tier + cuota + perfil + facts en una sola conexión.
     conn = get_db()
@@ -46296,6 +46366,12 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
                ORDER BY created_at DESC LIMIT 25""",
             (uid,),
         ).fetchall()
+        # Quién puso el token (el asesor, cuando está adentro de un cliente). Se
+        # resuelve ACÁ, con la conexión abierta: más abajo se usaba `conn` ya
+        # cerrada para preguntar el tier del asesor (bug latente, sólo en ese
+        # camino).
+        _auth_uid = _auth_uid_de(request, uid)
+        _mirado_por_asesor = (uid != _auth_uid and quota.get_tier(conn, _auth_uid) == "advisor")
     finally:
         conn.close()
 
@@ -46306,7 +46382,6 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     # clientes y el snapshot del frontend (su cuenta vacía) se ignora. Adentro
     # de un cliente (uid != auth_uid) nada de esto aplica: es el chat normal
     # sobre ESA cartera.
-    _auth_uid = getattr(request.state, "rendi_auth_uid", uid)
     book_mode = (tier == "advisor" and uid == _auth_uid)
     # M20: Free/Plus reciben solo las tools sobre sus propios datos + los chips
     # de onboarding; las de investigación de mercado externa quedan Pro-only.
@@ -46409,9 +46484,7 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     base_system = _AI_CHAT_SYSTEM if is_premium else _AI_CHAT_SYSTEM_FREE
     if book_mode:
         base_system = _AI_CHAT_SYSTEM + _AI_CHAT_SYSTEM_ADVISOR
-    elif _lens_override == "pro" or (
-            uid != _auth_uid_de(request, uid)
-            and quota.get_tier(conn, _auth_uid_de(request, uid)) == "advisor"):
+    elif _lens_override == "pro" or _mirado_por_asesor:
         # Asesor mirando la cuenta de un cliente (cualquier tier del cliente).
         base_system = base_system + _AI_CHAT_SYSTEM_ADVISOR_IN_CLIENT
     # Pro chat max_tokens: 1000 → 800 (audit #3 cost control) → 1200 (2026-07,
@@ -46565,6 +46638,11 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
 RECORDATORIO FINAL DE VOZ (esto es lo último que leés antes de escribir, y pisa cualquier costumbre): escribís en rioplatense —"tenés", "podés", "mirá", nunca "tienes"/"puedes"/"mira"— y SIN UNA SOLA PALABRA EN INGLÉS. Nada de: portfolio (es "cartera"), YTD (es "en lo que va del año"), exposure, hedge, timing, edge, sample, skill, scenario, rally, growth, outlier, momentum, drawdown, insight, bad for tech. Tampoco tecnicismos sin traducir en la misma oración: P/E, valuación, correlación, volatilidad, atribución, convicción, tesis. Y cero frases hechas ("mover la aguja", "un mes no es sistema" y su familia). Si dudás entre la palabra del mercado y la palabra de todos los días, siempre la de todos los días. Y los números se escriben a la argentina: "US$ 1.037,74", "+5,2%" — el punto para los miles y la coma para los decimales, aunque el dato te haya llegado como 1037.74.
 
 RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks) o una COTIZACIÓN (el dólar, el precio de un activo), tu output es: un RESUMEN de hasta 60 palabras —2 oraciones COMPLETAS, jamás cortadas a la mitad, ninguna de más de 25 palabras— y después, si tu plan tiene followups, UNA pregunta corta con el próximo paso (los otros caminos van en followups, no en el texto). Y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Y antes de mandar hacé TRES chequeos. Primero: ¿algún número de la prosa está también en stats o en un block? Sacalo de la prosa y dejá lo que ese número significa — ahí está casi todo lo que sobra, medido. Segundo: ¿hay una oración que no contesta ESTA pregunta —otro tema, un dato puesto en lugar del que falta, una advertencia que nadie pidió, un número de las tarjetas dicho con palabras—? Borrala. Si preguntaron UN dato, ¿está con su número en la primera oración? Tercero: contá las palabras, y si pasás de 60 sacá un TEMA entero —nunca cortes una frase para entrar— y ofrecelo como uno de los followups. Con los followups cargados no se pierde nada: lo que sacaste queda a un botón de distancia y decide él. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos), y va PRIMERO de todo, apenas abrís la llave: ---RENDI---{{"voz":"...","verdict":... El orden importa de verdad: la voz empieza a sonar apenas ese campo cierra, así que escribirlo último son cinco segundos de silencio con la respuesta ya escrita en pantalla. Se olvida fácil porque no se ve, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
+    # El canal cambia el FORMATO, al final del manifiesto (lo último que lee pisa
+    # la costumbre). Va adentro de system_text y no en un bloque aparte: así
+    # WhatsApp tiene su propia entrada de cache y la de la app no se toca.
+    if canal == "whatsapp":
+        system_text += "\n\n" + _wa.SISTEMA_WHATSAPP
 
     # ─── Context block dinámico — al PRIMER user message ─────────────────────
     # Esto SÍ cambia per-request (snapshot del cliente) pero entre tool_use
@@ -47337,6 +47415,402 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 },
             )
         raise HTTPException(500, f"Error en el chat: {ex}")
+
+
+# ─── WhatsApp: el bot ────────────────────────────────────────────────────────
+# Otra puerta al MISMO chat de arriba (`_ai_chat_core`), no una IA aparte. Lo
+# propio de WhatsApp (firma de Meta, lectura del aviso, envío, código de
+# vinculación) está en whatsapp.py; acá está lo que toca la base y el chat:
+#
+#   1. El TIMBRE (`/api/whatsapp/webhook`): Meta avisa cada mensaje. Se comprueba
+#      la firma, se le contesta «recibido» en el acto y cada mensaje se atiende
+#      en un hilo aparte — la IA tarda de 5 a 15 segundos y Meta reenvía el
+#      aviso si no le contestan rápido.
+#   2. La VINCULACIÓN: la app muestra un código («RENDI ABC123», 15 minutos); la
+#      persona lo manda desde su WhatsApp; el servidor une ese teléfono a esa
+#      cuenta. Que llegue desde un WhatsApp prueba a la vez que entró a la
+#      cuenta y que tiene el teléfono.
+#   3. ATENDER (`_wa_atender`): duplicados → freno por teléfono → ¿de quién es
+#      el número? → ¿plan Pro, cuenta activa? → la foto de la cartera armada ACÁ
+#      (foto_cartera.py) → `_ai_chat_core(canal="whatsapp")` → la respuesta,
+#      con botones Sí/No si quedó una operación por confirmar.
+#
+# Interruptor `bot_whatsapp` (/admin): apagado, el timbre acepta y descarta.
+# Plan: sólo Pro (ai/plan.py «ai.whatsapp»). Asesor: fuera de la v1 (no hay
+# forma simple de decir «de qué cliente hablamos» por WhatsApp).
+
+_WA_HISTORIAL_MAX = 11        # + el mensaje de ahora = la ventana de 12 del chat
+_WA_HISTORIAL_HORAS = 24      # una charla de ayer no es contexto de la de hoy
+_WA_RETENCION_DIAS = 30       # lo guardado se borra solo pasado un mes (dicho en /privacidad)
+
+# Un candado por teléfono: dos mensajes seguidos de la misma persona se
+# atienden EN ORDEN, para que el segundo vea la respuesta al primero en el
+# historial y las respuestas no lleguen cruzadas.
+_WA_CANDADOS: dict = {}
+_WA_CANDADOS_GUARDIA = threading.Lock()
+
+
+def _wa_candado(telefono: str) -> threading.Lock:
+    with _WA_CANDADOS_GUARDIA:
+        if len(_WA_CANDADOS) > 5000:
+            _WA_CANDADOS.clear()
+        return _WA_CANDADOS.setdefault(telefono, threading.Lock())
+
+
+def _wa_ahora() -> str:
+    """UTC con microsegundos: ordena los mensajes aun cuando pregunta y respuesta
+    caen en el mismo segundo (el `datetime('now')` de la base no los distingue)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def _wa_telefono_oculto(tel) -> Optional[str]:
+    """«•••• 3695»: la pantalla muestra lo justo para reconocerlo."""
+    if not tel:
+        return None
+    return f"•••• {str(tel)[-4:]}"
+
+
+def _wa_fila(conn, uid: int):
+    return conn.execute(
+        "SELECT user_id, telefono, codigo, codigo_vence_at, vinculado_at "
+        "FROM whatsapp_vinculos WHERE user_id=?", (uid,)).fetchone()
+
+
+def _wa_codigo_vigente(row) -> Optional[str]:
+    if not row or not row["codigo"] or not row["codigo_vence_at"]:
+        return None
+    return row["codigo"] if str(row["codigo_vence_at"]) > _wa_ahora() else None
+
+
+def _wa_permitido(conn, uid: int) -> bool:
+    from ai import plan as _plan
+    return bool(_plan.can_access(conn, uid, _wa.FEATURE))
+
+
+def _wa_estado(conn, uid: int) -> dict:
+    row = _wa_fila(conn, uid)
+    codigo = _wa_codigo_vigente(row)
+    return {
+        "encendido": interruptor(_wa.INTERRUPTOR, conn),
+        "permitido": _wa_permitido(conn, uid),
+        "vinculado": bool(row and row["telefono"]),
+        "telefono": _wa_telefono_oculto(row["telefono"]) if row else None,
+        "vinculado_at": row["vinculado_at"] if row else None,
+        "codigo": codigo,
+        "texto_codigo": _wa.texto_de_vinculacion(codigo) if codigo else None,
+        "link": _wa.link_para_vincular(codigo) if codigo else None,
+        "numero_bot": _wa.numero_del_bot() or None,
+        "vence_min": _wa.CODIGO_MINUTOS,
+    }
+
+
+# Los tres endpoints de la persona usan `get_current_user`, no `get_effective_user`:
+# el vínculo es de la CUENTA QUE ENTRÓ, como la contraseña o el email. Con el
+# otro, un asesor mirando a un cliente le engancharía SU teléfono a la cuenta
+# del cliente, y hablaría por WhatsApp como si fuera él.
+
+@app.get("/api/whatsapp/estado")
+def whatsapp_estado(uid: int = Depends(get_current_user)):
+    """Lo que muestra Configuración → WhatsApp: si está vinculado (y a qué
+    número, tapado), si hay un código vigente, y si la persona puede usarlo."""
+    with db_abierta() as conn:
+        return _wa_estado(conn, uid)
+
+
+@app.post("/api/whatsapp/codigo")
+def whatsapp_codigo(request: Request, uid: int = Depends(get_current_user)):
+    """Genera (o renueva) el código de vinculación. Dura 15 minutos."""
+    _check_rate_limit(request, max_calls=6, window_seconds=600, suffix=f"wa_codigo:{uid}")
+    with db_abierta() as conn:
+        if not interruptor(_wa.INTERRUPTOR, conn):
+            raise HTTPException(403, {"error": "apagado",
+                                      "message": "El bot de WhatsApp todavía no está disponible."})
+        if cuenta_en_pausa(conn, uid):
+            raise HTTPException(403, {"error": "en_pausa", "message": _wa.texto_en_pausa()})
+        if not _wa_permitido(conn, uid):
+            raise HTTPException(403, {"error": "solo_pro", "message": _wa.texto_solo_pro()})
+        row = _wa_fila(conn, uid)
+        if row and row["telefono"]:
+            raise HTTPException(400, {"error": "ya_vinculado",
+                                      "message": "Tu WhatsApp ya está conectado. Desconectalo primero si querés usar otro número."})
+        codigo = _wa.codigo_nuevo()
+        vence = (datetime.now(timezone.utc) + timedelta(minutes=_wa.CODIGO_MINUTOS)
+                 ).strftime("%Y-%m-%d %H:%M:%S.%f")
+        conn.execute(
+            """INSERT INTO whatsapp_vinculos (user_id, codigo, codigo_vence_at, creado_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET codigo=excluded.codigo,
+                 codigo_vence_at=excluded.codigo_vence_at""",
+            (uid, codigo, vence, _wa_ahora()))
+        conn.commit()
+        return _wa_estado(conn, uid)
+
+
+@app.delete("/api/whatsapp/vinculo")
+def whatsapp_desvincular(uid: int = Depends(get_current_user)):
+    """Desconecta el número y borra la conversación guardada. Después de esto el
+    bot le contesta a ese teléfono «este número no está conectado»."""
+    with db_abierta() as conn:
+        conn.execute("DELETE FROM whatsapp_mensajes WHERE user_id=?", (uid,))
+        conn.execute("DELETE FROM whatsapp_vinculos WHERE user_id=?", (uid,))
+        conn.commit()
+        return _wa_estado(conn, uid)
+
+
+@app.get("/api/admin/whatsapp")
+def admin_whatsapp(uid: int = Depends(get_admin_user)):
+    """El interruptor y los números: cuántas cuentas vinculadas, cuántos mensajes
+    hoy. Sólo lee."""
+    with db_abierta() as conn:
+        vinculadas = conn.execute(
+            "SELECT COUNT(*) AS n FROM whatsapp_vinculos WHERE telefono IS NOT NULL").fetchone()["n"]
+        hoy = conn.execute(
+            "SELECT COUNT(*) AS n FROM whatsapp_mensajes WHERE direccion='in' AND creado_at >= ?",
+            (datetime.now(timezone.utc).strftime("%Y-%m-%d"),)).fetchone()["n"]
+        return {"interruptor": _estado_interruptor(conn, _wa.INTERRUPTOR),
+                "configurado": _wa.configurado(), "firma": bool(_wa.app_secret()),
+                "numero_bot": _wa.numero_del_bot() or None,
+                "cuentas_vinculadas": vinculadas, "mensajes_hoy": hoy}
+
+
+@app.post("/api/admin/whatsapp/interruptor")
+def admin_whatsapp_interruptor(data: InterruptorIn, uid: int = Depends(get_admin_user)):
+    """Prende o apaga el bot para todos. Queda en la base: se cambia sin deploy."""
+    with db_abierta() as conn:
+        return _poner_interruptor(conn, _wa.INTERRUPTOR, data.encendido, uid)
+
+
+# ── El timbre de Meta ───────────────────────────────────────────────────────
+
+@app.get("/api/whatsapp/webhook")
+def whatsapp_webhook_alta(request: Request):
+    """El alta del webhook en el panel de Meta: Meta llama con hub.verify_token y
+    espera que le devolvamos hub.challenge tal cual, en texto plano."""
+    q = request.query_params
+    esperado = _wa.verify_token()
+    recibido = str(q.get("hub.verify_token") or "")
+    if (q.get("hub.mode") == "subscribe" and esperado
+            and hmac.compare_digest(recibido, esperado)):
+        return PlainTextResponse(str(q.get("hub.challenge") or ""))
+    raise HTTPException(403, "verify token inválido")
+
+
+@app.post("/api/whatsapp/webhook")
+def whatsapp_webhook(request: Request, raw: bytes = Depends(_raw_body)):
+    """Cada mensaje que le escriben al bot entra por acá. `def` y no `async def`
+    por lo mismo que el webhook de Rebill (ver `_raw_body`)."""
+    firma = request.headers.get("x-hub-signature-256")
+    if not _wa.firma_valida(raw, firma):
+        if _wa.exige_firma():
+            log.warning("whatsapp: aviso con firma inválida o sin firma, rechazado")
+            raise HTTPException(403, "firma inválida")
+        log.warning("whatsapp: aviso sin firma válida ACEPTADO (sin WHATSAPP_APP_SECRET, desarrollo)")
+    try:
+        payload = json.loads(raw or b"{}")
+    except Exception:
+        raise HTTPException(400, "cuerpo no es JSON")
+    mensajes = _wa.mensajes_del_aviso(payload)
+    if not mensajes:
+        # Avisos de estado (entregado, leído) y cosas que no entendemos.
+        return {"status": "ok", "mensajes": 0}
+    for m in mensajes:
+        threading.Thread(target=_wa_atender, args=(m,), daemon=True,
+                         name=f"wa-{m.wa_id[-12:]}").start()
+    return {"status": "ok", "mensajes": len(mensajes)}
+
+
+# ── Atender un mensaje ──────────────────────────────────────────────────────
+
+def _wa_historial(conn, uid: int, salvo_wa_id: str) -> list:
+    """La conversación reciente, en la forma que espera el chat (`messages`)."""
+    desde = (datetime.now(timezone.utc) - timedelta(hours=_WA_HISTORIAL_HORAS)
+             ).strftime("%Y-%m-%d %H:%M:%S.%f")
+    rows = conn.execute(
+        """SELECT direccion, texto FROM whatsapp_mensajes
+           WHERE user_id=? AND wa_id<>? AND texto IS NOT NULL AND texto<>''
+             AND tipo IN ('texto','boton','salida') AND creado_at >= ?
+             -- lo de antes de vincular (el código, el «quedó conectado») no es charla
+             AND creado_at >= COALESCE((SELECT vinculado_at FROM whatsapp_vinculos WHERE user_id=?), '')
+           ORDER BY creado_at DESC LIMIT ?""",
+        (uid, salvo_wa_id, desde, uid, _WA_HISTORIAL_MAX)).fetchall()
+    out = []
+    for r in reversed(rows):
+        rol = "user" if r["direccion"] == "in" else "assistant"
+        # Dos del mismo rol seguidos (p. ej. dos preguntas sin respuesta) se juntan:
+        # la API exige que alternen.
+        if out and out[-1]["role"] == rol:
+            out[-1]["content"] = (out[-1]["content"] + "\n" + str(r["texto"]))[:5000]
+        else:
+            out.append({"role": rol, "content": str(r["texto"])[:5000]})
+    while out and out[0]["role"] != "user":
+        out.pop(0)
+    return out
+
+
+def _foto_de_cartera_del_servidor(uid: int) -> dict:
+    """La misma foto que arma el navegador para el chat (utils/aiSnapshot.js),
+    armada acá con las mismas cuatro lecturas. El resumen sale de foto_cartera.py,
+    que es también lo que el servidor recalcula para la foto de la app."""
+    def _o_vacio(fn):
+        try:
+            return fn(uid)
+        except Exception as ex:
+            log.warning("whatsapp: la foto quedó sin %s (uid=%s): %s", fn.__name__, uid, ex)
+            return []
+    return _foto.armar(_o_vacio(get_positions), _o_vacio(get_monthly),
+                       _o_vacio(get_brokers), _o_vacio(get_operations))
+
+
+def _wa_texto_del_error(ex: HTTPException) -> str:
+    d = ex.detail
+    if isinstance(d, dict):
+        return str(d.get("message") or d.get("error") or _wa.texto_error())
+    return str(d) if d else _wa.texto_error()
+
+
+def _wa_guardar(conn, wa_id: str, telefono: str, uid, direccion: str, tipo: str, texto: str) -> bool:
+    """Anota el mensaje. False si YA estaba (el mismo id de Meta): es el candado
+    contra los reenvíos."""
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO whatsapp_mensajes
+           (wa_id, telefono, user_id, direccion, tipo, texto, creado_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (wa_id, telefono, uid, direccion, tipo, (texto or "")[:5000], _wa_ahora()))
+    conn.commit()
+    return bool(cur.rowcount)
+
+
+def _wa_guardar_salida(uid, telefono: str, texto: str, ids: list, tipo: str = "salida") -> None:
+    """`tipo` 'salida' = lo que contestó el chat (entra al historial del turno
+    siguiente); 'fijo' = un cartel del bot («en mantenimiento», «por ahora leo
+    texto») que se guarda para el registro pero NO es parte de la charla."""
+    wa_id = (ids[0] if ids and ids[0] else None) or f"out:{secrets.token_hex(8)}"
+    try:
+        with db_abierta() as conn:
+            _wa_guardar(conn, wa_id, telefono, uid, "out", tipo, texto)
+    except Exception as ex:
+        log.warning("whatsapp: no se pudo guardar la respuesta (uid=%s): %s", uid, ex)
+
+
+def _wa_decidir(m) -> tuple:
+    """Todo lo que se decide CON la base abierta, antes de salir a la red:
+    ('fijo', uid, texto) → contestar ese texto y listo;
+    ('chat', uid, historial) → preguntarle al chat;
+    ('nada', None, None) → no contestar (duplicado, freno)."""
+    with db_abierta() as conn:
+        if not _wa_guardar(conn, m.wa_id, m.telefono, None, "in", m.tipo, m.texto):
+            log.info("whatsapp: mensaje repetido %s, ignorado", m.wa_id)
+            return ("nada", None, None)
+        # Lo de hace más de un mes se borra solo: la conversación se guarda para
+        # que el bot recuerde lo reciente, no como archivo (/privacidad lo dice).
+        conn.execute("DELETE FROM whatsapp_mensajes WHERE creado_at < ?",
+                     ((datetime.now(timezone.utc) - timedelta(days=_WA_RETENCION_DIAS))
+                      .strftime("%Y-%m-%d %H:%M:%S.%f"),))
+        conn.commit()
+        if not _rate_limit_clave(f"wa:{m.telefono}", 12, 60):
+            log.warning("whatsapp: freno por teléfono …%s", m.telefono[-4:])
+            return ("nada", None, None)
+        row = conn.execute("SELECT user_id FROM whatsapp_vinculos WHERE telefono=?",
+                           (m.telefono,)).fetchone()
+        if row:
+            # El mensaje es de esta cuenta, diga lo que diga después.
+            conn.execute("UPDATE whatsapp_mensajes SET user_id=? WHERE wa_id=?",
+                         (row["user_id"], m.wa_id))
+            conn.commit()
+        # Apagado desde /admin: a todos, conocidos o no, el mismo cartel. (Un
+        # desconocido no puede vincular: la app no da códigos con el bot apagado.)
+        if not interruptor(_wa.INTERRUPTOR, conn):
+            return ("fijo", row["user_id"] if row else None, _wa.texto_apagado())
+        # ¿Vino un código? Se mira ANTES de saber si el número está vinculado: un
+        # teléfono ya conectado que manda el código de OTRA cuenta tiene que oír
+        # «ya estás conectado a otra», no que el chat intente contestarle.
+        codigo = _wa.codigo_del_texto(m.texto) if m.tipo == "texto" else None
+        pend = conn.execute(
+            "SELECT user_id FROM whatsapp_vinculos WHERE codigo=? AND telefono IS NULL "
+            "AND codigo_vence_at > ?", (codigo, _wa_ahora())).fetchone() if codigo else None
+        if row and pend:
+            if pend["user_id"] == row["user_id"]:
+                return ("fijo", row["user_id"], "Tu WhatsApp ya está conectado a esta cuenta ✅")
+            return ("fijo", row["user_id"],
+                    "Ese número ya está conectado a otra cuenta de Rendi. "
+                    "Desconectalo desde esa cuenta antes de usarlo acá.")
+        if not row:
+            if not codigo:
+                return ("fijo", None, _wa.texto_no_vinculado())
+            if not pend:
+                return ("fijo", None, _wa.texto_codigo_invalido())
+            uid = pend["user_id"]
+            try:
+                conn.execute(
+                    "UPDATE whatsapp_vinculos SET telefono=?, codigo=NULL, codigo_vence_at=NULL, "
+                    "vinculado_at=? WHERE user_id=?", (m.telefono, _wa_ahora(), uid))
+                conn.execute("UPDATE whatsapp_mensajes SET user_id=? WHERE wa_id=?", (uid, m.wa_id))
+                conn.commit()
+            except ERR_INTEGRIDAD as ex:
+                # El teléfono ya es de OTRA cuenta (UNIQUE): un teléfono, una cuenta.
+                conn.rollback()
+                if not dberrors.es_unique(ex):
+                    raise
+                return ("fijo", None, "Ese número ya está conectado a otra cuenta de Rendi. "
+                                      "Desconectalo desde esa cuenta antes de usarlo acá.")
+            nombre = conn.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
+            nombre = (nombre["name"] or "").strip().split(" ")[0] if nombre else ""
+            log.info("whatsapp: cuenta %s vinculada a …%s", uid, m.telefono[-4:])
+            return ("fijo", uid, _wa.texto_vinculado(nombre))
+        uid = row["user_id"]
+        if cuenta_en_pausa(conn, uid):
+            return ("fijo", uid, _wa.texto_en_pausa())
+        if not _wa_permitido(conn, uid):
+            return ("fijo", uid, _wa.texto_solo_pro())
+        if m.tipo not in ("texto", "boton") or not m.texto.strip():
+            return ("fijo", uid, _wa.texto_no_leo_eso(m.tipo))
+        return ("chat", uid, _wa_historial(conn, uid, m.wa_id))
+
+
+def _wa_atender(m) -> None:
+    """Atiende UN mensaje de WhatsApp, de punta a punta. Corre en su hilo; nunca
+    levanta: si algo falla, la persona recibe «no pude contestarte ahora». Los
+    mensajes de un mismo teléfono se atienden de a uno (`_wa_candado`)."""
+    with _wa_candado(m.telefono):
+        _wa_atender_uno(m)
+
+
+def _wa_atender_uno(m) -> None:
+    try:
+        que, uid, dato = _wa_decidir(m)
+        if que == "nada":
+            return
+        if que == "fijo":
+            ids = _wa.enviar_texto(m.telefono, dato)
+            _wa_guardar_salida(uid, m.telefono, dato, ids, tipo="fijo")
+            return
+        # La conexión ya se cerró: la IA tarda y la base no espera por nadie.
+        _wa.marcar_leido(m.wa_id)
+        mensajes = list(dato) + [{"role": "user", "content": m.texto.strip()[:5000]}]
+        data = AIChatIn(messages=mensajes, snapshot=_foto_de_cartera_del_servidor(uid),
+                        voz=False, stream=False)
+        try:
+            out = _ai_chat_core(data, uid, request=None, canal="whatsapp")
+            reply = str((out or {}).get("reply") or "")
+        except HTTPException as ex:
+            log.info("whatsapp: el chat rechazó el turno (uid=%s): %s", uid, ex.status_code)
+            reply = _wa_texto_del_error(ex)
+        texto = _wa.texto_para_whatsapp(reply) or _wa.texto_error()
+        # ¿Quedó una operación esperando el «sí»? Botones, en vez de hacer escribir.
+        d = _TRADE_DRAFT.get(uid)
+        confirmando = bool(d and d.get("status") == "confirming" and _trade_flow_open(uid))
+        if confirmando:
+            ids = _wa.enviar_con_botones(m.telefono, texto,
+                                         [(_wa.BOTON_SI, "Sí, anotala"), (_wa.BOTON_NO, "No")])
+        else:
+            ids = _wa.enviar_texto(m.telefono, texto)
+        _wa_guardar_salida(uid, m.telefono, texto, ids)
+    except Exception:
+        log.exception("whatsapp: falló atendiendo %s", getattr(m, "wa_id", "?"))
+        try:
+            _wa.enviar_texto(m.telefono, _wa.texto_error())
+        except Exception:
+            pass
 
 
 # ─── La voz: convertir en audio lo que Rendi ya escribió ─────────────────────

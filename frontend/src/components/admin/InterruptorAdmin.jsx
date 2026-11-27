@@ -91,6 +91,38 @@ export function lineaPasesVivos(cuentas) {
   return `${total} ${total === 1 ? 'pase' : 'pases'} sin deshacer (${detalle}). Antes de volver atrás una publicación, hay que deshacerlos.`
 }
 
+// ─── El bot de WhatsApp ─────────────────────────────────────────────────────
+// Se publica APAGADO. Apagado: Configuración → WhatsApp dice «todavía no está disponible»
+// y el timbre de Meta acepta los avisos sin contestarlos (a los números ya vinculados
+// les dice «en mantenimiento»). Antes de prender: las variables WHATSAPP_* cargadas
+// (el renglón de abajo dice si falta alguna) y el webhook dado de alta en Meta.
+export const TEXTOS_WHATSAPP = {
+  prender: 'Prender el bot de WhatsApp',
+  apagar: 'Apagar el bot de WhatsApp',
+  preguntaAlPrender: '¿Prender el bot de WhatsApp para todos los Pro? Desde ahora pueden vincular su número en Configuración → WhatsApp y Rendi les contesta por ahí.',
+  lineaPrendido: 'PRENDIDO: los Pro pueden vincular su WhatsApp y Rendi contesta.',
+  lineaApagado: 'Apagado: Configuración → WhatsApp dice «todavía no está disponible»; los avisos de Meta se descartan.',
+  avisoPrendido: 'Bot de WhatsApp PRENDIDO',
+  avisoApagado: 'Bot de WhatsApp apagado',
+}
+
+export function lineaBotWhatsapp(e) {
+  const faltan = []
+  if (!e?.configurado) faltan.push('WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID')
+  if (!e?.firma) faltan.push('WHATSAPP_APP_SECRET')
+  if (!e?.numero_bot) faltan.push('WHATSAPP_NUMERO')
+  const config = faltan.length ? `Falta configurar: ${faltan.join(', ')}.` : `Número del bot: +${e.numero_bot}.`
+  return `${config} ${e?.cuentas_vinculadas ?? 0} ${e?.cuentas_vinculadas === 1 ? 'cuenta vinculada' : 'cuentas vinculadas'} · ${e?.mensajes_hoy ?? 0} ${e?.mensajes_hoy === 1 ? 'mensaje recibido hoy' : 'mensajes recibidos hoy'}.`
+}
+
+export function BotWhatsappPanel({ toast }) {
+  return (
+    <InterruptorAdmin toast={toast} ruta="whatsapp" titulo="Bot de WhatsApp" textos={TEXTOS_WHATSAPP}>
+      {(e) => <p className="text-xs text-ink-3">{lineaBotWhatsapp(e)}</p>}
+    </InterruptorAdmin>
+  )
+}
+
 export function MoverEntreBrokersPanel({ toast }) {
   return (
     <InterruptorAdmin toast={toast} ruta="mover-entre-brokers" titulo="Mover a otro broker" textos={TEXTOS_MOVER}>

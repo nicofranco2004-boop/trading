@@ -224,10 +224,17 @@ class TestChatSnapshotValuation(unittest.TestCase):
     def test_enrich_overwrites_client_summary(self):
         """El wrapper pisa el total_invested_usd (posiblemente inflado) del cliente
         y agrega el valuation_note + posiciones valuadas."""
+        # Desde el bot de WhatsApp (26/11/2026) los acumulados del mensual los
+        # calcula el servidor de las filas `monthly` de la foto (foto_cartera.py):
+        # el 7 que manda el cliente se ignora; las 3 filas globales mandan.
         client_snap = {
-            "summary": {"total_invested_usd": 1_405_000, "months_count": 3},
+            "summary": {"total_invested_usd": 1_405_000, "months_count": 7},
             "positions": [{"asset": "AAPL", "invested": 1_400_000}],  # crudo, se descarta
             "operations": [],
+            "monthly": [{"broker": "global", "pnl_realized": 10, "deposits": 100},
+                        {"broker": "global", "pnl_realized": 5},
+                        {"broker": "global"},
+                        {"broker": "Cocos", "pnl_realized": 15}],   # no es global: no cuenta
         }
         # El wrapper abre su propia conn vía main.get_db() → la misma DB de test
         # donde ya commiteamos las posiciones en setUp.
@@ -237,7 +244,9 @@ class TestChatSnapshotValuation(unittest.TestCase):
              patch.object(main, "_user_tc_cedear", return_value=1400):
             out = main._enrich_chat_snapshot_valuation(self.uid, client_snap)
         self.assertLess(out["summary"]["total_invested_usd"], 10000)   # pisado
-        self.assertEqual(out["summary"]["months_count"], 3)            # preservado
+        self.assertEqual(out["summary"]["months_count"], 3)            # de las filas, no del cliente
+        self.assertEqual(out["summary"]["sum_pnl_realized"], 15.0)
+        self.assertEqual(out["summary"]["sum_deposits"], 100.0)
         self.assertIn("valuation_note", out["summary"])
         self.assertTrue(all("value_usd" in p for p in out["positions"]))
 

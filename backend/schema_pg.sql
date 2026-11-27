@@ -2559,6 +2559,54 @@ ALTER TABLE watchlist_banderas ADD COLUMN IF NOT EXISTS bandera text;
 
 ALTER TABLE watchlist_banderas ADD COLUMN IF NOT EXISTS nombre text;
 
+CREATE TABLE IF NOT EXISTS whatsapp_mensajes (
+  wa_id text,
+  telefono text NOT NULL,
+  user_id bigint,
+  direccion text NOT NULL,
+  tipo text,
+  texto text,
+  creado_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'),
+  PRIMARY KEY (wa_id)
+);
+
+ALTER TABLE whatsapp_mensajes ADD COLUMN IF NOT EXISTS wa_id text;
+
+ALTER TABLE whatsapp_mensajes ADD COLUMN IF NOT EXISTS telefono text;
+
+ALTER TABLE whatsapp_mensajes ADD COLUMN IF NOT EXISTS user_id bigint;
+
+ALTER TABLE whatsapp_mensajes ADD COLUMN IF NOT EXISTS direccion text;
+
+ALTER TABLE whatsapp_mensajes ADD COLUMN IF NOT EXISTS tipo text;
+
+ALTER TABLE whatsapp_mensajes ADD COLUMN IF NOT EXISTS texto text;
+
+ALTER TABLE whatsapp_mensajes ADD COLUMN IF NOT EXISTS creado_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS');
+
+CREATE TABLE IF NOT EXISTS whatsapp_vinculos (
+  user_id bigint,
+  telefono text,
+  codigo text,
+  codigo_vence_at text,
+  creado_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'),
+  vinculado_at text,
+  PRIMARY KEY (user_id),
+  UNIQUE (telefono)
+);
+
+ALTER TABLE whatsapp_vinculos ADD COLUMN IF NOT EXISTS user_id bigint;
+
+ALTER TABLE whatsapp_vinculos ADD COLUMN IF NOT EXISTS telefono text;
+
+ALTER TABLE whatsapp_vinculos ADD COLUMN IF NOT EXISTS codigo text;
+
+ALTER TABLE whatsapp_vinculos ADD COLUMN IF NOT EXISTS codigo_vence_at text;
+
+ALTER TABLE whatsapp_vinculos ADD COLUMN IF NOT EXISTS creado_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS');
+
+ALTER TABLE whatsapp_vinculos ADD COLUMN IF NOT EXISTS vinculado_at text;
+
 CREATE TABLE IF NOT EXISTS yfinance_cache (
   ticker text NOT NULL,
   kind text NOT NULL,
@@ -2772,6 +2820,8 @@ CREATE INDEX IF NOT EXISTS idx_twr_periods_user
                 ON twr_periods(user_id, month);
 
 CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_mensajes_user ON whatsapp_mensajes(user_id, creado_at);
 
 CREATE INDEX IF NOT EXISTS idx_yfinance_cache_fetched
                 ON yfinance_cache(fetched_at DESC);

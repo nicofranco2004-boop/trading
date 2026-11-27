@@ -16,7 +16,7 @@ import PageMeta from '../components/PageMeta'
 // La fecha de esta versión se escribe UNA vez: la usan el renglón «Última
 // actualización» y la descripción para Google. Eran dos textos a mano y
 // nada impedía que se actualizara uno solo.
-const ACTUALIZACION = '6 de noviembre de 2026'
+const ACTUALIZACION = '26 de noviembre de 2026'
 const MES_ACTUALIZACION = ACTUALIZACION.replace(/^\d+ de /, '')  // «4 de octubre de 2026» → «octubre de 2026»
 
 export default function Privacidad() {
@@ -50,6 +50,7 @@ export default function Privacidad() {
             <li>El pago lo procesa Rebill: nunca almacenamos datos de tu tarjeta o medio de pago.</li>
             <li>Mervall-E AI usa Claude (Anthropic) para pensar la respuesta y OpenAI para leerla en voz alta: la lectura viene activada y la apagás con el botón del parlante. Ninguno de los dos entrena sus modelos con tus datos.</li>
             <li>Si le hablás a Mervall-E AI con el micrófono, ese audio va a OpenAI para convertirse en texto. Nosotros no lo guardamos en ningún lado, y el micrófono sólo se prende cuando vos lo tocás. OpenAI lo retiene hasta 30 días para controlar abusos y después lo borra.</li>
+            <li>Si conectás tu WhatsApp (plan Pro, se activa a mano desde Configuración), tus mensajes y las respuestas de Mervall-E AI pasan por los servidores de WhatsApp, que es de Meta: Meta puede ver ese contenido, como en cualquier chat con una empresa. Guardamos esa conversación para que Rendi recuerde lo que venían hablando; lo de más de 30 días se borra solo, y al desconectar el número se borra todo.</li>
             <li>Podés acceder, rectificar o eliminar tus datos en cualquier momento escribiéndonos.</li>
             <li>Sujeto a la Ley 25.326 (Protección de Datos Personales, Argentina).</li>
           </ul>
@@ -324,6 +325,16 @@ export default function Privacidad() {
               <a href="https://openai.com/policies/privacy-policy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">openai.com/policies/privacy-policy</a>.
             </li>
             <li>
+              <strong className="text-ink-0">Meta Platforms (WhatsApp, el bot de Rendi).</strong>{' '}
+              Sólo si conectás tu WhatsApp desde Configuración (plan Pro). Meta recibe y entrega
+              los mensajes que le escribís a Rendi y las respuestas de Mervall-E AI —que pueden
+              incluir el valor de tu cartera y las operaciones que le dictás—, además de tu
+              número de teléfono. Nosotros guardamos tu número mientras el WhatsApp esté
+              conectado y la conversación de los últimos 30 días (lo anterior se borra solo);
+              al desconectarlo se borra todo. Política:{' '}
+              <a href="https://www.facebook.com/privacy/policy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">facebook.com/privacy/policy</a>.
+            </li>
+            <li>
               <strong className="text-ink-0">Resend (envío de emails).</strong>{' '}
               Recibe tu email y el contenido del mensaje para entregártelo. Política:{' '}
               <a href="https://resend.com/legal/privacy-policy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">resend.com/legal/privacy-policy</a>.
@@ -394,7 +405,7 @@ export default function Privacidad() {
         <Section title="6. Transferencias internacionales de datos">
           <p>
             Algunos de nuestros proveedores (por ejemplo, los de hosting, IA o emails, y Google
-            y Meta, que miden las visitas y los anuncios)
+            y Meta, que miden las visitas y los anuncios, y WhatsApp si lo conectás)
             operan servidores ubicados fuera de la República Argentina. Esto implica que,
             para prestarte el servicio, ciertos datos pueden transferirse y procesarse en
             otros países.

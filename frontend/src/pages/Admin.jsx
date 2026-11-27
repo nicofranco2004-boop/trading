@@ -10,7 +10,7 @@ import StatCard from '../components/StatCard'
 import UsoDeRendi from '../components/admin/UsoDeRendi'
 import RegistrosPorOrigen from '../components/admin/RegistrosPorOrigen'
 import VigiaDiasPanel from '../components/admin/VigiaDias'
-import InterruptorAdmin, { MoverEntreBrokersPanel } from '../components/admin/InterruptorAdmin'
+import InterruptorAdmin, { MoverEntreBrokersPanel, BotWhatsappPanel } from '../components/admin/InterruptorAdmin'
 import { PageSkeleton } from '../components/Skeleton'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
@@ -457,6 +457,7 @@ export default function Admin() {
       <FciRefreshPanel toast={toast} />
       <AvisoRatioPanel toast={toast} />
       <MoverEntreBrokersPanel toast={toast} />
+      <BotWhatsappPanel toast={toast} />
       <MtmAuditPanel toast={toast} />
       <FxMigratePanel toast={toast} />
 

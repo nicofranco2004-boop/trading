@@ -3294,6 +3294,7 @@ export function handleDemoRequest(method, path, body) {
           'export.csv': true,
           'tax.helper': false,
           'alerts.pct_move': true,
+          'ai.whatsapp': true,
         },
       }
     }
@@ -3367,6 +3368,9 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/market-brief/prefs')     return { enabled: false }
     if (basePath === '/market-brief/ultimo')    return { resumen: null }
     if (basePath === '/me/advisor')             return { advisors: [], requests: [] }
+    // El bot de WhatsApp (Configuración → WhatsApp): en el demo no hay cuenta a la
+    // que vincular un número; la pantalla muestra «todavía no está disponible».
+    if (basePath === '/whatsapp/estado')        return { encendido: false, permitido: false, vinculado: false, codigo: null }
     if (basePath === '/wallbit/status')         return { connected: false }
     if (basePath === '/advisor/alerts')         return { history: [] }
     if (basePath === '/fx-rates')               return _demoFxRates()
