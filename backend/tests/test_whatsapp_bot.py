@@ -115,6 +115,32 @@ class PuroTest(unittest.TestCase):
         self.assertEqual(partes, ["a" * 10, "b" * 10])
         self.assertEqual(wa.partir("", 10), [])
 
+    def test_celular_argentino_sin_el_9(self):
+        self.assertEqual(wa.otra_forma_argentina("5493584011063"), "543584011063")
+        self.assertIsNone(wa.otra_forma_argentina("543584011063"))     # ya sin el 9
+        self.assertIsNone(wa.otra_forma_argentina("15551887611"))      # no es de Argentina
+
+    def test_no_autorizado_reintenta_sin_el_9(self):
+        """Meta rechaza 549… con «no autorizado» (131030): se reintenta una vez
+        sin el 9. Cualquier otro error, o un número de otro país, no reintenta."""
+        wa.ENVIADOS.clear()
+        wa._FALLAR_EN_PRUEBAS.clear()
+        self.addCleanup(wa._FALLAR_EN_PRUEBAS.clear)
+        wa._FALLAR_EN_PRUEBAS["5493584011063"] = wa.ERROR_NO_AUTORIZADO
+        ids = wa.enviar_texto("5493584011063", "hola")
+        self.assertEqual([p["to"] for p in wa.ENVIADOS], ["5493584011063", "543584011063"])
+        self.assertEqual(len(ids), 1)
+        # Otro error: no se reintenta.
+        wa.ENVIADOS.clear()
+        wa._FALLAR_EN_PRUEBAS["5493584011063"] = 131047
+        self.assertEqual(wa.enviar_texto("5493584011063", "hola"), [])
+        self.assertEqual(len(wa.ENVIADOS), 1)
+        # Otro país: tampoco.
+        wa.ENVIADOS.clear()
+        wa._FALLAR_EN_PRUEBAS["16315551181"] = wa.ERROR_NO_AUTORIZADO
+        self.assertEqual(wa.enviar_texto("16315551181", "hola"), [])
+        self.assertEqual(len(wa.ENVIADOS), 1)
+
     def test_el_resumen_de_la_foto_es_el_del_navegador(self):
         """Los casos de frontend/src/utils/aiSummary.test.js, en Python."""
         positions = [{"invested": 100.5, "is_cash": 0}, {"invested": 50, "is_cash": 1}, None,

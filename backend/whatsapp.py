@@ -329,15 +329,37 @@ def partir(texto: str, maximo: int = MAX_TEXTO) -> list:
 ENVIADOS: list = []
 
 
-def _post(payload: dict) -> Optional[str]:
-    """Manda un mensaje a Meta. Devuelve el id del mensaje de Meta, o None si no
-    se pudo. Nunca levanta: el bot no se cae porque Meta tosió."""
+# Error de Meta «el destinatario no está en la lista de autorizados» (sólo pasa
+# con el número de PRUEBA, que únicamente le puede escribir a 5 teléfonos).
+ERROR_NO_AUTORIZADO = 131030
+
+
+def otra_forma_argentina(telefono: str) -> Optional[str]:
+    """Los celulares argentinos llegan en el aviso de Meta con el 9 (549 + área +
+    número), pero hay cuentas en las que Meta sólo acepta contestarles SIN el 9.
+    Devuelve esa otra forma, o None si el número no es un celular argentino."""
+    t = re.sub(r"\D", "", telefono or "")
+    if t.startswith("549") and len(t) == 13:
+        return "54" + t[3:]
+    return None
+
+
+def _oculto(tel) -> str:
+    t = re.sub(r"\D", "", str(tel or ""))
+    return f"{t[:3]}…{t[-4:]}" if len(t) > 7 else "?"
+
+
+def _post_una_vez(payload: dict):
+    """(id de Meta o None, código de error de Meta o None)."""
     if _bajo_pytest():
         ENVIADOS.append(payload)
-        return f"test:{len(ENVIADOS)}"
+        fallar = _FALLAR_EN_PRUEBAS.get(payload.get("to"))
+        if fallar:
+            return None, fallar
+        return f"test:{len(ENVIADOS)}", None
     if not configurado():
         log.warning("whatsapp: sin WHATSAPP_TOKEN / PHONE_NUMBER_ID, no se manda")
-        return None
+        return None, None
     try:
         r = httpx.post(
             f"{graph()}/{phone_number_id()}/messages",
@@ -345,15 +367,39 @@ def _post(payload: dict) -> Optional[str]:
             json=payload, timeout=TIMEOUT,
         )
         if r.status_code >= 400:
-            log.error("whatsapp: Meta rechazó el envío %s: %s", r.status_code, r.text[:300])
-            return None
+            try:
+                codigo = int(((r.json() or {}).get("error") or {}).get("code") or 0) or None
+            except Exception:
+                codigo = None
+            log.error("whatsapp: Meta rechazó el envío a %s, %s: %s",
+                      _oculto(payload.get("to")), r.status_code, r.text[:300])
+            return None, codigo
         try:
-            return str(((r.json().get("messages") or [{}])[0]).get("id") or "")
+            return str(((r.json().get("messages") or [{}])[0]).get("id") or ""), None
         except Exception:
-            return ""
+            return "", None
     except Exception as ex:
         log.error("whatsapp: no se pudo mandar: %s", ex)
-        return None
+        return None, None
+
+
+# Bajo pytest: {teléfono: código de error} para simular un rechazo de Meta.
+_FALLAR_EN_PRUEBAS: dict = {}
+
+
+def _post(payload: dict) -> Optional[str]:
+    """Manda un mensaje a Meta. Devuelve el id del mensaje de Meta, o None si no
+    se pudo. Nunca levanta: el bot no se cae porque Meta tosió.
+
+    Si Meta dice «no autorizado» y el destino es un celular argentino con el 9,
+    reintenta UNA vez sin el 9 (ver `otra_forma_argentina`)."""
+    mid, codigo = _post_una_vez(payload)
+    if mid is None and codigo == ERROR_NO_AUTORIZADO:
+        otra = otra_forma_argentina(payload.get("to") or "")
+        if otra:
+            log.warning("whatsapp: %s no autorizado, reintento sin el 9", _oculto(payload.get("to")))
+            mid, _ = _post_una_vez({**payload, "to": otra})
+    return mid
 
 
 def enviar_texto(telefono: str, texto: str) -> list:

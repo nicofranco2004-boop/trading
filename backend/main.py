@@ -47702,6 +47702,9 @@ def _wa_decidir(m) -> tuple:
         if not _wa_guardar(conn, m.wa_id, m.telefono, None, "in", m.tipo, m.texto):
             log.info("whatsapp: mensaje repetido %s, ignorado", m.wa_id)
             return ("nada", None, None)
+        # Un renglón por mensaje que entra: en los registros de Railway se ve de
+        # quién (tapado) y de qué tipo, para saber si Meta lo entregó.
+        log.info("whatsapp: llegó un mensaje de %s (%s)", _wa._oculto(m.telefono), m.tipo)
         # Lo de hace más de un mes se borra solo: la conversación se guarda para
         # que el bot recuerde lo reciente, no como archivo (/privacidad lo dice).
         conn.execute("DELETE FROM whatsapp_mensajes WHERE creado_at < ?",
