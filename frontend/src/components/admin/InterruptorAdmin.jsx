@@ -111,6 +111,9 @@ export function lineaBotWhatsapp(e) {
   if (!e?.configurado) faltan.push('WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID')
   if (!e?.firma) faltan.push('WHATSAPP_APP_SECRET')
   if (!e?.numero_bot) faltan.push('WHATSAPP_NUMERO')
+  // La palabra del webhook: sin ella Meta no deja guardar el webhook («No se pudo
+  // validar la URL»). Se informa sólo si está, nunca cuál es.
+  if (!e?.palabra) faltan.push('WHATSAPP_VERIFY_TOKEN')
   const config = faltan.length ? `Falta configurar: ${faltan.join(', ')}.` : `Número del bot: +${e.numero_bot}.`
   return `${config} ${e?.cuentas_vinculadas ?? 0} ${e?.cuentas_vinculadas === 1 ? 'cuenta vinculada' : 'cuentas vinculadas'} · ${e?.mensajes_hoy ?? 0} ${e?.mensajes_hoy === 1 ? 'mensaje recibido hoy' : 'mensajes recibidos hoy'}.`
 }

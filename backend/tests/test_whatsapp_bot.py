@@ -471,6 +471,11 @@ class BotTest(unittest.TestCase):
         r = self.http.get("/api/admin/whatsapp", headers=self.headers)
         self.assertEqual(r.status_code, 200, r.text)
         self.assertTrue(r.json()["interruptor"]["encendido"])
+        # Dice SI están las variables, nunca cuáles son.
+        self.assertEqual((r.json()["configurado"], r.json()["firma"], r.json()["palabra"]), (True, True, True))
+        self.assertIs(r.json()["palabra"], True)                    # un sí/no, no el valor
+        with patch.dict(os.environ, {"WHATSAPP_VERIFY_TOKEN": ""}):
+            self.assertFalse(self.http.get("/api/admin/whatsapp", headers=self.headers).json()["palabra"])
         r = self.http.post("/api/admin/whatsapp/interruptor", headers=self.headers, json={"encendido": False})
         self.assertEqual((r.status_code, r.json()["encendido"]), (200, False))
 

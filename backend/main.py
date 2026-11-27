@@ -47569,6 +47569,7 @@ def admin_whatsapp(uid: int = Depends(get_admin_user)):
             (datetime.now(timezone.utc).strftime("%Y-%m-%d"),)).fetchone()["n"]
         return {"interruptor": _estado_interruptor(conn, _wa.INTERRUPTOR),
                 "configurado": _wa.configurado(), "firma": bool(_wa.app_secret()),
+                "palabra": bool(_wa.verify_token()),
                 "numero_bot": _wa.numero_del_bot() or None,
                 "cuentas_vinculadas": vinculadas, "mensajes_hoy": hoy}
 
